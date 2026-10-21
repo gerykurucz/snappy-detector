@@ -1,0 +1,10 @@
+# What hpose needs on top of what Snappy AI already uses.
+#
+#   python -m pip install -r hpose/requirements.txt
+#
+# numpy and opencv-python are already required by the app; onnxruntime is
+# the only addition.  Without it the app still runs - the classical
+# scanner takes over and the human detection stays switched off.
+numpy>=1.24
+opencv-python>=4.8
+onnxruntime>=1.16
