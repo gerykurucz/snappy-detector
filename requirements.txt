@@ -1,9 +1,0 @@
-numpy>=1.24
-opencv-python>=4.8
-onnxruntime>=1.16
-
-# live screen capture (optional, only for `live --source screen`)
-#   dxcam: Windows Desktop Duplication, ~1 ms grabs
-#   mss:   portable fallback (Win/mac/X11), ~2-6 ms region grabs
-mss>=9.0
-dxcam>=0.3.0; platform_system == "Windows"

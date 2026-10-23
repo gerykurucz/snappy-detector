@@ -1,0 +1,65 @@
+"""The hand labelled real picture set.
+
+Every person in these photographs was looked at and labelled by hand,
+so the numbers the evaluation reports are measured against what a
+person would say, not against another model.  A ``null`` means the
+person could not be judged with confidence and is left out.
+"""
+
+#: One entry per picture, in the order of the pictures in the folder.
+#: Each entry lists the people in that picture; each person is
+#: ``(view, stance)`` or ``None`` when the answer was not obvious.
+LABELS = {
+    "000000186042.jpg": [("back", "standing")],
+    "000000132703.jpg": [("front", "crouch")],
+    "000000397351.jpg": [("front", "standing")],
+    "000000438304.jpg": [("front", "standing"), ("side_left", "standing")],
+    "000000485071.jpg": [("side_left", "prone")],
+    "000000273132.jpg": [("front", "crouch")],
+    "000000391375.jpg": [("front", "crouch")],
+    "000000199442.jpg": [(None, "prone")],
+    "000000522889.jpg": [("front", "standing"), (None, None),
+                         ("front", "crouch")],
+    "000000480936.jpg": [("front", "crouch")],
+    "000000573258.jpg": [("front", "standing")],
+    "000000337055.jpg": [("front", "crouch")],
+    "000000560911.jpg": [("front", "crouch")],
+    "000000400794.jpg": [("front", "crouch")],
+    "000000312720.jpg": [None],
+    "000000384808.jpg": [("front", "standing")],
+    "000000284698.jpg": [("front", "crouch")],
+    "000000407002.jpg": [("front", "standing")],
+    "000000278973.jpg": [("front", "crouch")],
+    "000000354547.jpg": [("front", "standing")],
+    "000000356505.jpg": [("front", "crouch")],
+    "000000094944.jpg": [("front", "crouch"), ("front", "crouch"),
+                         ("front", "crouch")],
+    "000000094185.jpg": [None, None],
+    "000000479126.jpg": [("front", "crouch"), ("front", "crouch")],
+    "000000221291.jpg": [("front", "standing")],
+    "000000334309.jpg": [("front", "crouch"), None],
+    "000000162415.jpg": [("front", "standing")],
+    "000000491867.jpg": [("front", "standing"), ("front", "standing"),
+                         ("front", "standing")],
+    "000000055528.jpg": [("front", "crouch")],
+    "000000172648.jpg": [("back", "standing")],
+    "000000124442.jpg": [("front", "standing")],
+    "000000144300.jpg": [("front", "standing"), ("front", "standing")],
+    "000000522393.jpg": [("front", "crouch")],
+    "000000185250.jpg": [("front", "standing")],
+    "000000426836.jpg": [None],
+    "000000485027.jpg": [("front", "jump")],
+    "000000291619.jpg": [("back", "walk"), ("side_right", "walk")],
+    "000000068628.jpg": [("front", "jump")],
+    "000000482735.jpg": [("back", "prone")],
+    "000000357742.jpg": [("back", "standing")],
+    "000000004765.jpg": [("front", "crouch")],
+    "000000049259.jpg": [("side_right", "prone")],
+    "000000485844.jpg": [("front", "standing")],
+    "000000150417.jpg": [("front", "crouch"), ("side_left", "standing")],
+    "000000278705.jpg": [("front", "walk"), ("front", "walk")],
+    "000000039785.jpg": [("back", "crouch")],
+    "000000530820.jpg": [("front", "standing")],
+    "000000334399.jpg": [("front", "standing"), ("front", "standing"),
+                         ("front", "standing")],
+}
