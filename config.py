@@ -213,6 +213,7 @@ DEFAULT_CONFIG = {
     "hpose_lead_ms": 60,
     "hpose_min_conf": 35,
     "hpose_model": "yolo11n-pose.onnx",
+    "blob_watch": True,
 
 
 

@@ -18,13 +18,11 @@ from measurement_utils import CollectOptions, collect_inventory
 from system_core import Inventory
 from maintenance_utils import (DEBLOAT_OPERATIONS,
                               build_selected as build_debloat)
-from maintenance_utils import (CLEANUP_OPERATIONS, MEMORY_OPERATIONS,
-                               POWER_OPERATIONS, REDIST_OPERATIONS,
-                               build_cleanup_steps, build_memory_steps,
+from maintenance_utils import (build_cleanup_steps, build_memory_steps,
                                build_power_steps, build_redist_steps)
 from system_core import SafetyPolicy
 from system_core import (request_timer_resolution, stop_timer_request,
-                         timer_request_active, timer_request_state)
+                         timer_request_active)
 from general_utils import is_elevated, run_ps1
 from maintenance_utils import (all_tweaks, applicable_tweaks,
                               experimental_tweaks, refused_tweaks)
@@ -52,8 +50,6 @@ class EventType(str, Enum):
     PROGRESS = "progress"
     INVENTORY = "inventory"
     SCAN_DONE = "scan_done"
-    MEASURE_DONE = "measure_done"
-    COMPARE_DONE = "compare_done"
     CHAIN_DONE = "chain_done"
     SCRIPT_DONE = "script_done"
     APPLY_DONE = "apply_done"
@@ -345,8 +341,6 @@ class GuiController:
         self.events: queue.Queue[Event] = queue.Queue()
         self.inventory: Inventory | None = None
         self.last_scan: ScanResult | None = None
-        self.last_measure: dict[str, Any] | None = None
-        self.last_compare: dict[str, Any] | None = None
         self.last_script: dict[str, Any] | None = None
         self.state: TaskState = TaskState.IDLE
         self._threads: list[threading.Thread] = []
@@ -684,9 +678,6 @@ class GuiController:
     def timer_active(self) -> bool:
         return timer_request_active()
 
-    def timer_status(self) -> dict[str, Any]:
-        return timer_request_state()
-
     def join(self, timeout: float = 5.0) -> None:
         for t in list(self._threads):
             t.join(timeout=timeout)
@@ -700,39 +691,6 @@ class GuiController:
         }
 
     @staticmethod
-    def cleanup_options() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": o.id, "title": o.title, "group": o.group,
-                "summary": o.summary, "safety": o.safety,
-                "opt_in": o.group == "opt-in",
-                "survey_only_group": o.group == "survey-only",
-            }
-            for o in CLEANUP_OPERATIONS
-        ]
-
-    @staticmethod
-    def redist_options() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": r.id, "title": r.title, "optional": r.optional, "why": r.why,
-                "packages": list(r.packages), "search": r.search,
-            }
-            for r in REDIST_OPERATIONS
-        ]
-
-    @staticmethod
-    def memory_options() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": o.id, "title": o.title, "summary": o.summary,
-                "reversible": o.reversible, "schedulable": o.schedulable,
-                "needs_process_arg": o.needs_process_arg,
-            }
-            for o in MEMORY_OPERATIONS
-        ]
-
-    @staticmethod
     def debloat_options() -> list[dict[str, Any]]:
         return [
             {
@@ -741,13 +699,6 @@ class GuiController:
                 "requires_reboot": o.requires_reboot,
             }
             for o in DEBLOAT_OPERATIONS
-        ]
-
-    @staticmethod
-    def power_options() -> list[dict[str, Any]]:
-        return [
-            {"id": o.id, "title": o.title, "summary": o.summary}
-            for o in POWER_OPERATIONS
         ]
 
     def start_scan(
@@ -925,142 +876,6 @@ class GuiController:
             "outcomes": list(res.outcomes),
         }
 
-    def start_measure(
-        self, *, target: str, samples: int = 200, interval: float = 0.02,
-        transport: str = "auto", port: int = 443, route: bool = False,
-        bufferbloat: bool = False, download_url: str = "",
-        upload_url: str = "", save_path: str | Path | None = None,
-    ) -> bool:
-        return self._run(
-            "measure",
-            lambda: self._measure(
-                target=target, samples=samples, interval=interval,
-                transport=transport, port=port, route=route,
-                bufferbloat=bufferbloat, download_url=download_url,
-                upload_url=upload_url, save_path=save_path,
-            ),
-        )
-
-    def _measure(
-        self, *, target: str, samples: int, interval: float, transport: str,
-        port: int, route: bool, bufferbloat: bool, download_url: str,
-        upload_url: str, save_path: str | Path | None,
-    ) -> None:
-        from measurement_utils import (LoadController, probe,
-                                       run_bufferbloat_test, traceroute)
-
-        payload: dict[str, Any] = {"taken_at": _now(), "target": target}
-        total = sum(
-            x for x in (1 if samples else 0, 1 if route else 0, 1 if bufferbloat else 0)
-        )
-        done = 0
-        if samples:
-            self._emit(
-                EventType.PROGRESS, f"probing {target} ({samples} samples)",
-                progress=done / max(1, total),
-            )
-            res = probe(
-                target, count=samples, interval=interval, transport=transport,
-                port=port,
-            )
-            dist = res.distribution(target)
-            payload["idle"] = dist.as_dict(include_samples=True)
-            payload["samples"] = dist.samples
-            payload["transport"] = res.transport
-            payload["one_line"] = dist.one_line()
-            payload["loss_bursts"] = res.reordering_or_loss_bursts
-            done += 1
-            self._emit(EventType.LOG, dist.one_line())
-        if route:
-            self._emit(
-                EventType.PROGRESS, "tracing route", progress=done / max(1, total)
-            )
-            try:
-                tr = traceroute(target)
-                payload["route"] = tr.as_dict()
-                payload["route_text"] = tr.text()
-            except Exception as exc:
-                payload["route_error"] = f"{type(exc).__name__}: {exc}"
-                self._emit(EventType.LOG, f"traceroute unavailable: {exc}")
-            done += 1
-        if bufferbloat:
-            self._emit(
-                EventType.PROGRESS, "bufferbloat test (idle vs loaded)",
-                progress=done / max(1, total),
-            )
-            dl = LoadController(direction="download", url=download_url)
-            ul = LoadController(direction="upload", url=upload_url)
-            bb = run_bufferbloat_test(
-                target, samples_per_phase=max(30, samples // 2), interval=interval,
-                transport=transport, port=port,
-                download=dl if dl.configured else None,
-                upload=ul if ul.configured else None,
-                on_phase=lambda phase, msg: self._emit(
-                    EventType.LOG, f"[{phase}] {msg}"
-                ),
-            )
-            payload["bufferbloat"] = bb.as_dict()
-            payload["bufferbloat_text"] = bb.text()
-            done += 1
-        if save_path:
-            payload["saved_to"] = str(engine.save_baseline(save_path, payload))
-        self.last_measure = payload
-        self._emit(
-            EventType.MEASURE_DONE, f"measurement complete against {target}",
-            data=payload, progress=1.0,
-        )
-
-    def start_compare(
-        self, *, baseline: str | Path, target: str = "", samples: int = 200,
-        interval: float = 0.02, transport: str = "auto", port: int = 443,
-        metric: str = "p95", min_effect: float = 1.0,
-    ) -> bool:
-        return self._run(
-            "compare",
-            lambda: self._compare(
-                baseline=baseline, target=target, samples=samples,
-                interval=interval, transport=transport, port=port, metric=metric,
-                min_effect=min_effect,
-            ),
-        )
-
-    def _compare(
-        self, *, baseline: str | Path, target: str, samples: int, interval: float,
-        transport: str, port: int, metric: str, min_effect: float,
-    ) -> None:
-        from measurement_utils import Distribution, decide, probe
-
-        data = engine.load_baseline(baseline)
-        b_dist = data.get("idle") or {}
-        if not b_dist:
-            raise ValueError(
-                "the baseline contains no 'idle' distribution; re-run measure with samples"
-            )
-        raw = data.get("samples")
-        if raw:
-            base_samples = [float(x) for x in raw]
-            provenance = "raw samples"
-        else:
-            base_samples = _reconstruct_from_percentiles(b_dist)
-            provenance = "reconstructed from percentiles (weaker evidence)"
-        tgt = target or data.get("target") or ""
-        if not tgt:
-            raise ValueError("no target in the baseline and none supplied")
-        self._emit(EventType.PROGRESS, f"re-measuring {tgt}", progress=0.3)
-        after = probe(
-            tgt, count=samples, interval=interval, transport=transport, port=port
-        ).distribution(tgt)
-        base = Distribution(
-            samples=base_samples, lost=b_dist.get("lost", 0),
-            sent=b_dist.get("sent", 0), label="baseline",
-        )
-        comp = decide(base, after, metric=metric, min_effect=min_effect)
-        out = comp.as_dict()
-        out["tweak_id"] = f"baseline vs now ({tgt})"
-        out["provenance"] = provenance
-        self.last_compare = out
-        self._emit(EventType.COMPARE_DONE, comp.recommendation, data=out, progress=1.0)
-
     def start_chain(
         self, *, target: str, input_count: int = 20, render_samples: int = 40,
         net_samples: int = 30, save_path: str | Path | None = None,
@@ -1195,7 +1010,6 @@ class GuiController:
         payload["duration_s"] = round(time.monotonic() - started, 2)
         if save_path:
             payload["saved_to"] = str(engine.save_baseline(save_path, payload))
-        self.last_measure = payload
         total = payload["chain"]["total_ms"]
         self._emit(
             EventType.CHAIN_DONE,

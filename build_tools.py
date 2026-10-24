@@ -425,33 +425,34 @@ def sign(dist_dir, exe_name):
 
 
 def hpose_bundle_args(project_dir):
-    """The PyInstaller arguments the hpose package needs.
+    """The PyInstaller arguments the human-detection pipeline needs.
 
-    The package is ordinary Python and is found on its own, but the
-    two model files are data, not code, and have to be copied into the
-    build.  Without them the frozen program still starts - it simply
-    falls back to the classical scanner.
+    The hpose_* modules are ordinary app code and are found on their
+    own, but the model files under models/ are data, not code, and
+    have to be copied into the build.  opencv and onnxruntime are only
+    imported lazily, so they are pinned as hidden imports.  Without
+    the models the frozen program still starts - it simply falls back
+    to the classical scanner.
     """
-    models = os.path.join(project_dir, "hpose", "models")
+    models = os.path.join(project_dir, "models")
     args = [
-        "--add-data", "%s%shpose/models" % (models, os.pathsep),
-        "--hidden-import", "hpose",
-        "--hidden-import", "hpose.analyzer",
-        "--hidden-import", "hpose.detector",
-        "--hidden-import", "hpose.bundle",
+        "--add-data", "%s%smodels" % (models, os.pathsep),
+        "--hidden-import", "cv2",
+        "--hidden-import", "onnxruntime",
     ]
     return args
 
 
 def check_hpose(project_dir):
-    """Report whether the hpose files are all present in the project."""
+    """Report whether the human-detection files are all present."""
     missing = []
     wanted = [
-        os.path.join("hpose", "__init__.py"),
-        os.path.join("hpose", "models", "yolo11n-pose.onnx"),
-        os.path.join("hpose", "models",
-                     "face_detection_yunet_2023mar.onnx"),
-        os.path.join("hpose", "hpose_bundle.npz"),
+        "hpose_bridge.py",
+        "hpose_analyzer.py",
+        "hpose_detector.py",
+        os.path.join("models", "yolo11n-pose.onnx"),
+        os.path.join("models", "face_detection_yunet_2023mar.onnx"),
+        os.path.join("models", "hpose_bundle.npz"),
     ]
     for rel in wanted:
         path = os.path.join(project_dir, rel)
@@ -532,9 +533,9 @@ def main(argv=None):
                 print("  %s" % (rel,))
             return 1
         print("hpose: every file is inside the project.")
-        print("  package: hpose/")
-        print("  models:  hpose/models/")
-        print("  heads:   hpose/hpose_bundle.npz")
+        print("  modules: hpose_*.py (bridge: hpose_bridge.py)")
+        print("  models:  models/")
+        print("  heads:   models/hpose_bundle.npz")
         return 0
     return 2
 

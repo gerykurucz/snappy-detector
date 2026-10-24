@@ -614,8 +614,6 @@ MAX_KEYS_PER_MODE = 4
 
 # ===== merged from display.py =====
 
-from typing import Any
-
 from system_core import BudgetComponent, Confidence, Risk, Verdict
 from models import manual, reg_set
 from models import Finding, Step, Tweak
@@ -824,9 +822,6 @@ TWEAKS: tuple[Tweak, ...] = (
 
 # ===== merged from gui_utils.py =====
 # ===== merged from lattool_theme.py =====
-
-from dataclasses import dataclass
-from typing import Any, Callable
 
 
 @dataclass
@@ -1337,16 +1332,6 @@ def apply_deadzone(x, y, deadzone, scale=1.0):
     return x * k, y * k
 
 
-def trigger_value(raw, threshold=DEADZONE_TRIGGER):
-    """Analogue trigger byte -> 0.0..1.0, with the documented deadzone."""
-    try:
-        v = float(raw)
-    except (TypeError, ValueError):
-        return 0.0
-    if v <= threshold:
-        return 0.0
-    return min(1.0, (v - threshold) / float(TRIGGER_FULL - threshold))
-
 
 def normalise_axis(index, value):
     """Clamp a recorded axis value to the range its axis really has."""
@@ -1427,10 +1412,6 @@ def describe_spec(spec):
         mask |= 1 << index
     return format_buttons(mask)
 
-
-def valid_names():
-    """Every accepted spelling, for the GUI's hint line and the console help."""
-    return sorted(set(list(PAD_BUTTONS) + list(ALIASES)))
 
 
 class PadTracker(object):
@@ -1683,7 +1664,6 @@ def describe(index=None, reader=None):
 # ===== merged from recordings.py =====
 
 import json
-import os
 
 import system_core as i18n
 
@@ -1728,25 +1708,6 @@ def pad_axis_range(index):
         return 0, TRIGGER_FULL
     return -AXIS_FULL - 1, AXIS_FULL
 
-
-def describe_step(step):
-    """One step as a short human string, for the console and the log."""
-    try:
-        tag = step[0]
-        if tag == STEP_KEY:
-            return "key(%d,%d)+%dms" % (step[1], step[2], step[3])
-        if tag == STEP_MOVE:
-            return "move(%d,%d)+%dms" % (step[1], step[2], step[3])
-        if tag == STEP_BUTTON:
-            return "btn%d:%s+%dms" % (step[1], "up" if step[2] else "down", step[5])
-        if tag == STEP_PAD_BUTTON:
-            return "pad %s:%s+%dms" % (PAD_BUTTONS[step[1]],
-                                       "up" if step[2] else "down", step[3])
-        if tag == STEP_PAD_AXIS:
-            return "pad %s=%d+%dms" % (PAD_AXES[step[1]], step[2], step[3])
-        return "step%d" % tag
-    except (IndexError, TypeError):
-        return "?"
 
 
 def validate_steps(raw):

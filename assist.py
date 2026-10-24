@@ -20,7 +20,6 @@ import numpy as np
 
 import input_utils as gamepad
 import input_utils as hotkeys
-import reticle
 import vision
 import online
 from system_core import IS_WINDOWS, log
@@ -167,6 +166,27 @@ _PAD_REC_ACTIONS = frozenset((
     "play_macro5"))
 
 
+def _debug_boxes(collect, origin, cx, cy):
+    """Absolute screen boxes for the scan candidates the collector saw.
+
+    ``collect`` entries are (score, ddx, ddy, dist, area, contrast,
+    bw, bh) with ddx/ddy relative to the scan anchor; the debug
+    overlay draws in screen coordinates, so the anchor is planted
+    back through the capture origin.
+    """
+    out = []
+    for item in collect or ():
+        try:
+            _s, ddx, ddy, _d, _a, _ct, bw, bh = item
+            ax = origin[0] + cx + ddx
+            ay = origin[1] + cy + ddy
+            out.append((int(ax - bw / 2.0), int(ay - bh / 2.0),
+                        int(ax + bw / 2.0), int(ay + bh / 2.0)))
+        except Exception:
+            continue
+    return out
+
+
 class App(object):
     def __init__(self, cfg, identity=None):
         self.cfg = cfg
@@ -215,6 +235,11 @@ class App(object):
 
         self.last_snap_time = 0.0
         self.last_snap_pos = None
+
+        #: (centre_x, centre_y, radius, target_box, candidate_boxes)
+        #: in screen coordinates, stashed per scan for the debug
+        #: overlay; None unless debug_visualize is on.
+        self._debug_vis = None
 
         self.dpi_scale = 1.0
 
@@ -855,6 +880,8 @@ class App(object):
             subject_ctx = self._subject_context(origin)
         except Exception:
             subject_ctx = None
+        dbg_collect = [] if bool(self.cfg.get("debug_visualize", False)) \
+            else None
         try:
             res = scan_region(img, cx, cy, self.cfg.values, cap,
                               follow_ctx=follow_ctx,
@@ -863,7 +890,8 @@ class App(object):
                               motion_ctx=motion_ctx,
                               focus_bias=min(1.0, max(0.0, hb)),
                               subject_ctx=subject_ctx,
-                              origin=origin)
+                              origin=origin,
+                              collect=dbg_collect)
         except Exception as exc:
             self.fail_count += 1
             log("scan error: %r" % (exc,))
@@ -897,7 +925,8 @@ class App(object):
                         int(acx + res.target.bw / 2),
                         int(acy + res.target.bh / 2),
                     )
-                self._debug_vis = (dbg_cx, dbg_cy, cap, target_box)
+                self._debug_vis = (dbg_cx, dbg_cy, cap, target_box,
+                                   _debug_boxes(dbg_collect, origin, cx, cy))
             except Exception:
                 pass
         else:
@@ -1044,11 +1073,15 @@ class App(object):
             subject_ctx = self._subject_context(origin)
         except Exception:
             subject_ctx = None
+        dbg_collect = [] if bool(self.cfg.get("debug_visualize", False)) \
+            else None
         try:
             res = scan_region(img, cx, cy, self.cfg.values, cap,
                               follow_ctx=follow_ctx,
                               edge_flags=edges,
-                              subject_ctx=subject_ctx)
+                              subject_ctx=subject_ctx,
+                              origin=origin,
+                              collect=dbg_collect)
         except Exception as exc:
             self.fail_count += 1
             log("scan error: %r" % (exc,))
@@ -1060,6 +1093,28 @@ class App(object):
             return None
 
         self.fail_count = 0
+
+        # Debug visualization - the same stash _scan_center keeps, for
+        # the cursor-anchored scan: circle at the cursor, box around
+        # the picked target, boxes around every candidate.
+        if dbg_collect is not None:
+            try:
+                target_box = None
+                if res.kind == "target" and res.target is not None:
+                    acx = origin[0] + cx + res.target.dx
+                    acy = origin[1] + cy + res.target.dy
+                    target_box = (
+                        int(acx - res.target.bw / 2),
+                        int(acy - res.target.bh / 2),
+                        int(acx + res.target.bw / 2),
+                        int(acy + res.target.bh / 2),
+                    )
+                self._debug_vis = (x, y, cap, target_box,
+                                   _debug_boxes(dbg_collect, origin, cx, cy))
+            except Exception:
+                pass
+        else:
+            self._debug_vis = None
 
         if res.ms > 90 and time.perf_counter() - self._slow_log_at > 30.0:
 

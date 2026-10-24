@@ -197,10 +197,6 @@ def cleanup_report() -> list[dict]:
 
 # ===== merged from memory.py =====
 
-from dataclasses import dataclass
-
-from models import Step, StepKind
-
 
 @dataclass(slots=True)
 class MemoryOp:
@@ -367,10 +363,6 @@ def memory_report() -> list[dict]:
 
 # ===== merged from power.py =====
 
-from dataclasses import dataclass
-
-from models import Step, StepKind
-
 
 @dataclass(slots=True)
 class PowerOp:
@@ -497,35 +489,14 @@ def build_power_steps(
     return steps
 
 
-def power_report() -> list[dict]:
-    return [
-        {
-            "id": "power",
-            "title": "Power (core parking / EPP)",
-            "summary": "Keeps cores awake. Not a latency change; raises power draw.",
-            "items": [
-                {
-                    "id": o.id,
-                    "description": f"{o.title}: {o.summary}",
-                    "reversible": True,
-                    "safety": "Power plans can be switched back at any time.",
-                }
-                for o in POWER_OPERATIONS
-            ],
-            "notes": [],
-        }
-    ]
-
 
 # ===== merged from registry.py =====
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from system_core import TweakValidationError
-from models import Step
 from models import reg_set
 
 _HIVES = {
@@ -672,12 +643,11 @@ def registry_steps(changes: list[RegistryChange]) -> list[Step]:
 # ===== merged from host.py =====
 
 import base64
-from typing import Any
 
 from system_core import (TIMER_TARGET_US, BudgetComponent, Confidence, Risk,
                          TimerResolution, Verdict, clamp_timer_target,
                          query_timer_resolution)
-from models import Finding, Step, Tweak, manual, ps_step, reg_set
+from models import Finding, Tweak, manual, ps_step
 
 _TIMER_RUN_NAME = "SnappyAI Timer Resolution"
 _TIMER_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1140,11 +1110,6 @@ HOST_TWEAKS: tuple[Tweak, ...] = (
 
 # ===== merged from network.py =====
 
-from typing import Any
-
-from system_core import BudgetComponent, Confidence, Risk, Verdict
-from models import Finding, Step, Tweak, manual, ps_step
-
 def _wifi_probe(inv: Any) -> Finding:
     if not inv.nics:
         return Finding(verdict=Verdict.UNKNOWN, summary="no network adapter was found")
@@ -1458,9 +1423,8 @@ NETWORK_TWEAKS: tuple[Tweak, ...] = (
 # ===== merged from debloat.py =====
 
 import re
-from typing import Any
 
-from models import DebloatOp, Step, StepKind, manual, reg_set
+from models import DebloatOp
 
 POLICY_ROOTS: tuple[str, ...] = (
     "HKLM:\\Software\\Policies\\Microsoft\\Windows",
@@ -1926,44 +1890,9 @@ def build_selected(
     return steps
 
 
-def debloat_report() -> list[dict]:
-    return [
-        {
-            "id": "debloat",
-            "title": "Debloat and policy operations",
-            "summary": "Removals and policy changes. Not latency changes.",
-            "items": [
-                {
-                    "id": o.id,
-                    "description": f"{o.title}: {o.summary}",
-                    "reversible": o.reversible,
-                    "safety": o.safety if not o.reversible else "Undo restores prior values.",
-                }
-                for o in DEBLOAT_OPERATIONS
-            ],
-            "notes": [
-                "Wallpaper and browser choice are not debloat and are not offered.",
-                "Executing third-party debloat scripts (WinUtil, Win11Debloat) is "
-                "refused: a downloaded script cannot be reviewed before it runs.",
-                "Cosmetic registry tweaks (theme, taskbar alignment, menu animation) "
-                "are not offered as debloat.",
-                "Package installs go through winget redists, not a second manager.",
-                "Policy writes go directly to the Policy roots, and the "
-                "generated script ends with gpupdate. Some third-party tools "
-                "use the GPO COM API instead - the effect is the same and the "
-                "script stays readable.",
-            ],
-        }
-    ]
-
 
 # ===== merged from tweak_utils.py =====
 # ===== merged from experimental.py =====
-
-from typing import Any
-
-from system_core import BudgetComponent, Confidence, Risk, Verdict
-from models import Finding, Step, StepKind, Tweak
 
 
 def _platform_probe(inv: Any) -> Finding:
@@ -2083,12 +2012,6 @@ EXPERIMENTAL_TWEAKS: tuple[Tweak, ...] = (
 
 # ===== merged from gaming.py =====
 
-from typing import Any
-
-from system_core import BudgetComponent, Confidence, Risk, Verdict
-from models import Finding, Step, Tweak
-from models import manual
-
 
 def _game_mode_probe(inv: Any) -> Finding:
     _ = inv
@@ -2130,10 +2053,6 @@ GAMING_TWEAKS: tuple[Tweak, ...] = (
 
 
 # ===== merged from redist.py =====
-
-from dataclasses import dataclass
-
-from models import Step, StepKind
 
 
 @dataclass(slots=True)
@@ -2271,11 +2190,7 @@ def redist_report() -> list[dict]:
 
 # ===== merged from refused.py =====
 
-from typing import Any
-
-from system_core import BudgetComponent, Confidence, Risk, Verdict
 from system_core import RefusedTweakError
-from models import Finding, Step, Tweak
 
 
 def _refused_probe(summary: str):
@@ -2344,9 +2259,7 @@ REFUSED_TWEAKS: tuple[Tweak, ...] = (
 
 # ===== merged from catalog.py =====
 
-from typing import Iterable
-
-from models import Tweak, validate_catalog
+from models import validate_catalog
 from input_utils import TWEAKS as _DISPLAY_TWEAKS
 
 
@@ -2386,38 +2299,5 @@ def refused_tweaks() -> tuple[Tweak, ...]:
     return tuple(t for t in _ALL if t.is_refused)
 
 
-def iter_enabled(ids: Iterable[str]) -> Iterable[Tweak]:
-    for i in ids:
-        tweak = _TWEAK_BY_ID.get(i)
-        if tweak is not None and not tweak.is_refused:
-            yield tweak
 
-
-def catalog_report() -> list[dict]:
-    return [
-        {
-            "id": t.id,
-            "title": t.title,
-            "component": t.component.value,
-            "confidence": t.confidence.value,
-            "risk": t.risk.value,
-            "experimental": t.experimental,
-            "refused": t.is_refused,
-            "refusal_reason": t.refusal_reason,
-            "requires_reboot": t.requires_reboot,
-            "measure_metric": t.measure_metric,
-            "needs_load": t.needs_load_measurement,
-            "expected_effect": t.expected_effect,
-        }
-        for t in _ALL
-    ]
-
-
-def catalog_invariants() -> dict[str, int]:
-    return {
-        "total": len(_ALL),
-        "applicable": len(applicable_tweaks()),
-        "experimental": len(experimental_tweaks()),
-        "refused": len(refused_tweaks()),
-    }
 

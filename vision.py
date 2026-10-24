@@ -2758,7 +2758,8 @@ def _hpose_box_stats(img, box):
     return area, contrast, sig
 
 
-def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline):
+def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
+                collect=None):
     """Ask the hpose pipeline for a person worth aiming at.
 
     Returns a SnapTarget in the same shape the classical path builds,
@@ -2780,7 +2781,16 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline):
         return None
     ox, oy = (int(origin[0]), int(origin[1])) if origin else (0, 0)
     try:
-        subjects = engine.scan(img, (ox, oy))
+        # the zoom pass gets four scan budgets of headroom: it only
+        # runs on scans that found nobody, so the latency is paid
+        # where there is nothing to click on anyway
+        try:
+            budget_s = min(max(float(cfgv.get("scan_budget_ms", 100)),
+                               60.0), 2000.0) / 1000.0
+        except (TypeError, ValueError):
+            budget_s = 0.1
+        subjects = engine.scan(img, (ox, oy), deadline=deadline,
+                               zoom_deadline=deadline + 3.0 * budget_s)
     except Exception as exc:
         _log("hpose scan failed: %r" % (exc,))
         return None
@@ -2788,6 +2798,19 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline):
         return None
     screen_cx = ox + cx
     screen_cy = oy + cy
+    if collect is not None:
+        for _sb in subjects:
+            try:
+                _scx, _scy = _sb.center
+                _ddx = _scx - screen_cx
+                _ddy = _scy - screen_cy
+                _bw = _sb.width
+                _bh = _sb.height
+                collect.append((_sb.score, _ddx, _ddy,
+                                math.hypot(_ddx, _ddy),
+                                _bw * _bh, 0.0, _bw, _bh))
+            except Exception:
+                continue
     subject = hpose_bridge.pick(subjects, cfgv, screen_cx, screen_cy,
                                 radius)
     if subject is None:
@@ -2827,6 +2850,148 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline):
     return target
 
 
+# ================= the blob watcher ==================================
+
+"""Last-resort person watcher: high-contrast, roughly 1:2 ink blobs.
+
+When the neural path and the classical scanner both come up empty, a
+20-30 px person is still a compact, high-contrast blob about twice as
+tall as it is wide.  That shape survives colour transformations and
+background clutter that defeat both a 640 px-input pose network (the
+person is a smear of upscaled blur down there) and the classical
+scanner (whose luma-weighted diff goes blind on isoluminant colour
+edges, and whose item priors are not person priors).
+
+The watcher looks for exactly that, on a 2x magnified copy of the
+window so a 20 px body spans enough cells to measure an aspect ratio,
+with a colour-aware contrast metric (the per-channel maximum of the
+difference from the local background, not a luma weighting).  It only
+ever runs as the last stage, only when human detection is switched on,
+and only inside the configured search radius.
+"""
+
+BLOB_MIN_H = 14.0      # px at window scale: below this nothing is aimable
+BLOB_MAX_H = 64.0      # px: above this the neural path should have it
+BLOB_ASPECT_LO = 0.30  # w/h: a standing person is ~0.3-0.5, crouched ~0.7
+BLOB_ASPECT_HI = 0.85
+BLOB_FILL_MIN = 0.30   # ink fraction of the bounding box
+BLOB_CONTRAST_MIN = 26.0
+
+
+def _blob_components_cells(cells):
+    """Connected components of a cell mask: boxes in cell units + size."""
+    gh, gw = cells.shape
+    if gh < 2 or gw < 2:
+        return []
+    parent = list(range(gh * gw + 1))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    boxes = {}
+    for y in range(gh):
+        for x in np.flatnonzero(cells[y]):
+            i = y * gw + x
+            boxes[i] = [x, y, x, y]
+            if x and cells[y, x - 1]:
+                union(i, i - 1)
+            if y and cells[y - 1, x]:
+                union(i, i - gw + x)
+            if y and x and cells[y - 1, x - 1]:
+                union(i, i - gw + x - 1)
+            if y and x + 1 < gw and cells[y - 1, x + 1]:
+                union(i, i - gw + x + 1)
+    out = {}
+    for i in list(boxes):
+        r = find(i)
+        b = out.setdefault(r, [boxes[i][0], boxes[i][1],
+                               boxes[i][2], boxes[i][3], 0])
+        b[0] = min(b[0], boxes[i][0]); b[1] = min(b[1], boxes[i][1])
+        b[2] = max(b[2], boxes[i][2]); b[3] = max(b[3], boxes[i][3])
+        b[4] += 1
+    return [(b[0], b[1], b[2] + 1, b[3] + 1, b[4]) for b in out.values()]
+
+
+def _blob_watch(img, cx, cy, radius):
+    """The best person-shaped blob near (cx, cy), or None.
+
+    The mask is built the way the classical scanner builds theirs -
+    strong ink grown through weak ink - because a 20 px person at a
+    hard threshold is not a blob but a pile of horizontal edge strips;
+    the hysteresis is what reconnects them into a body.
+    """
+    a = img.astype(np.float32)
+    if a.ndim == 3 and a.shape[2] > 3:
+        a = a[..., :3]
+    zoom = 2
+    a = np.repeat(np.repeat(a, zoom, axis=0), zoom, axis=1)
+    bg = _box_blur(a, BLUR_WIN)
+    c = np.abs(a - bg).max(axis=2)
+    flat = c.ravel()
+    if flat.size > 20000:
+        flat = flat[::flat.size // 20000 + 1]
+    energy = float(np.percentile(flat, ADAPTIVE_PERCENTILE))
+    thr = max(BLOB_CONTRAST_MIN, min(80.0, energy * 0.40))
+    strong = c > thr
+    weak = c > thr * 0.5
+    for m in (strong, weak):
+        m[:4, :] = False
+        m[-4:, :] = False
+        m[:, :4] = False
+        m[:, -4:] = False
+    strong = _erode(_dilate(strong, 1), 1)
+    weak = _dilate(weak, 1)
+    cs = 4
+    gh, gw = a.shape[0] // cs, a.shape[1] // cs
+    block = lambda m: m[:gh * cs, :gw * cs].reshape(gh, cs, gw, cs).mean(
+        axis=(1, 3))
+    grown = _grow_cells(block(strong) > 0.25, block(weak) > 0.25)
+    best = None
+    best_key = None
+    for bx0, by0, bx1, by1, ncell in _blob_components_cells(grown):
+        bw = (bx1 - bx0) * cs / float(zoom)
+        bh = (by1 - by0) * cs / float(zoom)
+        if not (BLOB_MIN_H <= bh <= BLOB_MAX_H):
+            continue
+        asp = bw / bh if bh > 0 else 0.0
+        if not (BLOB_ASPECT_LO <= asp <= BLOB_ASPECT_HI):
+            continue
+        fill = ncell / float((bx1 - bx0) * (by1 - by0))
+        if fill < BLOB_FILL_MIN:
+            continue
+        y0, y1 = by0 * cs, by1 * cs
+        x0, x1 = bx0 * cs, bx1 * cs
+        m = grown[by0:by1, bx0:bx1]
+        mean_c = float(c[y0:y1, x0:x1][m].mean()) if m.any() else 0.0
+        if mean_c < thr * 0.8:
+            continue
+        bxc = (x0 + x1) / (2.0 * zoom)
+        byc = (y0 + y1) / (2.0 * zoom)
+        dist = math.hypot(bxc - cx, byc - cy)
+        if radius and dist > radius + 10.0:
+            continue
+        score = mean_c * fill * (1.0 - abs(asp - 0.5) / 0.5)
+        key = (round(dist, 1), -score)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = (bxc, byc, bw, bh, mean_c,
+                    ncell * (cs / float(zoom)) ** 2)
+    if best is None:
+        return None
+    bxc, byc, bw, bh, mean_c, area = best
+    return SnapTarget(int(round(bxc - cx)), int(round(byc - cy)),
+                      math.hypot(bxc - cx, byc - cy), float(area),
+                      mean_c, int(round(bw)), int(round(bh)))
+
+
 def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 deadline_ms=None, collect=None, anchor_blind_area=0,
                 motion_ctx=None, focus_bias=0.0, require_tier=0,
@@ -2851,7 +3016,8 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     # classical scanner runs exactly as before.
     if _hpose_enabled(cfgv):
         try:
-            _ht = _hpose_target(img, cx, cy, radius, cfgv, origin, deadline)
+            _ht = _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
+                                collect=collect)
         except Exception as exc:
             _log("hpose stage failed: %r" % (exc,))
             _ht = None
@@ -3849,6 +4015,26 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     ms = (time.perf_counter() - t0) * 1000.0
     _report_drops()
+    # --- the blob watcher: last resort for tiny people -------------
+    # A 20-30 px person can be below the neural detector's floor and
+    # outside the classical scanner's item priors at the same time,
+    # and still be an unmistakable high-contrast 1:2 blob.  It runs
+    # only when human detection is on and BOTH the neural path and the
+    # classical scanner came up empty: running it earlier lets its
+    # occasional clutter blob steal answers the classical scanner
+    # would have got right (measured).  Its size band (14-64 px)
+    # keeps it out of the way of everything bigger.
+    if _hpose_enabled(cfgv) and bool(cfgv.get("blob_watch", True)):
+        try:
+            _bt = _blob_watch(img, cx, cy, radius)
+        except Exception as exc:
+            _log("blob watch failed: %r" % (exc,))
+            _bt = None
+        if _bt is not None:
+            return ScanResult("target", _bt,
+                              (time.perf_counter() - t0) * 1000.0)
+
+
     return ScanResult("none", None, ms)
 
 

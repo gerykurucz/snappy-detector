@@ -1,0 +1,22 @@
+# Snappy AI - runtime requirements (Windows)
+#
+# Required core:
+numpy>=1.24
+mss>=9.0
+
+# Human detection (the hpose_* modules). Without these the app still
+# runs and the classical scanner handles everything (see HPOSE.md):
+opencv-python>=4.8
+onnxruntime>=1.16
+
+# Optional - faster / alternative screen capture backends:
+#   pip install dxcam            -> capture_backend = dxcam (Desktop Duplication)
+#   pip install windows-capture  -> capture_backend = wgc   (Windows.Graphics.Capture)
+# dxcam>=0.0.5
+# windows-capture>=1.0
+
+# Optional - GUI image handling (logo.py has a pure-Python PNG fallback):
+# Pillow>=10.0
+
+# Optional - only for input_backend = "server" (local WebSocket injector):
+# websocket-client>=1.6

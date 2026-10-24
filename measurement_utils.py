@@ -211,8 +211,6 @@ def run_bufferbloat_test(
 # ===== merged from measure_utils.py =====
 # ===== merged from chain.py =====
 
-from typing import Any
-
 ASSUMPTIONS = (
     "input one-way is half the hook round-trip (symmetric dispatch assumed); "
     "render is present-to-vblank on a blank test surface, not game engine time; "
@@ -243,9 +241,6 @@ def build_chain(
 
 
 # ===== merged from collect.py =====
-
-from dataclasses import dataclass
-from typing import Any, Callable
 
 from system_core import Inventory
 
@@ -294,9 +289,6 @@ import re
 import socket
 import subprocess
 import sys
-import time
-from dataclasses import dataclass, field
-from typing import Any
 
 from system_core import SnappyAIError
 from general_utils import console_encoding, silent_kwargs
@@ -460,7 +452,7 @@ def measure(
 # ===== merged from fake_host.py =====
 
 from system_core import OSFamily, Vendor
-from system_core import CPU, DNS, NIC, Display, GPU, Inventory, Power, Timer
+from system_core import CPU, DNS, NIC, Display, GPU, Power, Timer
 
 
 def build_fake_inventory() -> Inventory:
@@ -530,8 +522,6 @@ def build_fake_inventory() -> Inventory:
 # ===== merged from stats.py =====
 
 import math
-from dataclasses import dataclass, field
-from typing import Any
 
 
 def _pct(sorted_samples: list[float], q: float) -> float | None:
@@ -817,33 +807,8 @@ def decide(
     )
 
 
-def diagnose_verdict(
-    base_median: float | None, after_median: float | None, n1: int, n2: int
-) -> tuple[str, str]:
-    if base_median is None or after_median is None:
-        return ("no-data", "a side produced no usable samples")
-    if min(n1, n2) < 30:
-        return (
-            "thin-evidence",
-            f"only {min(n1, n2)} samples on the smaller arm; treat the verdict as weak",
-        )
-    if abs(after_median - base_median) < 1.0:
-        return ("no-effect", "medians differ by under a millisecond")
-    direction = "improvement" if after_median < base_median else "regression"
-    return ("clear-signal", f"median moved {direction} by {abs(after_median - base_median):.2f} ms")
-
 
 # ===== merged from traceroute.py =====
-
-import re
-import socket
-import subprocess
-import sys
-from dataclasses import dataclass, field
-from typing import Any
-
-from system_core import SnappyAIError
-from general_utils import console_encoding, silent_kwargs
 
 
 @dataclass(slots=True)
@@ -941,24 +906,6 @@ class TraceResult:
             lines.append(f"{h.index:>3}  {h.address or '*':<16}  {cells}")
         return "\n".join(lines)
 
-
-def floor_from_geoip(
-    client: tuple[float, float],
-    server: tuple[float, float],
-    stretch: str = "conservative",
-) -> float:
-    import math
-
-    ratios = {"conservative": 1.3, "typical": 1.6, "pessimistic": 2.0}
-    ratio = ratios.get(stretch, 1.3)
-    lat1, lon1 = (math.radians(v) for v in client)
-    lat2, lon2 = (math.radians(v) for v in server)
-    d = (
-        math.sin(lat1) * math.sin(lat2)
-        + math.cos(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
-    )
-    great_circle_km = math.acos(max(-1.0, min(1.0, d))) * 6371.0
-    return great_circle_km * ratio / 200000.0 * 2.0 * 1000.0
 
 
 def traceroute(

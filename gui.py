@@ -78,20 +78,6 @@ def R(fn):
     return fn
 
 
-def apply_language():
-    dead = []
-    for fn in list(RETEXT):
-        try:
-            if fn() is False:
-                dead.append(fn)
-        except tk.TclError:
-            dead.append(fn)
-    for fn in dead:
-        try:
-            RETEXT.remove(fn)
-        except ValueError:
-            pass
-
 
 def _live(w):
     try:
@@ -670,6 +656,14 @@ META = {
                     "small and distant people and costs more time.",
                     "map", (('Small and fast', 'yolo11n-pose.onnx'),
                                ('Medium and sharper', 'yolo11s-pose.onnx'))),
+    "blob_watch": ("Blob watcher fallback",
+                   "When human detection and the classical scanner both "
+                   "find nothing, aim at a high-contrast blob shaped "
+                   "like a person (about twice as tall as wide, 14-64 "
+                   "px) - the last resort for 20-30 px people the "
+                   "neural detector cannot see. Only active while "
+                   "human detection is on.",
+                   "bool", None),
     "follow_enabled": ("Remember the last clicked item",
                        "After a successful snap, similar-looking items "
                        "or items in the same place win ties for a "
@@ -2708,15 +2702,6 @@ class ThemeKit:
 
 
 
-def _clipboard_put(root, text):
-    try:
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        root.update()
-        return True
-    except Exception:
-        return False
-
 
 def registration_line(identity, ent):
     try:
@@ -2727,40 +2712,6 @@ def registration_line(identity, ent):
                   (who or "").strip() or "unknown",
                   online.entitlement_summary(ent))
 
-
-def _language_window(cfg, kit, parent):
-    pal = kit.pal
-    win = tk.Toplevel(parent)
-    kit.attach(win)
-    kit.reg(win, "card")
-    win.title("%s - Language" % APP_NAME)
-    win.configure(background=pal["card"])
-    win.resizable(False, False)
-    win.transient(parent)
-    W, H = 480, 200
-    win.update_idletasks()
-    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-    win.geometry("%dx%d+%d+%d" % (W, H, max(0, (sw - W) // 2),
-                                  max(0, (sh - H) // 3)))
-    try:
-        win.iconbitmap(logo.ico_path())
-    except Exception:
-        pass
-    kit.defocus_hook(win)
-    kit.titlebar_hook(win)
-    title_lbl = tk.Label(win, text="Language", font=F_H1,
-                    bg=pal["card"], fg=pal["text"])
-    kit.reg(title_lbl, "card_text")
-    title_lbl.pack(pady=(14, 2))
-    note = tk.Label(win, text="The interface is English.",
-                    font=F_DESC, bg=pal["card"], fg=pal["muted"],
-                    wraplength=430, justify="center")
-    kit.reg(note, "card_muted")
-    note.pack(pady=(10, 10))
-    close_btn = kit.button(win, "Close", win.destroy)
-    close_btn.pack(pady=(0, 14))
-    win.protocol("WM_DELETE_WINDOW", win.destroy)
-    return win
 
 
 def _login_window(cfg, kit):

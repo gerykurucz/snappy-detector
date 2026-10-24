@@ -207,15 +207,6 @@ def _point_equal(a, b):
     return _encode_point(a) == _encode_point(b)
 
 
-def public_from_secret(secret):
-    if len(secret) != 32:
-        raise ValueError("secret must be 32 bytes")
-    h = _sha512(secret)
-    a = int.from_bytes(h[:32], "little")
-    a &= (1 << 254) - 8
-    a |= 1 << 254
-    return _encode_point(_mul(a, (_Gx, _Gy, 1, _Gx * _Gy % _P)))
-
 
 def sign(secret, message):
     if len(secret) != 32:
@@ -533,13 +524,6 @@ def set_language(lang):
         _LANG = str(lang or "en")
 
 
-def get_language():
-    return _LANG
-
-
-def available_languages():
-    with _I18N_LOCK:
-        return sorted(_CATALOGS)
 
 
 _LANG_CODES = ("en",)
@@ -1113,12 +1097,3 @@ def timer_request_active() -> bool:
     return _TIMER_THREAD is not None and _TIMER_THREAD.is_alive()
 
 
-def timer_request_state() -> dict[str, Any]:
-    with _TIMER_LOCK:
-        out = dict(_TIMER_STATE)
-    out["active"] = timer_request_active()
-    res = query_timer_resolution()
-    out["current_us"] = res.current_us
-    out["min_us"] = res.min_us
-    out["max_us"] = res.max_us
-    return out

@@ -206,8 +206,8 @@ class ReticleOverlay(object):
         self._dbg_win = None
         self._dbg_canvas = None
 
-    def set_debug(self, cx, cy, radius, target_box=None):
-        self._debug = (cx, cy, radius, target_box)
+    def set_debug(self, cx, cy, radius, target_box=None, candidates=None):
+        self._debug = (cx, cy, radius, target_box, candidates or ())
 
     def _screen(self):
         try:
@@ -284,8 +284,9 @@ class ReticleOverlay(object):
 
     def _debug_refresh(self):
         # Fullscreen click-through debug overlay for debug_visualize.
-        # Draws the watched centre circle and the absolute box of the
-        # last picked target in SCREEN space on a dedicated Toplevel
+        # Draws the scan circle, a thin box around EVERY candidate the
+        # scanner saw and the thick box of the last picked target, in
+        # SCREEN space, on a dedicated Toplevel
         # covering the whole virtual screen - the tiny reticle window
         # can show neither. Data arrives through set_debug() (the GUI
         # forwards what the assist engine stashes per centre scan);
@@ -341,12 +342,21 @@ class ReticleOverlay(object):
                 self._debug_destroy()
                 return
         try:
-            cx, cy, radius, box = self._debug
+            cx, cy, radius, box, candidates = self._debug
             c = self._dbg_canvas
             c.delete('all')
             lx, ly = cx - vx, cy - vy
             c.create_oval(lx - radius, ly - radius, lx + radius, ly + radius,
                           outline='#00FFFF', width=2)
+            # every candidate the scanner saw, thin yellow
+            for cb in candidates:
+                try:
+                    x1, y1, x2, y2 = cb
+                    c.create_rectangle(x1 - vx, y1 - vy, x2 - vx, y2 - vy,
+                                       outline='#FFFF00', width=1)
+                except Exception:
+                    continue
+            # the picked target, thick green on top
             if box:
                 x1, y1, x2, y2 = box
                 c.create_rectangle(x1 - vx, y1 - vy, x2 - vx, y2 - vy,

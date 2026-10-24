@@ -96,28 +96,6 @@ def set_dev_repo(value):
 
 
 
-class _Lazy(object):
-    def __init__(self, fn):
-        self._fn = fn
-
-    def __str__(self):
-        return self._fn()
-
-    def __repr__(self):
-        return self._fn()
-
-    def __eq__(self, other):
-        return self._fn() == other
-
-    def __hash__(self):
-        return hash(self._fn())
-
-    def __add__(self, other):
-        return self._fn() + other
-
-    def __radd__(self, other):
-        return other + self._fn()
-
 
 
 LOOPBACK_HOST = "127.0.0.1"
@@ -1050,7 +1028,9 @@ CACHE_BUCKET_SECONDS = 30
 def fetch_entitlements(cfg, fresh=False):
     if not configured(cfg):
         raise OnlineError("entitlement_repo / entitlement_pubkey are "
-                          "not configured (see GITHUB-BACKEND.md)")
+                          "not configured - embed them at build time "
+                          "(see general_utils.py) or set SNAPPYAI_ENT_REPO "
+                          "and SNAPPYAI_ENT_PUBKEY for a dev run")
     if fresh:
         qs = "?ts=%d" % int(time.time())
     else:
@@ -1083,8 +1063,7 @@ def fetch_entitlements(cfg, fresh=False):
             "entitlements.json is stale (published %s UTC, %d h %02d m ago; "
             "limit %d h) - the publisher pipeline is down. Run the "
             "'entitlements' workflow in the private controller repo "
-            "(Actions -> entitlements -> Run workflow); see "
-            "GITHUB-BACKEND.md section 12."
+            "(Actions -> entitlements -> Run workflow)."
             % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(gen)),
                int(age) // 3600, (int(age) % 3600) // 60,
                FRESHNESS_SECONDS // 3600))
@@ -1666,18 +1645,6 @@ def _loopback_listener():
         return httpd
 
 
-def close_loopback():
-    global _HTTPD
-    with _HTTPD_LOCK:
-        httpd, _HTTPD = _HTTPD, None
-    if httpd is None:
-        return
-    try:
-        httpd.shutdown()
-        httpd.server_close()
-    except Exception:
-        pass
-
 
 def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
                         opener=None):
@@ -1687,13 +1654,15 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
     if not p["client_id"]:
         raise OnlineError("provider %r has no client_id yet - paste the "
                           "OAuth app credentials into online.py "
-                          "PROVIDER_TABLE (GITHUB-BACKEND.md §3), or set "
+                          "PROVIDER_TABLE, or set "
                           "SNAPPYAI_OAUTH_%s_CLIENT_ID/_SECRET for a dev "
                           "run without rebuilding"
                           % (provider, provider.upper()))
     if not configured(cfg):
         raise OnlineError("entitlement_repo / entitlement_pubkey are "
-                          "not configured (see GITHUB-BACKEND.md)")
+                          "not configured - embed them at build time "
+                          "(see general_utils.py) or set SNAPPYAI_ENT_REPO "
+                          "and SNAPPYAI_ENT_PUBKEY for a dev run")
 
     _loopback_listener()
 

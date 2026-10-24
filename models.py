@@ -325,17 +325,6 @@ def reg_set(
     )
 
 
-def reg_delete(hive: str, path: str, value_name: str, notes: str = "") -> Step:
-    return Step(
-        kind=StepKind.REGISTRY_DELETE,
-        description=f"Delete {value_name} from {hive}\\{path}",
-        hive=hive,
-        path=path,
-        value_name=value_name,
-        terminal=True,
-        notes=notes or "Snapshot-restored on undo.",
-    )
-
 
 def ps_step(
     description: str, command: str, undo_command: str = "",

@@ -1,45 +1,35 @@
-"""Check that the hpose path is wired into Snappy AI correctly.
+"""Check the human-detection pipeline, end to end.
 
-    python hpose_check.py
+    python hpose_check.py [picture-folder]
 
-It runs the real scan path over a few pictures and checks that
+Two layers:
 
-* the classical scanner still answers when hpose is off,
-* hpose answers when it is on, and says who it found,
-* the view and stance filters are obeyed,
-* the aim point lands on the person and the lead follows a moving one.
+* **unit checks** - platform-neutral, no pictures and no networks
+  needed: the keypoint vocabulary, the geometric body fit, the feature
+  vector, the bundle round trip, the motion model and the tracker.
+  (Ported from the old hpose package self test.)
+* **integration checks** - need opencv, onnxruntime and a few pictures
+  with people in them: the real scan path (``vision.scan_region``)
+  with human detection off and on, the view filter, the aim point and
+  the moving-target lead.
 
-The pictures it uses are the ones in ``%TEMP%\\hpose_check``; drop
-your own in there to check them, or let it use the bundled samples.
+Pictures are taken from the folder given on the command line, or from
+``%TEMP%\\hpose_check`` and ``%TEMP%\\probe\\coco_eval2``.  When none are
+found the integration layer is skipped rather than failed, so the unit
+checks still gate a build on any machine.
 """
 
+import math
 import os
 import sys
+import tempfile
 import time
 
-import cv2
 import numpy as np
 
 import config
 import hpose_bridge
 import vision
-
-
-def _sample_images():
-    """Some pictures with people in them."""
-    out = []
-    for folder in (os.path.join(tempfile_dir(), "probe", "coco_eval2"),
-                   os.path.join(tempfile_dir(), "hpose_check")):
-        if not os.path.isdir(folder):
-            continue
-        for name in sorted(os.listdir(folder)):
-            if name.lower().endswith((".jpg", ".png", ".jpeg")):
-                out.append(os.path.join(folder, name))
-    return out
-
-
-def tempfile_dir():
-    return os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
 
 
 class Check(object):
@@ -55,17 +45,231 @@ class Check(object):
             self.failed.append(name)
             print("  FAIL  %s  %s" % (name, detail))
 
+    def near(self, name, got, want, tol):
+        self.ok(name, abs(float(got) - float(want)) <= tol,
+                "got %.4f want %.4f" % (got, want))
 
-def main():
-    print("hpose integration check")
-    c = Check()
-    images = _sample_images()
-    if not images:
-        print("  no pictures to work with - put some in %s"
-              % (os.path.join(tempfile_dir(), "hpose_check"),))
-        return 1
-    print("  %d picture(s)" % (len(images),))
 
+# ================= unit checks (no pictures, no networks) ============
+
+def test_keypoints(c):
+    from hpose_keypoints import box_iou, derive_joints
+    kps = np.zeros((17, 3), dtype=np.float32)
+    kps[5] = (10, 20, 0.9)
+    kps[6] = (30, 20, 0.9)
+    kps[11] = (12, 50, 0.8)
+    kps[12] = (28, 50, 0.8)
+    d = derive_joints(kps)
+    c.near("derived neck x", d[17][0], 20.0, 0.01)
+    c.near("derived neck y", d[17][1], 20.0, 0.01)
+    c.near("derived pelvis x", d[18][0], 20.0, 0.01)
+    c.near("derived pelvis confidence", d[17][2], 0.9, 0.01)
+    c.near("iou of a box with itself", box_iou((0, 0, 10, 10),
+                                               (0, 0, 10, 10)), 1.0, 1e-6)
+    c.near("iou of disjoint boxes", box_iou((0, 0, 1, 1), (5, 5, 6, 6)),
+           0.0, 1e-6)
+
+
+def test_model3d(c):
+    import hpose_model3d as model3d
+    rng = np.random.default_rng(0)
+    for yaw in (0.0, 45.0, 90.0, 180.0, 270.0):
+        s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
+        s["yaw"] = yaw
+        name = model3d.yaw_to_class(yaw)
+        expect = {0.0: "front", 45.0: "front_right_45", 90.0: "side_right",
+                  180.0: "back", 270.0: "side_left"}[yaw]
+        c.ok("yaw %.0f maps to %s" % (yaw, name), name == expect, name)
+    # a body turned away must not show a confident face
+    front = model3d.face_visibility(0.0)
+    back = model3d.face_visibility(180.0)
+    c.ok("face is confident from the front", front["nose"] > 0.8,
+         str(front["nose"]))
+    c.ok("face is weak from behind", back["nose"] < front["nose"],
+         str(back["nose"]))
+    c.ok("nose is further out from the side",
+         model3d.face_visibility(90.0)["nose"] < 1.0)
+
+
+def test_fit(c):
+    import hpose_model3d as model3d
+    import hpose_posefit as posefit
+    rng = np.random.default_rng(4)
+    front_err = []
+    back_err = []
+    for _ in range(30):
+        s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
+        # the analyser tells the fit what a face detector saw; the test
+        # does the same, using the angle it knows the truth to be
+        face = math.cos(math.radians(s["yaw"])) > 0.34
+        r = posefit.fit(s["kps"], focal_px=s["focal"], face_visible=face)
+        if face:
+            front_err.append(abs(((r["yaw"] - s["yaw"] + 180.0) % 360.0)
+                                  - 180.0))
+        else:
+            # without a face the silhouette is a mirror image, so only
+            # the folded angle can be compared
+            back_err.append(abs(posefit.fold_yaw(r["yaw"])
+                                - posefit.fold_yaw(s["yaw"])))
+    fe = np.array(front_err) if front_err else np.array([0.0])
+    be = np.array(back_err) if back_err else np.array([0.0])
+    # the tolerance is loose on purpose: the template has its arms
+    # straight down, and a real person has them wherever they please,
+    # which costs a few degrees of angle
+    c.ok("geometric yaw is close with a face (median %.1f deg)"
+         % (np.median(fe),), np.median(fe) < 30.0, str(fe))
+    c.ok("geometric yaw is close without a face (median %.1f deg)"
+         % (np.median(be),), np.median(be) < 20.0, str(be))
+    # the repair must replace the uncertain joints and keep the rest
+    kps = np.zeros((17, 3), dtype=np.float32)
+    kps[:, :2] = np.random.default_rng(0).normal(50, 5, (17, 2))
+    kps[:, 2] = 0.9
+    kps[0, 2] = 0.0
+    fit = posefit.fit(kps, focal_px=960.0)
+    repaired = posefit.repair(kps, fit)
+    c.ok("uncertain joints are repaired",
+         repaired[0][0] != kps[0][0] or repaired[0][1] != kps[0][1])
+    c.ok("confident joints are left alone",
+         repaired[5][0] == kps[5][0] and repaired[5][1] == kps[5][1])
+
+
+def test_features(c):
+    import hpose_features as features
+    import hpose_model3d as model3d
+    import hpose_posefit as posefit
+    from hpose_keypoints import Pose
+    rng = np.random.default_rng(5)
+    s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
+    pose = Pose(s["kps"], s["box"], 1.0)
+    fit = posefit.fit(s["kps"], focal_px=s["focal"])
+    vec = features.extract(pose, fit=fit)
+    names = features.feature_names()
+    c.ok("feature vector length matches the names",
+         len(vec) == len(names), "%d vs %d" % (len(vec), len(names)))
+    c.ok("feature vector is finite", bool(np.all(np.isfinite(vec))))
+    # the same sample must give the same vector
+    vec2 = features.extract(Pose(s["kps"], s["box"], 1.0), fit=fit)
+    c.ok("features are repeatable", bool(np.allclose(vec, vec2)))
+    # a broken pose must not produce nonsense
+    empty = Pose(np.zeros((17, 3), dtype=np.float32), (0, 0, 10, 10), 1.0)
+    v3 = features.extract(empty, fit=None)
+    c.ok("features survive an empty pose", bool(np.all(np.isfinite(v3))))
+
+
+def test_bundle(c):
+    from hpose_bundle import Bundle, load_bundle
+    from hpose_classifier import LinearHead
+    rng = np.random.default_rng(6)
+    x = rng.normal(0, 1, size=(200, 6)).astype(np.float32)
+    head = LinearHead(rng.normal(0, 0.1, (6, 2)).astype(np.float32),
+                      np.zeros(2, dtype=np.float32),
+                      classes=["a", "b"])
+    p = head.proba(x)
+    c.ok("probabilities add up", bool(np.allclose(p.sum(axis=1), 1.0)))
+    c.ok("probabilities are positive", bool(np.all(p >= 0.0)))
+    bundle = Bundle(view_head=head, view_classes=["a", "b"],
+                    stance_classes=["standing"])
+    path = os.path.join(tempfile.mkdtemp(prefix="hpose_check_"),
+                        "bundle.npz")
+    bundle.save(path)
+    again = Bundle.load(path)
+    c.ok("bundle round trips",
+         again.view_head is not None
+         and again.view_classes == ["a", "b"])
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    # the shipped bundle must be where the app looks for it
+    shipped = load_bundle()
+    c.ok("the shipped bundle is found and trained",
+         shipped.has_view() and shipped.has_stance(),
+         "expected models/hpose_bundle.npz with both heads")
+
+
+def test_motion(c):
+    from hpose_motion import KalmanBox, MotionModel
+    kb = KalmanBox((0, 0, 20, 40), 0.0)
+    for i in range(1, 11):
+        kb.update((i * 5.0, 0, i * 5.0 + 20, 40), float(i) * 0.05)
+    kb.predict(0.15)
+    vx, vy = kb.velocity
+    c.ok("kalman follows a moving box", vx > 50.0, "vx=%.1f" % (vx,))
+    c.ok("kalman ignores a vertical drift", abs(vy) < 30.0, "vy=%.1f" % (vy,))
+    m = MotionModel()
+    for i in range(20):
+        m.add(i * 0.05, i * 20.0, 100.0)
+    c.ok("motion speed is measured", m.speed > 200.0, str(m.speed))
+    c.ok("motion state is fast", m.state() == "fast", m.state())
+    x, y, ox, oy = m.predict(0.1)
+    c.ok("lead moves the target forward", ox > 0.0, "ox=%.1f" % (ox,))
+    c.near("lead is proportional to the delay", ox, m.speed * 0.1, 60.0)
+
+
+def test_tracker(c):
+    from hpose_tracker import Tracker
+    tr = Tracker(min_hits=1)
+    det = {"box": (10.0, 10.0, 40.0, 90.0), "score": 0.9,
+           "view_probs": {"front": 0.9, "back": 0.1},
+           "stance_probs": {"standing": 0.8, "crouch": 0.2}}
+    tracks = tr.update([det], 0.0)
+    c.ok("tracker creates a track", len(tracks) == 1, str(len(tracks)))
+    c.ok("track has an identity", tracks[0].id == 1)
+    moved = dict(det)
+    moved["box"] = (16.0, 10.0, 46.0, 90.0)
+    tracks = tr.update([moved], 0.1)
+    c.ok("tracker keeps the same identity", len(tracks) == 1
+         and tracks[0].id == 1)
+    c.ok("track counts its hits", tracks[0].hits == 2, str(tracks[0].hits))
+    c.ok("track knows the view", tracks[0].view == "front", tracks[0].view)
+    c.ok("track knows the stance", tracks[0].stance == "standing",
+         tracks[0].stance)
+    c.ok("track is moving", tracks[0].speed > 1.0, str(tracks[0].speed))
+    # a completely different picture must not steal the track
+    far = [{"box": (900.0, 900.0, 950.0, 990.0), "score": 0.9,
+            "view_probs": {"front": 0.9, "back": 0.1},
+            "stance_probs": {"standing": 1.0}}]
+    tracks = tr.update(far, 0.2)
+    c.ok("a distant detection starts a new track", len(tracks) == 2,
+         str(len(tracks)))
+
+
+def unit_checks(c):
+    print("unit checks")
+    test_keypoints(c)
+    test_model3d(c)
+    test_fit(c)
+    test_features(c)
+    test_bundle(c)
+    test_motion(c)
+    test_tracker(c)
+
+
+# ================= integration checks (real scan path) ===============
+
+def tempfile_dir():
+    return os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
+
+
+def _sample_images(extra_dir=None):
+    """Some pictures with people in them."""
+    out = []
+    folders = []
+    if extra_dir:
+        folders.append(extra_dir)
+    folders += [os.path.join(tempfile_dir(), "probe", "coco_eval2"),
+                os.path.join(tempfile_dir(), "hpose_check")]
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        for name in sorted(os.listdir(folder)):
+            if name.lower().endswith((".jpg", ".png", ".jpeg")):
+                out.append(os.path.join(folder, name))
+    return out
+
+
+def integration_checks(c, images, cv2):
+    print("integration checks (%d picture(s))" % (len(images),))
     cfg = dict(config.DEFAULT_CONFIG)
 
     # --- the classical path must be untouched ------------------------
@@ -164,7 +368,11 @@ def main():
         lead_seen = False
         moved = False
         for i in range(8):
-            frame = np.roll(img, -i * 12, axis=1)
+            # 40 px per pass: the motion model's "static" floor is
+            # 60 px/s of REAL time, and the passes run as fast as this
+            # machine scans - a smaller step would measure the CPU,
+            # not the tracker
+            frame = np.roll(img, -i * 40, axis=1)
             res = vision.scan_region(frame, w // 2, h // 2, cfg,
                                      radius=600, origin=(0, 0))
             if res.kind == "target" and res.target is not None:
@@ -176,9 +384,38 @@ def main():
         c.ok("a moving target is measured as moving", moved)
         c.ok("a moving target is led", lead_seen)
 
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    print("hpose check")
+    c = Check()
+
+    unit_checks(c)
+
+    extra = argv[0] if argv else None
+    images = _sample_images(extra)
+    if not images:
+        print("")
+        print("integration checks skipped - no pictures found")
+        print("  put some in %s or pass a folder:"
+              % (os.path.join(tempfile_dir(), "hpose_check"),))
+        print("  python hpose_check.py <picture-folder>")
+    else:
+        try:
+            import cv2
+        except ImportError as exc:
+            print("")
+            print("integration checks skipped - opencv missing (%r)" % (exc,))
+        else:
+            integration_checks(c, images, cv2)
+
     print("")
     print("%d passed, %d failed" % (c.passed, len(c.failed)))
-    return 1 if c.failed else 0
+    if c.failed:
+        for name in c.failed:
+            print("  failed: %s" % (name,))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

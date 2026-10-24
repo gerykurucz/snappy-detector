@@ -8,9 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 
-import os
-import sys
-
 from system_core import (APP_NAME, IS_WINDOWS, attach_log_file, log,
                   log_path)
 from config import DEFAULT_CONFIG, Config
@@ -401,9 +398,14 @@ def _run():
     use_gui = "--console" not in sys.argv
     if use_gui:
         try:
-            import tkinter
-            import tkinter.font
-            from tkinter import ttk, filedialog, messagebox, simpledialog
+            # Availability probe: importing the full tkinter stack proves the
+            # GUI can actually run on this machine; gui.py does the real
+            # imports, so nothing is bound here.
+            import importlib
+            for _probe in ("tkinter", "tkinter.font", "tkinter.ttk",
+                           "tkinter.filedialog", "tkinter.messagebox",
+                           "tkinter.simpledialog"):
+                importlib.import_module(_probe)
         except ImportError as exc:
             print("Tkinter unavailable (%s) - starting in console mode."
                   % (exc,))

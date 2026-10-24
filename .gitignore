@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Runtime state written next to the source tree by the app
+logs/
+*.log
+.snappyai_write_test
+authbrowser*/
+
+# Packaging / build artefacts
+build/
+dist/
+*.spec
+SHA256SUMS.txt
+
+# Environments
+.venv/
+venv/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -182,9 +182,6 @@ def run_diagnosis(
 # ===== merged from runner.py =====
 
 import subprocess
-import sys
-from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -436,8 +433,6 @@ def run_ps1(
 
 import base64
 import hashlib
-import os
-import sys
 
 
 
