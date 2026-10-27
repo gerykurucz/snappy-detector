@@ -1,40 +1,3 @@
-"""Fitting a rigid body template to a set of observed joints.
-
-The view of a body is written all over its silhouette.  When a person
-turns, the shoulders and hips foreshorten by the cosine of the angle,
-the nose swings sideways, and the far limbs tuck behind the near ones.
-This module fits the canonical 3D skeleton to the observed 2D joints
-and recovers
-
-* **yaw** - how far the body is turned, in degrees,
-* **residuals** - how well a rigid standing body explains the pose,
-  which is large for a crouch or a prone figure,
-* **repaired joints** - positions for the joints the detector missed.
-
-Camera model
-------------
-A person standing ``D`` metres from a camera of focal length ``f``
-projects to
-
-    u = u0 + f * X / (D + Z)
-    v = v0 + f * Y / (D + Z)
-
-The depth ``D`` is not free: the apparent size of a body and its
-distance from the camera are the same fact seen twice, so ``D`` is
-searched around the value implied by the observed body height and the
-known focal length.  Leaving it free would let a wildly wrong pose be
-"explained" by a wildly wrong perspective, which is exactly the kind
-of mistake that makes a naive fitter useless.
-
-For a fixed yaw and depth the model is linear in the three remaining
-unknowns (``f/D``, ``u0`` and ``v0``), so the search is a handful of
-batched linear solves rather than a general optimiser.
-
-A mirrored body is symmetric, so the silhouette alone cannot tell a
-person seen from the front from one seen from the back.  That
-ambiguity is handled explicitly: the face landmarks, or a face
-detector, decide which branch of the mirror is the real one.
-"""
 
 from __future__ import annotations
 
@@ -45,33 +8,24 @@ import numpy as np
 import hpose_model3d as model3d
 from hpose_keypoints import N_KP
 
-#: The neutral skeleton every pose is measured against.
 CANON = model3d.build_skeleton(model3d.DEFAULT_PROPORTIONS, "stand")
 
-#: Face joints - the only ones that break the front/back symmetry.
 FACE_JOINTS = (0, 1, 2, 3, 4)
 
 _COARSE_STEPS = 24
 _FINE_STEPS = 13
 _FINE_SPAN = 14.0
 
-#: Joints that follow the torso when it leans.
 UPPER_JOINTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
-#: How far the torso may lean, in degrees.  People lean; a fit that
-#: assumes a rigid upright body is wrong by as much as the lean.
 LEAN_VALUES = (-26.0, -17.0, -9.0, 0.0, 9.0, 17.0, 26.0)
 
-#: Multipliers applied to the depth implied by the observed body size.
 _DEPTH_FACTORS = (0.4, 0.65, 1.0, 1.6, 2.6)
 
-#: Assumed height of a person in metres, used to turn an apparent size
-#: into a distance.
 BODY_HEIGHT_M = 1.72
 
 
 def _normalise(tpl: np.ndarray) -> np.ndarray:
-    """Scale a template so the body is one unit tall."""
     tpl = np.asarray(tpl, dtype=np.float64)
     h = float(tpl[:, 1].max() - tpl[:, 1].min())
     if h < 1e-6:
@@ -79,18 +33,11 @@ def _normalise(tpl: np.ndarray) -> np.ndarray:
     return tpl / h
 
 
-#: The neutral skeleton, normalised so the body is one unit tall.
 CANON_N = _normalise(CANON)
 
 
 def _batch_solve(fx: np.ndarray, fy: np.ndarray, obs: np.ndarray,
                  w: np.ndarray):
-    """Weighted least squares for a whole batch of yaws at once.
-
-    ``fx`` and ``fy`` are ``(K, 17)`` design columns, ``obs`` is
-    ``(17, 2)`` and ``w`` is ``(17,)``.  Returns ``(scale, u0, v0,
-    residual)`` for each of the ``K`` candidates.
-    """
     k = fx.shape[0]
     sw = np.sqrt(np.maximum(w, 0.0))[None, :]
     a = np.zeros((k, 2 * N_KP, 3), dtype=np.float64)
@@ -116,7 +63,6 @@ def _batch_solve(fx: np.ndarray, fy: np.ndarray, obs: np.ndarray,
 
 def _projectors(yaws: np.ndarray, inv_depth: float,
                  template: np.ndarray):
-    """Design columns for a batch of yaws at one depth."""
     pts = model3d.body_to_camera_batch(template, yaws)
     den = 1.0 + inv_depth * pts[:, :, 2]
     den = np.where(np.abs(den) < 1e-3, 1e-3, den)
@@ -124,20 +70,6 @@ def _projectors(yaws: np.ndarray, inv_depth: float,
 
 
 def personalise(obs: np.ndarray, w: np.ndarray, template: np.ndarray):
-    """Reshape the template to match the body's proportions.
-
-    A generic template and a real body rarely share the same
-    measurements, and the mismatch is the single biggest source of
-    error in the fit.  Two numbers are enough to fix it: the torso
-    length (shoulder line to hip line) and the shoulder width, both
-    read straight off the observed joints.  Anthropometric ratios turn
-    the torso length into an expected shoulder width, and the template
-    is then stretched to match.
-
-    The shoulder width is *not* taken from the image on purpose: in the
-    image it is foreshortened by the very angle we are trying to
-    measure, and copying it back would throw that cue away.
-    """
     tpl = np.asarray(template, dtype=np.float64)
     if w[5] + w[6] < 0.5 or w[11] + w[12] < 0.5:
         return tpl
@@ -151,8 +83,6 @@ def personalise(obs: np.ndarray, w: np.ndarray, template: np.ndarray):
     if t_torso < 1e-6 or t_sh < 1e-6:
         return tpl
     f_y = torso_obs / t_torso
-    # anthropometry: the shoulder width is about 0.76 of the torso
-    # length.
     f_x = (0.76 * torso_obs) / t_sh
     out = tpl.copy()
     out[:, 0] *= f_x
@@ -161,7 +91,6 @@ def personalise(obs: np.ndarray, w: np.ndarray, template: np.ndarray):
 
 
 def _leaned(template: np.ndarray, lean_deg: float) -> np.ndarray:
-    """Tip the upper body forward or back about the hips."""
     lean_deg = float(lean_deg)
     if abs(lean_deg) < 1e-6:
         return template
@@ -177,12 +106,6 @@ def _leaned(template: np.ndarray, lean_deg: float) -> np.ndarray:
 
 
 def _search(obs, weights, yaws, mask, depths, template, leans=LEAN_VALUES):
-    """Search yaws, leans and depths together.
-
-    The three parameters are searched as one batch: for every depth and
-    every lean the whole yaw grid is solved at once, and the best of
-    all of them wins.
-    """
     best = None
     lean_list = list(leans)
     for depth in depths:
@@ -205,22 +128,6 @@ def _search(obs, weights, yaws, mask, depths, template, leans=LEAN_VALUES):
 def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         personalise_shape: bool = True, focal_px: float = 960.0,
         body_height_m: float = BODY_HEIGHT_M, depths=None):
-    """Fit the canonical body to observed joints.
-
-    ``kps`` is a ``(17, 3)`` array of ``(x, y, confidence)``.  When
-    ``face_visible`` is given it overrides the keypoint evidence for
-    the front/back decision (``True`` = a face was detected).
-    ``focal_px`` is the focal length of the camera in pixels, which
-    turns the observed body height into a distance.
-
-    The fit runs in two stages.  The first uses the generic template
-    and gives a rough angle; the body is then reshaped to match the
-    observed proportions and the fit is repeated, which sharpens the
-    angle considerably.
-
-    The result is a dict with the recovered yaw, the residual and the
-    repaired joint positions.
-    """
     kps = np.asarray(kps, dtype=np.float64)
     obs = kps[:N_KP, :2]
     conf = kps[:N_KP, 2]
@@ -240,11 +147,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         return out
 
     if face_visible is None:
-        # Without a face detector the keypoint confidences have to
-        # answer the question, and the useful signal is not the face
-        # confidence on its own - a pose detector keeps reporting the
-        # face joints even when the face is hidden.  What matters is
-        # how the face compares with the rest of the body.
         body_conf = float(np.mean(conf[[5, 6, 7, 8, 9, 10, 11, 12, 13,
                                         14, 15, 16]]))
         if body_conf > 1e-6:
@@ -253,7 +155,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
             ratio = 1.0
         face_visible = bool(face_conf >= 0.15 and ratio > 0.6)
 
-    # how far away is this body?  the apparent size gives it away.
     good = base_w > 0
     if good.any():
         h_px = float(obs[good][:, 1].max() - obs[good][:, 1].min())
@@ -271,8 +172,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
     if face_visible:
         mask = np.ones_like(coarse, dtype=bool)
     else:
-        # The silhouette is mirror symmetric, so only the back-facing
-        # branch can be the truth when no face is on show.
         mask = np.array([math.cos(math.radians(y)) < 0.0 for y in coarse])
         if not mask.any():
             mask = np.ones_like(coarse, dtype=bool)
@@ -282,7 +181,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         return out
     out["stage"] = 1
 
-    # --- refine around the winner ---------------------------------
     fine = np.linspace(best[1] - _FINE_SPAN, best[1] + _FINE_SPAN,
                        _FINE_STEPS)
     if face_visible:
@@ -296,7 +194,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         best = refined
         out["stage"] = 2
 
-    # --- reshape the body and try again ----------------------------
     template = CANON_N
     lean = best[6] if len(best) > 6 else 0.0
     if personalise_shape:
@@ -329,7 +226,6 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
 
 
 def repair(kps: np.ndarray, result: dict, conf_threshold: float = 0.25):
-    """Replace uncertain joints with the fitted template positions."""
     kps = np.array(kps, dtype=np.float32, copy=True)
     filled = result.get("filled")
     if filled is None:
@@ -343,7 +239,6 @@ def repair(kps: np.ndarray, result: dict, conf_threshold: float = 0.25):
 
 
 def fold_yaw(yaw: float) -> float:
-    """Fold a yaw into ``[0, 90]`` - the part a silhouette can see."""
     y = abs(float(yaw)) % 360.0
     if y > 180.0:
         y = 360.0 - y
@@ -353,11 +248,6 @@ def fold_yaw(yaw: float) -> float:
 
 
 def fit_quality(result: dict) -> float:
-    """How well the rigid body explains the pose, 0 (bad) to 1 (good).
-
-    The residual is a squared pixel error, so it is divided by the
-    number of joints and by the square of the apparent body size.
-    """
     scale = float(result.get("scale") or 0.0)
     if scale <= 1e-6:
         return 0.0

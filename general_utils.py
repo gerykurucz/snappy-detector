@@ -1,5 +1,4 @@
 from __future__ import annotations
-# ===== merged from diagnose.py =====
 
 import datetime as _dt
 import json
@@ -178,9 +177,6 @@ def run_diagnosis(
     return Diagnosis(log_path=log_path, json_path=json_path, failed_sections=failed,
                      sections=sections)
 
-
-# ===== merged from runner.py =====
-
 import subprocess
 
 
@@ -216,17 +212,10 @@ def silent_kwargs() -> dict:
 
 
 def console_encoding() -> str:
-    """The codec for reading Windows console programs (powershell/ping/tracert).
-
-    They emit the OEM code page (cp852, cp437, ...), NOT the ANSI locale page -
-    decoding with the default locale codec dies on bytes like 0x81. 'oem' maps
-    to the real console CP; errors='replace' at the call sites makes any
-    residual mismatch (e.g. PowerShell 7 emitting UTF-8) undecodable-proof."""
     return "oem" if sys.platform.startswith("win") else "utf-8"
 
 
 def app_dir() -> str:
-    """The folder the running program lives in (the exe folder once built)."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
@@ -238,29 +227,12 @@ def system32_dir() -> str:
 
 
 def powershell_exe() -> str:
-    """Absolute Windows PowerShell path when it exists.
-
-    A bare "powershell" goes through the CreateProcess search order, which
-    tries the application folder and the current directory BEFORE System32
-    - a planted powershell.exe in either would run with this program's
-    rights (the same reason dll_search_paths refuses bare names).
-    """
     cand = os.path.join(system32_dir(), "WindowsPowerShell", "v1.0",
                         "powershell.exe")
     return cand if os.path.isfile(cand) else "powershell"
 
 
 def dll_search_paths(names, where: str = "system32") -> list[str]:
-    """Existing absolute paths for a DLL, safest folder first.
-
-    Bare names are never returned on purpose. LoadLibrary given a bare name
-    walks the launch folder, the current directory and PATH, so a DLL planted
-    in any of those shadows the genuine one and runs with this program's
-    rights. Absolute paths leave no ambiguity about what gets mapped in.
-
-    where: "system32" for Windows components, "appdir" for DLLs that are
-    deliberately shipped next to the executable, "both" for either.
-    """
     roots = []
     if where in ("system32", "both"):
         roots.append(system32_dir())
@@ -276,12 +248,6 @@ def dll_search_paths(names, where: str = "system32") -> list[str]:
 
 
 def dll_pin_ok(path: str) -> bool:
-    """True unless a '<path>.sha256' sidecar exists and disagrees.
-
-    build_tools.py pin writes the sidecar at build time. No sidecar means the
-    user dropped the DLL in by hand, which stays a supported path - the pin is
-    opt-in integrity, not a new requirement.
-    """
     pin = path + ".sha256"
     if not os.path.isfile(pin):
         return True
@@ -427,9 +393,6 @@ def run_ps1(
         code=proc.returncode, output=out[-8000:],
         log_path=str(log_path) if log_path else "",
     )
-
-
-# ===== merged from build_secrets.py =====
 
 import base64
 import hashlib

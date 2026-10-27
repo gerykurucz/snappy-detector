@@ -1,4 +1,3 @@
-# ===== merged from bufferbloat.py =====
 from __future__ import annotations
 
 import threading
@@ -207,10 +206,6 @@ def run_bufferbloat_test(
         )
     return result
 
-
-# ===== merged from measure_utils.py =====
-# ===== merged from chain.py =====
-
 ASSUMPTIONS = (
     "input one-way is half the hook round-trip (symmetric dispatch assumed); "
     "render is present-to-vblank on a blank test surface, not game engine time; "
@@ -238,9 +233,6 @@ def build_chain(
         "total_ms": total,
         "assumptions": ASSUMPTIONS,
     }
-
-
-# ===== merged from collect.py =====
 
 from system_core import Inventory
 
@@ -281,9 +273,6 @@ def collect_inventory(
         note("anti-cheat")
         backend.read_anti_cheat(inv)
     return inv
-
-
-# ===== merged from probe.py =====
 
 import re
 import socket
@@ -333,11 +322,6 @@ class ProbeResult:
 
 
 def _parse_ping_ms(stdout: str) -> float | None:
-    """Locale-proof RTT extraction from one ping reply.
-
-    English "time=35ms"/"time<1ms", Hungarian "idő=35ms", German "Zeit=35ms":
-    every Windows locale keeps the "=<NUMBER> ms" shape, and some locales use
-    a decimal comma. The first match is the reply line (statistics follow)."""
     m = re.search(r"[=<>]\s*(\d+(?:[.,]\d+)?)\s*ms", stdout or "")
     if not m:
         return None
@@ -448,9 +432,6 @@ def measure(
         timeout=timeout,
     ).distribution(target)
 
-
-# ===== merged from fake_host.py =====
-
 from system_core import OSFamily, Vendor
 from system_core import CPU, DNS, NIC, Display, GPU, Power, Timer
 
@@ -517,9 +498,6 @@ def build_fake_inventory() -> Inventory:
         game_dvr_enabled=1,
         usb_selective_suspend=True,
     )
-
-
-# ===== merged from stats.py =====
 
 import math
 
@@ -672,9 +650,6 @@ def _mann_whitney(a: list[float], b: list[float]) -> _TestResult:
 
 
 def _welch(a: list[float], b: list[float]) -> _TestResult:
-    # p is the normal approximation of the t tail (no incomplete beta in
-    # the stdlib); it is only honest from ~8 samples per arm, so smaller
-    # arms answer NaN and decide() treats that as not significant.
     n1, n2 = len(a), len(b)
     if n1 < 8 or n2 < 8:
         return _TestResult(p=float("nan"))
@@ -805,10 +780,6 @@ def decide(
         baseline=base.as_dict(),
         after=after.as_dict(),
     )
-
-
-
-# ===== merged from traceroute.py =====
 
 
 @dataclass(slots=True)
@@ -956,9 +927,6 @@ def traceroute(
             break
     return TraceResult(target=target, resolved_ip=resolved, hops=hops)
 
-
-# ===== merged from render.py =====
-
 METHOD = (
     "real presents on a test swapchain, timed from Present() to the vsync that "
     "displays them via DXGI frame statistics"
@@ -972,7 +940,11 @@ LIMITS = (
 
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
+WS_OVERLAPPEDWINDOW = 0x00CF0000
+WS_CLIPCHILDREN = 0x02000000
+WS_CLIPSIBLINGS = 0x04000000
 SW_SHOWNA = 8
+SW_SHOW = 5
 
 
 def _vcall(ptr: Any, index: int, restype: Any, *argtypes: Any) -> Any:
@@ -990,6 +962,7 @@ def _vcall(ptr: Any, index: int, restype: Any, *argtypes: Any) -> Any:
 def _open_window() -> dict[str, Any]:
     import ctypes
     from ctypes import wintypes
+    import time
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -1024,10 +997,8 @@ def _open_window() -> dict[str, Any]:
             ("hIconSm", wintypes.HICON),
         ]
 
-    # Explicit prototypes: default c_int restypes would truncate HWND/
-    # HINSTANCE on x64. Win64 handles are documented 32-bit-sign-extended
-    # so the untyped calls happened to work - typed ones must not rely on
-    # that quirk.
+    CS_OWNDC = 0x0020
+
     kernel32.GetModuleHandleW.restype = ctypes.c_void_p
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     user32.RegisterClassExW.restype = wintypes.ATOM
@@ -1042,24 +1013,33 @@ def _open_window() -> dict[str, Any]:
     user32.UpdateWindow.argtypes = [wintypes.HWND]
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD]
+    LWA_ALPHA = 0x00000002
     hinst = kernel32.GetModuleHandleW(None)
     cls = WNDCLASSEXW()
     cls.cbSize = ctypes.sizeof(WNDCLASSEXW)
     cls.lpfnWndProc = _wndproc
     cls.hInstance = hinst
     cls.lpszClassName = "SnappyAIPresentProbe"
+    cls.style = CS_OWNDC
     if not user32.RegisterClassExW(ctypes.byref(cls)):
         raise OSError("RegisterClassEx failed")
     sw = user32.GetSystemMetrics(0)
     sh = user32.GetSystemMetrics(1)
+    w, h = 128, 128
+    x = (sw - w) // 2
+    y = (sh - h) // 2
     hwnd = user32.CreateWindowExW(
-        0, "SnappyAIPresentProbe", "present probe", WS_POPUP | WS_VISIBLE,
-        max(0, sw - 96), max(0, sh - 128), 64, 64, None, None, hinst, None,
+        0x00080008, "SnappyAIPresentProbe", "present probe", WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        x, y, w, h, None, None, hinst, None,
     )
     if not hwnd:
         raise OSError("CreateWindowEx failed")
+    user32.SetLayeredWindowAttributes(hwnd, 0, 0, 0x00000002)
     user32.ShowWindow(hwnd, SW_SHOWNA)
     user32.UpdateWindow(hwnd)
+    time.sleep(0.2)
 
     def close() -> None:
         try:
@@ -1170,6 +1150,7 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
         ]
 
     class FRAME_STATS(ctypes.Structure):
+        _pack_ = 8
         _fields_ = [
             ("PresentCount", wintypes.UINT),
             ("PresentRefreshCount", wintypes.UINT),
@@ -1192,6 +1173,8 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
     ]
     d3d11.D3D11CreateDeviceAndSwapChain.restype = ctypes.c_long
 
+    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT = 0x2
+
     def make_desc(effect: int) -> SWAP_DESC:
         desc = SWAP_DESC()
         desc.BufferDesc.Width = 64
@@ -1205,24 +1188,43 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
         desc.OutputWindow = hwnd
         desc.Windowed = True
         desc.SwapEffect = effect
+        desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
         return desc
 
+    # Try swap effects, verify Present works
+    swap_effects = [(4, "flip-discard"), (0, "discard")]  # try flip-discard first
+    driver_types = [(1, "hardware"), (5, "WARP")]
     effect = ""
-    for code, name in ((4, "flip-discard"), (0, "discard")):
-        hr = d3d11.D3D11CreateDeviceAndSwapChain(
-            None, 1, None, 0, level, 1, 7, ctypes.byref(make_desc(code)),
-            ctypes.byref(swapchain), ctypes.byref(device),
-            ctypes.byref(out_level), ctypes.byref(context),
-        )
-        if hr == 0 and swapchain.value:
-            effect = name
+    for driver_type, driver_name in driver_types:
+        for code, swap_name in swap_effects:
+            import logging
+            logging.warning(f"Trying driver={driver_name}, swap effect={code} ({swap_name})")
+            hr = d3d11.D3D11CreateDeviceAndSwapChain(
+                None, driver_type, None, 0, level, 1, 7, ctypes.byref(make_desc(code)),
+                ctypes.byref(swapchain), ctypes.byref(device),
+                ctypes.byref(out_level), ctypes.byref(context),
+            )
+            logging.warning(f"D3D11CreateDeviceAndSwapChain driver={driver_name}, swap={code} hr={hr}, swapchain={swapchain.value}")
+            if hr != 0 or not swapchain.value:
+                continue
+            # Test Present
+            present_fn = _vcall(swapchain, 8, ctypes.c_long, wintypes.UINT, wintypes.UINT)
+            test_hr = present_fn(swapchain, 1, 0)
+            logging.warning(f"Test Present driver={driver_name}, swap={code} hr={test_hr}")
+            if test_hr == 0:
+                effect = swap_name
+                break
+            # Clean up and try next
+            release_fn = _vcall(swapchain, 2, wintypes.ULONG)
+            release_fn(swapchain)
+            swapchain = ctypes.c_void_p()
+            device = ctypes.c_void_p()
+            context = ctypes.c_void_p()
+        if effect:
             break
     if not effect:
-        raise OSError("D3D11 device creation failed")
+        raise OSError("D3D11 device creation failed (tried hardware and WARP, discard and flip-discard)")
 
-    # vtable: IUnknown 0-2, IDXGIObject 3-6, IDXGIDeviceSubObject::GetDevice 7,
-    # Present 8, GetBuffer 9, SetFullscreenState 10, GetFullscreenState 11,
-    # GetContainingOutput 12, GetFrameStatistics 13, GetLastPresentCount 14.
     present = _vcall(swapchain, 8, ctypes.c_long, wintypes.UINT, wintypes.UINT)
     getstats = _vcall(swapchain, 13, ctypes.c_long, ctypes.POINTER(FRAME_STATS))
     release = _vcall(swapchain, 2, wintypes.ULONG)
@@ -1280,11 +1282,15 @@ def measure_present(
     try:
         try:
             win = _open_window()
+            import logging
+            logging.warning(f"Window created: hwnd={win['hwnd']}")
         except OSError as exc:
             return {"ok": False, "error": f"test window failed: {exc}",
                     "method": METHOD, "limits": LIMITS}
         try:
             dev = _open_device(win["hwnd"])
+            import logging
+            logging.warning(f"Device created successfully")
         except OSError as exc:
             return {"ok": False, "error": f"device failed: {exc}",
                     "method": METHOD, "limits": LIMITS}
@@ -1314,12 +1320,18 @@ def measure_present(
         for round in range(3):
             s_pre = stats()
             for i in range(warmup):
-                present(1, 0)
+                hr = present(1, 0)
+                if hr != 0:
+                    break
                 pump()
                 if on_progress is not None and round == 0 and i % 10 == 0:
                     on_progress(f"render warmup {i + 1}/{warmup}")
             s_post = stats()
             if s_post["hr"] == 0 and s_post["prc"] > s_pre.get("prc", -1):
+                alive = True
+                break
+            elif s_post["hr"] != 0:
+                # GetFrameStatistics failed, but Present works - use fallback
                 alive = True
                 break
         if not alive:
@@ -1328,15 +1340,34 @@ def measure_present(
                     "window may be covered, minimized, or the session headless",
                     "method": METHOD, "limits": LIMITS}
         lats: list[float] = []
-        syncs: list[int] = []
+        intervals: list[float] = []
         timeouts = 0
+        use_stats = True
+        last_present_time = None
         for i in range(samples):
             s0 = stats()
             if s0["hr"] != 0:
+                # GetFrameStatistics failed, fall back to timing Present calls
+                use_stats = False
+                t0 = now_ms()
+                if present(1, 0) != 0:
+                    continue
+                t1 = now_ms()
+                lat = t1 - t0
+                lats.append(lat)
+                if last_present_time is not None:
+                    intervals.append(t0 - last_present_time)
+                last_present_time = t0
+                timeouts = 0
+                if on_progress is not None:
+                    on_progress(f"render sample {i + 1}/{samples} (fallback timing)")
                 continue
             t0 = now_ms()
             if present(1, 0) != 0:
                 continue
+            if last_present_time is not None:
+                intervals.append(t0 - last_present_time)
+            last_present_time = t0
             deadline = time.monotonic() + 1.0
             s1 = None
             while time.monotonic() < deadline:
@@ -1355,7 +1386,6 @@ def measure_present(
                 continue
             timeouts = 0
             lats.append(s1["qpc"] / freq * 1000.0 - t0)
-            syncs.append(s1["qpc"])
             if on_progress is not None:
                 on_progress(f"render sample {i + 1}/{samples}")
         if len(lats) < 2:
@@ -1363,8 +1393,8 @@ def measure_present(
                     "error": "no usable presents; window may be occluded",
                     "method": METHOD, "limits": LIMITS}
         ordered = sorted(lats)
-        iv = sorted(b - a for a, b in zip(syncs, syncs[1:]))
-        iv_ms = sorted(v / freq * 1000.0 for v in iv)
+        iv = sorted(intervals)
+        iv_ms = iv
         try:
             adapter = _adapter_desc()
         except Exception:

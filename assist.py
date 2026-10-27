@@ -873,8 +873,12 @@ class App(object):
                 except Exception:
                     motion_ctx = None
         try:
+            subject_priority_on = (bool(self.cfg.get("subject_priority", False))
+                                  or bool(self.cfg.get("subject_only", False)))
             hb = float(self.cfg.get("subject_focus_bias", 0) or 0) / 100.0
         except (TypeError, ValueError):
+            hb = 0.0
+        if not subject_priority_on:
             hb = 0.0
         try:
             subject_ctx = self._subject_context(origin)
@@ -1471,6 +1475,7 @@ class App(object):
         with self._state_lock:
             had_hold = self._center_hold is not None
             self._center_hold = None
+            self._guide_hold = None
             if had_hold:
                 self._center_hold_tomb = time.perf_counter()
             need_up = self._center_syn_down
@@ -2136,6 +2141,9 @@ class App(object):
                     self._tracker.reset()
                 except Exception:
                     pass
+                self._chase_ref = None
+                self._center_prev = None
+                self._cam_prev = None
         if need_up:
             try:
                 self._button(False)
@@ -2969,7 +2977,7 @@ class App(object):
 
 
             try:
-                still = bool(user32.GetAsyncKeyState(VK_RBUTTON) & 0x8000)
+                still = bool(user32.GetAsyncKeyState(VK_RBUTTON) & 0x8000)                         or self._pad_right_down
             except Exception:
                 still = True
             if not (still and self._armed_now()):
@@ -3304,11 +3312,13 @@ class App(object):
 
         px/py: EMA smoothing state (previous_x/y). cx/cy: fractional
         carry so sub-pixel EMA output accumulates instead of rounding
-        down to zero and stalling slow approaches. last_t: cycle
+        down to zero and stalling slow approaches. rem_x/rem_y: fractional
+        carry for _nudge speed residuals. last_t: cycle
         stamp for the time-derived EMA weight. last_tap: last
         press-unit tap (repeat_hold backends only).
         """
         return {"px": 0.0, "py": 0.0, "cx": 0.0, "cy": 0.0,
+                "rem_x": 0.0, "rem_y": 0.0,
                 "last_t": time.perf_counter(), "last_tap": 0.0}
 
     def _center_hold_cycle(self):
@@ -4029,6 +4039,7 @@ class App(object):
         with self._state_lock:
             self.follow_lock = None
             self._center_follow = None
+            self._guide_hold = None
             self._pick_at = None
             self._chase_ref = None
             self._track.clear()

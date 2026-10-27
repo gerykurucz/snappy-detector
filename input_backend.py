@@ -1,45 +1,3 @@
-"""Mouse input delivery backends: Windows SendInput (default) and an
-optional Interception backend (github.com/oblitum/Interception).
-
-Why both exist
---------------
-SendInput is what every accessibility tool uses: no driver, works out of
-the box, and Snappy AI's own low-level hooks recognise injected events
-(LLMHF_INJECTED) so assistance never feeds itself. Its one weakness is
-that a minority of games and Raw-Input applications ignore synthetic
-events entirely - clicks simply never arrive there.
-
-Interception injects at the driver layer, below Raw Input, so those
-applications see the click as genuine hardware. The price: it needs a
-signed kernel driver installed by the user (interception.exe install +
-reboot). No DLL is involved anywhere: strokes go straight to the
-driver, which is also why driver updates can never desync a bundled
-library. That friction is why Win32 stays the DEFAULT and
-Interception is strictly opt-in.
-
-Design rules (mirrors the capture_backend pattern)
---------------------------------------------------
-- Pure stdlib ctypes; imports cleanly on any OS (the GUI reads
-  available() to decorate its dropdown), touches the driver only
-  when the user actually selects "interception".
-- NEVER fatal: any failure (no driver, device busy, send
-  refused) logs once and degrades to Win32 for that call AND for all
-  future calls, so a half-installed setup can never eat a click.
-- Coordinates: absolute SetCursorPos is emulated with per-move relative
-  strokes (x = target - current cursor). Relative deltas are exactly
-  what the mouse protocol carries, so apps that read raw motion stay in
-  sync with where the pointer actually is.
-
-Backend contract (what assist.py / win32rt.py consume):
-    move(x, y)             teleport/warp the cursor to screen (x, y)
-    nudge(dx, dy)          RELATIVE motion step (game-aim steering: the
-                           view rotates by the delta; the cursor is never
-                           teleported, so raw-input games stay in sync)
-    button(down)           left-button transition (True = press)
-    ok_for_button()        True if a real button event may be sent here
-    note_failure(where)    log-once + permanent degrade to Win32
-    available()            classmethod: is this even possible right now?
-"""
 
 import ctypes
 import threading
@@ -48,27 +6,11 @@ import time
 import input_utils as gamepad
 from system_core import IS_WINDOWS, log
 
-DEFAULT_SERVER_URL = "ws://127.0.0.1:19561"
-
-
 class _Timeout(Exception):
-    """Raised by _call_with_timeout when the callee never answered."""
+    pass
 
 
 def _call_with_timeout(fn, timeout, *args):
-    """Run fn(*args) on a daemon thread; RETURN its result, or raise
-    _Timeout if it has not answered within `timeout` seconds.
-
-    v8.61: this used to signal a timeout by returning None - which is
-    indistinguishable from a function that legitimately answers "nothing
-    found". Our discovery walk returns None exactly that way, so every
-    empty answer was mis-reported as "device discovery did not return
-    within 8 s (driver installed but wedged)" even when the driver had
-    answered instantly and simply listed no mouse. Raising makes the two
-    cases impossible to confuse. The ctypes call itself is never
-    cancellable, so a genuinely wedged driver still leaves one parked
-    daemon thread behind - harmless for a GUI process that would
-    otherwise hang at startup forever."""
     box = {}
 
     def run():
@@ -88,17 +30,6 @@ def _call_with_timeout(fn, timeout, *args):
 
 
 def _set_mouse_accel(enabled):
-    """Set Enhance-pointer-precision on/off; returns the previous state
-    (None when it could not be read, so callers can still restore).
-
-    SPI_GETMOUSE/SPI_SETMOUSE carry [MouseSpeed, MouseThreshold1,
-    MouseThreshold2]; "Enhance pointer precision" IS MouseSpeed -
-    element 0. Windows ballistics scale fast synthetic flicks
-    unpredictably, so the Interception backend turns EPP off once for
-    the whole session (not per stroke: each write broadcasts
-    WM_SETTINGCHANGE to every top-level window) and restores it on
-    close(). Import-safe anywhere: all failures are silent no-ops.
-    """
     try:
         import ctypes as _c
         prev = (_c.c_int * 3)()
@@ -117,15 +48,6 @@ _ROLE_NOTED = set()
 
 
 def note_mouse_role(backend, index):
-    """Say once why a non-left role button is not delivered here.
-
-    The driver and server backends are proven against the left button only.
-    Inventing button constants for a kernel driver, or code names for a server
-    whose vocabulary is not documented in this tree, is exactly the guess that
-    fails silently inside a game - so the role falls back to the standard
-    Windows method (assist._button does that on a False return) and the log
-    says so once instead of per click.
-    """
     key = (backend, int(index))
     if key in _ROLE_NOTED:
         return
@@ -135,11 +57,6 @@ def note_mouse_role(backend, index):
 
 
 class Win32Backend(object):
-    """The default: SetCursorPos warps plus SendInput button events.
-
-    Thin indirection over the exact calls used since v1 - behaviour is
-    bit-for-bit unchanged when this backend is active.
-    """
 
     name = "win32"
 
@@ -152,12 +69,6 @@ class Win32Backend(object):
         win32rt.user32.SetCursorPos(int(x), int(y))
 
     def nudge(self, dx, dy):
-        """One relative motion step (SendInput MOUSEEVENTF_MOVE).
-
-        This is what aim steering uses while a button is held: the
-        delta rotates the view in raw-input games and walks the
-        pointer on the desktop, without ever teleporting it.
-        """
         import ctypes
         import win32rt
         dx, dy = int(round(dx)), int(round(dy))
@@ -172,13 +83,6 @@ class Win32Backend(object):
                                              ctypes.sizeof(win32rt.INPUT)))
 
     def button(self, down, index=0):
-        """One transition of ANY mouse button: 0=left ... 4=second side.
-
-        Through win32rt.inject_mouse rather than a hand-built INPUT here,
-        because the two side buttons need mouseData as well as the XDOWN/XUP
-        flags - and that table already exists and is the same one recording
-        playback uses, so a click and a replayed click cannot diverge.
-        """
         import win32rt
         return bool(win32rt.inject_mouse(index, down))
 
@@ -190,27 +94,6 @@ class Win32Backend(object):
 
 
 class InterceptionBackend(object):
-    """Driver-level injection straight into keyboard.sys/mouse.sys (opt-in).
-
-    Talks to the kernel driver DIRECTLY through kernel32 (CreateFileA +
-    DeviceIoControl on \\\\.\\interception00..19) with 24-byte HHHHIiiI
-    strokes - byte-identical to what interception-python packs, verified
-    stroke-for-stroke against it on a live driver. NO interception.dll
-    is loaded, needed, or searched for.
-
-    Why not the DLL: its interception_send() takes the *user-side*
-    InterceptionMouseStroke (state, flags, rolling, x, y) and remaps it
-    into the driver layout itself - so handing it an already-packed
-    driver stroke comes out axis-swapped (a +40 X step left as +40 Y),
-    while a hand-rolled struct comes out a motionless no-op that still
-    reports "1 stroke written". Both failure modes are silent and
-    neither can happen when the bytes go straight to the driver.
-
-    Device choice mirrors interception-python's auto_capture_devices:
-    the first mouse slot (interception10..19) whose hardware ID reads
-    back. Sends go through that handle; every other slot is closed -
-    this backend never receives, so parked handles would only leak.
-    """
 
     name = "interception"
 
@@ -291,14 +174,6 @@ class InterceptionBackend(object):
                 "unpredictably); it is restored when the app quits.")
 
     def _open_devices(self):
-        """Open all 20 control slots + sync events; return the first
-        mouse slot (10..19) whose hardware ID reads back, else None.
-
-        A slot that will not open, sync, or identify is skipped, never
-        fatal: one wedged slot must not veto a healthy driver. Every
-        slot that is not chosen is closed again - parked handles would
-        only leak, this backend never receives.
-        """
         self._handles = [None] * self._MOUSE_SLOTS
         for num in range(self._MOUSE_SLOTS):
             try:
@@ -337,7 +212,6 @@ class InterceptionBackend(object):
         return None
 
     def _set_event(self, h, ev):
-        """Sync-event handshake, as oblitum's create_context does."""
         import ctypes as _c
         buf = (_c.c_void_p * 2)(ev, 0)
         done = (_c.c_uint32 * 1)(0)
@@ -349,7 +223,6 @@ class InterceptionBackend(object):
         return bool(ok)
 
     def _hwid(self, num):
-        """Hardware ID string of slot `num`, or None when unreadable."""
         import ctypes as _c
         slot = self._handles[num]
         if slot is None:
@@ -396,13 +269,6 @@ class InterceptionBackend(object):
 
     @classmethod
     def available(cls):
-        """Cheap check for the GUI: any mouse control slot opens.
-
-        Safe off Windows; never raises. Results expire after 30 s so
-        installing the driver while the app runs takes effect without
-        a relaunch. Runs on the GUI's worker thread; a wedged driver
-        can only park that daemon thread, bounded by the timeout.
-        """
         if not IS_WINDOWS:
             return False
         _now = time.monotonic()
@@ -449,21 +315,15 @@ class InterceptionBackend(object):
                             int(x), int(y), 0)
 
     def _move_stroke(self, dx, dy):
-        """One relative-motion stroke (flags=0, no buttons)."""
         return self._pack(self._MOUSE_MOVE_RELATIVE, 0, 0, dx, dy)
 
     def _button_stroke(self, down):
-        """One button stroke (flags=ABSOLUTE, x=y=0), exactly what
-        interception-python's mouse_down/mouse_up pack - the layout
-        Unibot proves against this exact driver."""
         return self._pack(self._MOUSE_MOVE_ABSOLUTE,
                           self._MOUSE_LEFT_DOWN if down
                           else self._MOUSE_LEFT_UP,
                           0, 0, 0)
 
     def _write(self, payload):
-        """One ioctl carrying len(payload)/24 strokes. Returns strokes
-        written, or -1 on transport failure."""
         import ctypes as _c
         buf = (_c.c_ubyte * len(payload))(*payload)
         done = (_c.c_uint32 * 1)(0)
@@ -494,22 +354,11 @@ class InterceptionBackend(object):
     _MAX_STROKE_TRAVEL = 400
 
     def move(self, x, y):
-        """Move the cursor to absolute (x, y).
-
-        Short hops go as relative strokes with a settle-and-correct
-        loop (driver-level motion passes through pointer speed and DPI
-        exactly like a hand). Distances beyond _MAX_STROKE_TRAVEL use a
-        SetCursorPos warp instead: four 128 px strokes can only cover
-        ~512 px and the loop silently stops short of farther targets,
-        leaving the next click at the wrong place. The warp is honest
-        because the caller treats every move as a teleport anyway.
-        """
         import win32rt
         tx, ty = int(x), int(y)
         try:
             cx, cy = win32rt.get_cursor_pos()
         except Exception:
-            # Transient failure: fall back without degrading
             win32rt.user32.SetCursorPos(tx, ty)
             win32rt.user32.SetCursorPos(tx, ty)
             return
@@ -567,18 +416,9 @@ class InterceptionBackend(object):
                 pass
 
     def nudge(self, dx, dy):
-        """One relative motion step as a single move-only stroke.
-
-        Fire-and-forget on purpose: per-frame aim steering must never
-        do the settle-and-correct cursor loop that move() does (three
-        cursor reads per step would triple the cost of every steering
-        frame and fight the game's own pointer management). A dropped
-        step simply retries next frame; _send() degrades honestly.
-        """
         dx, dy = int(round(dx)), int(round(dy))
         if not dx and not dy:
             return True
-        # EPP was disabled once, at init - no per-stroke setting churn.
         return self._send(self._move_stroke(dx, dy), "nudge")
 
     def __del__(self):
@@ -589,13 +429,6 @@ class InterceptionBackend(object):
                 pass
 
     def _expect_now(self, kind):
-        """Ledger one synthetic button event at the live cursor.
-
-        Called BEFORE the stroke goes out; the hook consumes it on
-        arrival instead of mistaking it for the user's hand. Cursor
-        read failure degrades to position-agnostic (kind + fresh).
-        Never raises into the send path.
-        """
         try:
             import win32rt
             cx, cy = win32rt.get_cursor_pos()
@@ -607,12 +440,6 @@ class InterceptionBackend(object):
             pass
 
     def consume_expected(self, wparam, x, y):
-        """True when this hook event is our own synthetic output.
-
-        wparam is the raw mouse message; only LEFT transitions are
-        ever ledgered (every other button passes through untouched).
-        Unknown backends/ doubles answer False via getattr.
-        """
         try:
             if wparam == 0x0201:
                 kind = "down"
@@ -635,20 +462,6 @@ class InterceptionBackend(object):
         return self.ok_for_button()
 
     def send_click(self, index=0):
-        """One complete synthetic click as a SINGLE two-stroke packet
-        (down+up delivered in one interception_send transaction). There is
-        NO hold between the transitions - the driver queues them back to
-        back; the randomized sleep happens AFTER the send and only paces
-        the next click. Borrowed from connorabs'
-        osu!mania pixel-trigger engine, which sends tap pairs atomically:
-        one kernel transaction means nothing interleaves between down and
-        up, and the driver's own queue paces the gap instead of Python
-        thread scheduling.
-
-        Returns True if the whole packet went out. False = backend
-        degraded (caller must hand BOTH events to Win32 itself - that is
-        exactly what assist._click does on False, so a mid-call failure
-        can never leave the logical button stuck)."""
         import random
         if index:
             note_mouse_role("Driver input", index)
@@ -666,8 +479,6 @@ class InterceptionBackend(object):
 
 
     def _send_count(self, payload, count, what):
-        """Send `count` strokes in ONE ioctl transaction, under the
-        same lock _send uses (the atomic tap pair relies on this)."""
         with self._lock:
             if self._degraded or self._handle is None:
                 return False
@@ -677,10 +488,6 @@ class InterceptionBackend(object):
             return True
 
     def _send(self, payload, what):
-        """Deliver one 24-byte stroke. Returns True on success. NEVER
-        swallows a failure silently: any refused/errored send degrades
-        the backend AND returns False, so callers can hand the event
-        to Win32."""
         with self._lock:
             if self._degraded or self._handle is None:
                 return False
@@ -690,258 +497,7 @@ class InterceptionBackend(object):
             return True
 
 
-class RebindBackend(object):
-    """External-HID output through a Rebind Lua server (opt-in).
-
-    The same wire protocol Unibot speaks - websocket JSON frames:
-      {"t": "ping"}                              -> {"t": "pong"}
-      {"t": "hid.move", "dx": dx, "dy": dy}      relative motion step
-      {"t": "hid.press", "code": "Mouse1", "hold_ms": N}  tap unit
-    The server drives genuine hardware-level input, so games that
-    ignore SendInput AND lack the Interception driver still obey -
-    which is exactly why Unibot works where synthetic injection
-    does not. Unibot never touches Interception; neither does this.
-
-    repeat_hold = True: the protocol has press UNITS (down+up pairs),
-    not separate down/up transitions, so a sustained hold cannot be
-    a held level here. Hold loops re-tap at tap_interval instead
-    (Unibot's target_cps idea) - full-auto weapons keep firing,
-    semi-autos fire per tap. Nothing can ever stick: release sends
-    nothing because nothing is held.
-    """
-
-    name = "rebind"
-    repeat_hold = True
-    tap_interval = 1.0 / 12.0
-    _CONNECT_TIMEOUT = 5.0
-    _PING_TIMEOUT = 3.0
-
-    def __init__(self, cfg):
-        import json as _json
-        self._json = _json
-        self._lock = threading.Lock()
-        self._degraded = False
-        self._reason = ""
-        try:
-            url = str(cfg.get("server_url") or DEFAULT_SERVER_URL).strip()
-        except Exception:
-            url = ""
-        if not url:
-            raise RuntimeError("server_url is empty")
-        self.url = url
-        self._ws = None
-        # The server delivers taps on its own schedule (40-80 ms holds);
-        # if it injects below the hook layer the events carry no
-        # LLMHF_INJECTED mark, so ledger them exactly like the driver
-        # backend does - with a window wide enough for the round trip.
-        self._expected = _ExpectedLedger(tol=12, ttl=0.5)
-        try:
-            import websocket
-        except ImportError as exc:
-            raise RuntimeError("websocket-client is not installed "
-                               "(python -m pip install websocket-client)") \
-                from exc
-        try:
-            ws = websocket.create_connection(
-                url, timeout=self._CONNECT_TIMEOUT)
-            ws.settimeout(self._PING_TIMEOUT)
-        except Exception as exc:
-            raise RuntimeError("could not reach %s (%r)" % (url, exc)) \
-                from exc
-        self._ws = ws
-
-
-        try:
-            ws.send(self._json.dumps({"t": "ping"}))
-            raw = ws.recv()
-            import json as _j2
-            if not (isinstance(raw, str) and
-                    _j2.loads(raw).get("t") == "pong"):
-                raise RuntimeError("no pong from %s" % url)
-        except Exception as exc:
-            try:
-                ws.close()
-            except Exception:
-                pass
-            self._ws = None
-            raise RuntimeError("Rebind handshake failed (%r)" % (exc,)) \
-                from exc
-        log("Input: Rebind connected (%s) - hardware-level output." % url)
-
-    @classmethod
-    def available(cls, url=None):
-        """True when the library is installed AND a server answers."""
-        try:
-            import websocket
-            ws = websocket.create_connection(
-                str(url or DEFAULT_SERVER_URL), timeout=2.0)
-        except Exception:
-            return False
-        try:
-            ws.settimeout(2.0)
-            ws.send('{"t":"ping"}')
-            import json as _j
-            return _j.loads(ws.recv()).get("t") == "pong"
-        except Exception:
-            return False
-        finally:
-            try:
-                ws.close()
-            except Exception:
-                pass
-
-    def ok_for_button(self):
-        return not self._degraded
-
-    def close(self):
-        try:
-            if self._ws is not None:
-                self._ws.close()
-        except Exception:
-            pass
-        self._ws = None
-
-    def _expect_now(self, kind):
-        try:
-            import win32rt
-            cx, cy = win32rt.get_cursor_pos()
-        except Exception:
-            cx = cy = None
-        try:
-            self._expected.expect(kind, cx, cy)
-        except Exception:
-            pass
-
-    def consume_expected(self, wparam, x, y):
-        """True when this hook event is our own server-side tap."""
-        try:
-            if wparam == 0x0201:
-                kind = "down"
-            elif wparam == 0x0202:
-                kind = "up"
-            else:
-                return False
-            return bool(self._expected.consume(kind, x, y))
-        except Exception:
-            return False
-
-    def note_failure(self, where):
-        if not self._degraded:
-            self._degraded = True
-            log("Input: Rebind %s failed; falling back to Windows "
-                "injection for the rest of this session." % (where,))
-
-    def _send_obj(self, obj, what):
-        """One JSON frame; False (degraded) on any transport problem."""
-        with self._lock:
-            if self._degraded or self._ws is None:
-                return False
-            try:
-                self._ws.send(self._json.dumps(obj, separators=(",", ":")))
-            except Exception:
-                try:
-                    self._ws.close()
-                except Exception:
-                    pass
-                self._ws = None
-                self.note_failure(what)
-                return False
-            return True
-
-    def move(self, x, y):
-        """Absolute move expressed as one relative step (the protocol
-        only carries deltas). Falls back to Win32 when the cursor
-        cannot be read - without an anchor a delta is a guess."""
-        import win32rt
-        tx, ty = int(x), int(y)
-        try:
-            cx, cy = win32rt.get_cursor_pos()
-        except Exception:
-            return Win32Backend().move(tx, ty)
-        if (cx, cy) == (tx, ty):
-            return True
-        if not self._send_obj({"t": "hid.move",
-                               "dx": tx - cx, "dy": ty - cy}, "move"):
-            return Win32Backend().move(tx, ty)
-        return True
-
-    def nudge(self, dx, dy):
-        """One relative steering step - the per-frame hold primitive.
-
-        No settle loop, no cursor reads (Unibot's send_move is equally
-        fire-and-forget): the next steering frame corrects from a
-        fresh sighting instead.
-        """
-        dx, dy = int(round(dx)), int(round(dy))
-        if not dx and not dy:
-            return True
-        if not self._send_obj({"t": "hid.move",
-                               "dx": dx, "dy": dy}, "nudge"):
-            return Win32Backend().nudge(dx, dy)
-        return True
-
-    def button(self, down, index=0):
-        """Down = one tap unit (Unibot's 40-80 ms hold); up = no-op.
-
-        There is deliberately no held level to release - see the
-        class docstring. Sustained fire comes from the caller's
-        hold loop re-tapping at tap_interval.
-        """
-        if index:
-            note_mouse_role("Server input", index)
-            return False
-        if not down:
-            return self.ok_for_button()
-        import random
-        hold_ms = random.randint(40, 80)
-        self._expect_now("down")
-        self._expect_now("up")
-        if not self._send_obj({"t": "hid.press", "code": "Mouse1",
-                               "hold_ms": hold_ms}, "press"):
-            return Win32Backend().button(True)
-        return True
-
-    def send_click(self, index=0):
-        """One tap unit, Unibot-style (press, brief visible hold)."""
-        import random
-        import time as _time
-        if index:
-            note_mouse_role("Server input", index)
-            return False
-        if not self.ok_for_button():
-            return False
-        hold_ms = random.randint(40, 80)
-        self._expect_now("down")
-        self._expect_now("up")
-        if not self._send_obj({"t": "hid.press", "code": "Mouse1",
-                               "hold_ms": hold_ms}, "click"):
-            return False
-        _time.sleep(random.uniform(0.025, 0.034))
-        return True
-
-
 class _ExpectedLedger(object):
-    """Remembers our own synthetic button events so the low-level hook
-    can tell them apart from the user's physical ones.
-
-    Driver-level output (Interception) arrives with NO injected mark -
-    indistinguishable from hardware. Without this, our own synthetic
-    UP lands in the tracked button state and ends a real hold (mode-1
-    hold steering died exactly this way: snap-click, synthetic UP,
-    session never armed), and our synthetic DOWN can queue phantom
-    jobs. Win32 output needs none of this (SendInput marks LLMHF_INJECTED,
-    which the hook already skips).
-
-    Matching is kind + position + fresh: a real press far away, or
-    more than _EXPECT_TTL after the send, never matches. Entries are
-    consumed FIFO; orphans (failed sends) expire instead of piling up.
-
-    The window is deliberately TIGHT (0.3 s, 12 px): synthetic output
-    arrives back within milliseconds at exact coordinates, so anything
-    looser eats the user's own re-taps - aimed follow-up shots at the
-    same spot inside the window pass through raw, unassisted and
-    unlogged, which reads exactly like "single clicks never assist".
-    """
 
     def __init__(self, tol=12, ttl=0.3, cap=8):
         self._tol = tol
@@ -975,42 +531,13 @@ class _ExpectedLedger(object):
             return False
 
 
-INPUT_BACKEND_CHOICES = ("win32", "driver", "server")
+INPUT_BACKEND_CHOICES = ("win32", "driver")
 
 _BACKEND_ALIASES = {
     "win32": "win32",
     "driver": "driver",
     "interception": "driver",
-    "server": "server",
-    "rebind": "server",
 }
-
-
-
-# =====================================================================
-# Controller OUTPUT
-#
-# XInput reads a pad; it cannot make one. So a controller recording or a
-# pad macro has to leave the program through one of two doors:
-#
-#   ViGemPadBackend    a real virtual Xbox 360 pad, via the ViGEmBus driver
-#                      and its ViGEmClient.dll. Games that only accept a
-#                      controller see genuine pad input. Opt-in exactly like
-#                      the Interception driver: nothing is bundled, and a
-#                      missing driver or DLL degrades instead of failing.
-#   EmulatedPadBackend no driver, no DLL. Pad output becomes keyboard and
-#                      mouse through the same SendInput path every other
-#                      backend uses, using the pad_emulate table.
-#
-# Contract (what assist.py consumes):
-#     button(index, down)   one pad button transition (gamepad.PAD_BUTTONS)
-#     axis(index, value)    one analogue axis (gamepad.PAD_AXES)
-#     flush()               publish the accumulated report (ViGEm only)
-#     ok_for_pad()          may pad output be sent right now
-#     note_failure(where)   log once and degrade
-#     close()               detach/release
-#     available()           classmethod: is this even possible right now
-# =====================================================================
 
 PAD_EMU_DEFAULT = gamepad.PAD_EMU_DEFAULT
 
@@ -1020,13 +547,6 @@ _MOUSE_WORDS = {"mouse1": 0, "mouse2": 1, "mouse3": 2, "mouse4": 3, "mouse5": 4}
 
 
 def parse_emulation(spec):
-    """The pad_emulate table -> {button index: action or None}.
-
-    An action is ("key", mods, vk), ("mouse", button), ("wheel", notches) or
-    None ("off"). Semicolon-separated `button=output` pairs; unknown buttons
-    are ignored with a log line, unknown outputs make that ONE pair off
-    rather than throwing the whole table away.
-    """
     import input_utils as hotkeys
     out = {}
     raw = str(spec or "").strip()
@@ -1069,8 +589,6 @@ def parse_emulation(spec):
 
 
 class _XUSB_REPORT(ctypes.Structure):
-    """The ViGEmBus payload. Its button mask is bit-for-bit the XInput mask
-    gamepad.py already builds, so a report needs no translation."""
 
     _fields_ = [("wButtons", ctypes.c_ushort),
                 ("bLeftTrigger", ctypes.c_ubyte),
@@ -1128,15 +646,6 @@ def _load_vigem():
 
 
 class ViGemPadBackend(object):
-    """A virtual Xbox 360 pad (ViGEmBus). True 1:1 controller output.
-
-    ViGEmBus is a signed kernel driver the user installs once, plus its
-    ViGEmClient.dll next to SnappyAI.exe. Neither is bundled: without them
-    `available()` is False and `make_pad_backend` falls back to emulation
-    after saying so once, which is exactly how the Interception backend
-    behaves. Every call is guarded and every failure degrades - a pad that
-    disappears mid-session must never take the assist engine with it.
-    """
 
     name = "vigem"
 
@@ -1182,13 +691,6 @@ class ViGemPadBackend(object):
 
     @classmethod
     def available(cls):
-        """FULL probe: DLL loads AND a virtual pad can be created.
-
-        Deliberately UNUSED in-tree: creating and destroying a probe pad
-        flashes a phantom Xbox 360 controller into every game's device
-        list, which is exactly why make_pad_backend probes the DLL only.
-        Kept for manual diagnostics.
-        """
         if not IS_WINDOWS:
             return False
         if _load_vigem() is None:
@@ -1217,7 +719,6 @@ class ViGemPadBackend(object):
                 name = gamepad.PAD_BUTTONS[int(index)]
             except (IndexError, TypeError, ValueError):
                 return False
-            # LT/RT are triggers, not buttons - they go via axis()
             if name in ("lt", "rt"):
                 return True
             mask = gamepad._XINPUT_MASKS.get(name)
@@ -1279,7 +780,6 @@ class ViGemPadBackend(object):
         return True
 
     def release_all(self):
-        """Zero the report and publish it, so nothing can stay held."""
         with self._lock:
             self._report = _XUSB_REPORT()
             self._dirty = True
@@ -1310,14 +810,6 @@ class ViGemPadBackend(object):
 
 
 class EmulatedPadBackend(object):
-    """Pad output as keyboard and mouse. No driver, no DLL, works everywhere.
-
-    The table is `pad_emulate` (see PAD_EMU_DEFAULT). Stick axes move the
-    cursor by a fixed step per call, so a recorded sweep replays as the same
-    sweep at the rate it was recorded; triggers and buttons become the mapped
-    key or mouse transition and can be HELD, because inject_key sends real
-    down/up transitions rather than a single tap.
-    """
 
     name = "emulated"
 
@@ -1384,8 +876,6 @@ class EmulatedPadBackend(object):
         return True
 
     def axis(self, index, value):
-        """Stick axes walk the cursor; triggers have no emulated meaning
-        beyond the button the threshold already produced."""
         if not self.ok_for_pad():
             return False
         import win32rt
@@ -1399,10 +889,6 @@ class EmulatedPadBackend(object):
             value = int(value)
         except (TypeError, ValueError):
             return False
-        # XInput reports +Y as UP and the screen grows downwards, so the
-        # vertical axis is negated. Each axis is normalised on its own here:
-        # a recording stores one axis per step, so the radial deadzone that
-        # the live drive path uses has nothing to pair it with.
         zone = gamepad.DEADZONE_LEFT if name in ("lx", "ly") \
             else gamepad.DEADZONE_RIGHT
         if name in ("lx", "rx"):
@@ -1441,13 +927,6 @@ class EmulatedPadBackend(object):
 
 
 def make_pad_backend(cfg):
-    """The controller output door. ALWAYS returns something usable.
-
-    pad_output = vigem      -> ViGemPadBackend when the driver and its client
-      DLL answer, emulation otherwise (logged once).
-    pad_output = emulate    -> EmulatedPadBackend, never touching ViGEm.
-    pad_output = auto (default) -> ViGEm when available, emulation otherwise.
-    """
     choice = str((cfg.get("pad_output", "auto") if cfg is not None else "auto")
                  or "auto").strip().lower()
     _EMU = ("emulate", "emulated", "km", "keyboard")
@@ -1458,10 +937,6 @@ def make_pad_backend(cfg):
     if choice in _EMU:
         return EmulatedPadBackend(cfg)
 
-    # Probe the DLL, not the driver: available() would create a real virtual
-    # pad and destroy it again, so a machine without ViGEmBus would still
-    # flash a phantom Xbox 360 controller into every game's controller list
-    # on each start-up.
     if _load_vigem() is None:
         if choice == "vigem":
             log("Input: pad_output = vigem was requested but ViGEmClient.dll "
@@ -1490,43 +965,11 @@ def make_pad_backend(cfg):
 
 
 def make_input_backend(cfg):
-    """Build the configured backend; ALWAYS returns something usable.
-
-    input_backend = win32   (default)  -> Win32Backend, nothing loaded.
-    input_backend = driver             -> InterceptionBackend if the
-      driver answers, Win32Backend otherwise (logged once). No DLL
-      is involved: strokes go straight to keyboard.sys/mouse.sys.
-    input_backend = server             -> RebindBackend if the companion
-      websocket server answers, Win32Backend otherwise (logged once).
-    The pre-v8 spellings "interception" and "rebind" are still accepted.
-    """
     raw = str(cfg.get("input_backend", "win32") or "win32").strip().lower()
     choice = _BACKEND_ALIASES.get(raw)
     if choice is None:
         log("Input: input_backend %r is not one of %s; using the standard "
             "Windows method." % (raw, ", ".join(INPUT_BACKEND_CHOICES)))
-        return Win32Backend()
-    if choice == "server":
-        try:
-            be = RebindBackend(cfg)
-            if be.ok_for_button():
-                return be
-        except Exception as exc:
-            log("Input: Rebind unavailable (%r); using the "
-                "standard Windows method." % (exc,))
-            be = None
-        where = getattr(be, "url", None) if be is not None else None
-        reason = getattr(be, "_reason", "") if be is not None else ""
-        if where is None and not reason:
-            why = ("could not reach the Rebind server (is it running? "
-                   "same address Unibot uses, default "
-                   "ws://127.0.0.1:19561)")
-        elif reason:
-            why = "startup check failed: %s" % reason
-        else:
-            why = "Rebind server at %s did not answer" % where
-        log("Input: Rebind selected but not working (%s). Using "
-            "the standard Windows method." % why)
         return Win32Backend()
     if choice == "driver":
         try:
@@ -1552,3 +995,89 @@ def make_input_backend(cfg):
         log("Input: Interception selected but not working (%s). Using "
             "the standard Windows method." % why)
     return Win32Backend()
+
+
+_VIGEM_STEER = None
+_VIGEM_STEER_LOCK = threading.Lock()
+
+_RX_GAIN = 80.0
+_RY_GAIN = 150.0
+
+
+def _get_vigem_steer(cfg=None):
+    """Get the ViGEm steering backend.
+    Returns ViGemPadBackend if available and allowed by config,
+    False if disabled or unavailable.
+    """
+    global _VIGEM_STEER
+    with _VIGEM_STEER_LOCK:
+        # Check if ViGEm steering is allowed by config
+        if cfg is not None:
+            choice = str(cfg.get("pad_output", "auto") or "auto").strip().lower()
+            _EMU = ("emulate", "emulated", "km", "keyboard")
+            if choice in _EMU:
+                return False  # User explicitly disabled ViGEm output
+        if _VIGEM_STEER is None:
+            try:
+                _VIGEM_STEER = ViGemPadBackend()
+            except Exception:
+                _VIGEM_STEER = False
+            if _VIGEM_STEER is not False and not _VIGEM_STEER.ok_for_pad():
+                _VIGEM_STEER.close()
+                _VIGEM_STEER = False
+        return _VIGEM_STEER
+
+
+def aim_assist_step(dx: float, dy: float, cfg=None) -> bool:
+    """Unibot-style continuous aim assist.
+    Call every frame with target offset from screen center (dx, dy).
+    Returns True if stick updated, False if ViGEm unavailable.
+    """
+    steer = _get_vigem_steer(cfg)
+    if steer is False:
+        return False
+
+    try:
+        AXIS_FULL = 32767
+        if dx == 0.0 and dy == 0.0:
+            steer.axis(4, 0)
+            steer.axis(5, 0)
+            return steer.flush()
+
+        # Read aim_speed and aim_y_speed_multiplier from cfg if provided
+        gain_x = _RX_GAIN
+        gain_y = _RY_GAIN
+        if cfg is not None:
+            try:
+                sp = float(cfg.get("aim_speed", 1.0))
+                ym = float(cfg.get("aim_y_speed_multiplier", 1.0))
+                if sp > 0.0:
+                    gain_x *= sp
+                    gain_y *= sp
+                if ym > 0.0:
+                    gain_y *= ym
+            except (TypeError, ValueError):
+                pass
+
+        rx_val = max(-AXIS_FULL, min(AXIS_FULL, int(round(-dx * gain_x))))
+        ry_val = max(-AXIS_FULL, min(AXIS_FULL, int(round(-dy * gain_y))))
+        ok1 = steer.axis(4, rx_val)
+        ok2 = steer.axis(5, ry_val)
+        if not (ok1 and ok2):
+            return False
+        return steer.flush()
+    except Exception:
+        return False
+
+
+def aim_assist_center(cfg=None) -> bool:
+    """Center the stick (call when target lost)."""
+    steer = _get_vigem_steer(cfg)
+    if steer is False:
+        return False
+    try:
+        steer.axis(4, 0)
+        steer.axis(5, 0)
+        return steer.flush()
+    except Exception:
+        return False

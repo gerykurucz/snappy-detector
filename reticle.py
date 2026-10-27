@@ -1,5 +1,3 @@
-"""Custom reticle overlay: a click-through fullscreen window with a
-canvas-drawn reticle, driven entirely by reticle_* config values."""
 
 import json
 import math
@@ -283,14 +281,6 @@ class ReticleOverlay(object):
                 pass
 
     def _debug_refresh(self):
-        # Fullscreen click-through debug overlay for debug_visualize.
-        # Draws the scan circle, a thin box around EVERY candidate the
-        # scanner saw and the thick box of the last picked target, in
-        # SCREEN space, on a dedicated Toplevel
-        # covering the whole virtual screen - the tiny reticle window
-        # can show neither. Data arrives through set_debug() (the GUI
-        # forwards what the assist engine stashes per centre scan);
-        # one canvas is reused and cleared per frame, so nothing leaks.
         if not bool(self._cfg.get('debug_visualize', False)) \
                 or not self._debug:
             self._debug_destroy()
@@ -314,8 +304,6 @@ class ReticleOverlay(object):
                     pass
                 return
             if not _apply_layered(win, 1.0):
-                # The colour key MUST be active: an unkeyed fullscreen
-                # topmost window would black out the whole display.
                 try:
                     win.destroy()
                 except Exception:
@@ -331,8 +319,6 @@ class ReticleOverlay(object):
             self._dbg_win = win
             self._dbg_canvas = canvas
         else:
-            # Resolution/topology change: re-fit the window and canvas
-            # instead of drawing on a stale, clipped surface.
             want = '%dx%d+%d+%d' % (vw, vh, vx, vy)
             try:
                 if self._dbg_win.geometry() != want:
@@ -342,25 +328,15 @@ class ReticleOverlay(object):
                 self._debug_destroy()
                 return
         try:
-            cx, cy, radius, box, candidates = self._debug
+            cx, cy, radius, target_center, _candidates = self._debug
             c = self._dbg_canvas
             c.delete('all')
-            lx, ly = cx - vx, cy - vy
-            c.create_oval(lx - radius, ly - radius, lx + radius, ly + radius,
-                          outline='#00FFFF', width=2)
-            # every candidate the scanner saw, thin yellow
-            for cb in candidates:
-                try:
-                    x1, y1, x2, y2 = cb
-                    c.create_rectangle(x1 - vx, y1 - vy, x2 - vx, y2 - vy,
-                                       outline='#FFFF00', width=1)
-                except Exception:
-                    continue
-            # the picked target, thick green on top
-            if box:
-                x1, y1, x2, y2 = box
-                c.create_rectangle(x1 - vx, y1 - vy, x2 - vx, y2 - vy,
-                                   outline='#00FF00', width=2)
+            if target_center:
+                tx, ty = target_center
+                lx, ly = tx - vx, ty - vy
+                # draw a green dot at the absolute center of the detected object
+                c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4,
+                              outline='#00FF00', fill='#00FF00', width=0)
         except Exception:
             self._debug_destroy()
 
@@ -374,7 +350,6 @@ class ReticleOverlay(object):
         thick = int(self._cfg.get("reticle_thickness", 2) or 2)
         rot = int(self._cfg.get("reticle_rotation", 0) or 0)
         shape = self._cfg.get("reticle_shape", "cross")
-        # tight bounds around the reticle, not fullscreen
         try:
             r = shape_bounds(shape, size, gap, thick, rot)
         except Exception:
@@ -397,7 +372,6 @@ class ReticleOverlay(object):
             except Exception:
                 pass
             if not _click_through_ok(win):
-                # if we can't make it click-through, don't create it
                 try:
                     win.destroy()
                 except Exception:
@@ -410,7 +384,6 @@ class ReticleOverlay(object):
             canvas.pack()
             self._win = win
             self._canvas = canvas
-        # position: tiny window at the reticle center
         mode = str(self._cfg.get("reticle_mode", "center") or "center")
         if mode.strip().lower() == "custom":
             try:
@@ -433,8 +406,6 @@ class ReticleOverlay(object):
             return
         _col = parse_color(self._cfg.get("reticle_color"))
         if _col == (0, 0, 0):
-            # The overlay colour-keys pure black to transparent - draw
-            # near-black instead so a "black" reticle stays visible.
             _col = (1, 1, 1)
         try:
             self._canvas.delete("all")

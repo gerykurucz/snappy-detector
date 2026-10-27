@@ -120,8 +120,6 @@ class SnapTarget(object):
             self.hscore = float(hscore)
         except (TypeError, ValueError):
             self.hscore = 0.0
-        # what the hpose path knows about the target; empty strings and
-        # zeroes for the classical path
         self.view = ""
         self.stance = ""
         self.motion = ""
@@ -454,14 +452,6 @@ SHAPE_MIN_AREA = 200
 SHAPE_TIER_MIN_F = 0.25
 
 
-# --- Smart figure scorer (multi-cue, scale/speed tolerant) ---
-# The old detector used bbox h/w only, so a split, blurred, crouched
-# (1:1) or far/small figure flickered between tiers. Mirror symmetry
-# replaced that but is a FRONTAL cue: side profiles and 45-degree
-# silhouettes are asymmetric by nature and were rejected. The scorer
-# below reads the width profile top-down (head bump, neck pinch,
-# shoulder corner, waist dip) which exists from any direction, keeps
-# ratio + taper + coverage + fill, and uses symmetry only as a bonus.
 FIGURE_TIER2_THRESH = 0.50
 FIGURE_TIER1_THRESH = 0.30
 FIGURE_BOOST = 1.1
@@ -471,28 +461,20 @@ FIGURE_SYM_LO = 0.45
 FIGURE_SYM_HI = 0.70
 FIGURE_COVER_LO = 0.55
 FIGURE_COVER_HI = 0.78
-# body-score weights: head-shoulder structure leads, symmetry is a
-# bonus (frontal/back views only), never a veto.
 FIGURE_W_HEAD = 0.34
 FIGURE_W_TAPER = 0.20
 FIGURE_W_SYM = 0.12
 FIGURE_W_COV = 0.17
 FIGURE_W_FILL = 0.17
-FIGURE_HEAD_OK = 0.62      # head_s at/above: a human head structure was found
-FIGURE_HEAD_STRONG = 0.68  # head_s at/above: the ratio stage cannot veto
-FIGURE_HEAD_MIN = 0.40     # head_s below: no-head cap (unless occlusion cut)
-FIGURE_STEP_MIN = 0.10     # shoulder step (normalized) to not be a blob
-FIGURE_DIP_MIN = 0.07      # waist dip (normalized) to not be a blob
-FIGURE_RESCUE_RS = 0.55    # ratio-score floor when structure is strong
+FIGURE_HEAD_OK = 0.62
+FIGURE_HEAD_STRONG = 0.68
+FIGURE_HEAD_MIN = 0.40
+FIGURE_STEP_MIN = 0.10
+FIGURE_DIP_MIN = 0.07
+FIGURE_RESCUE_RS = 0.55
 
 
 def _ratio_score(r):
-    """Continuous 0..1 tall-shape score with a crouch fallback.
-
-    1.6-2.4 -> 1.0 (ideal 1:2), ramps to 0 at 1.2/3.2. Ratios near
-    1.0 (crouch/sit/close-up, user-reported 1:1 cases) keep a 0.35
-    pedestal so strong symmetry/taper can still lift them to tier 2.
-    """
     try:
         r = float(r)
     except (TypeError, ValueError):
@@ -506,7 +488,6 @@ def _ratio_score(r):
     if SHAPE_PLATEAU_HI < r < 3.2:
         return max(0.0, (3.2 - r) / (3.2 - SHAPE_PLATEAU_HI))
     if 0.85 <= r <= 1.2:
-        # crouch / seated / foreshortened figure: partial credit only
         if r <= 1.0:
             return 0.35 * (r - 0.85) / 0.15
         return 0.35 * (1.2 - r) / 0.2
@@ -514,12 +495,6 @@ def _ratio_score(r):
 
 
 def _figure_features(mask):
-    """Cheap vertical-structure features for a bool mask (h, w).
-
-    Returns dict with symmetry 0..1, coverage 0..1, top_narrow bool,
-    taper 0..1, fill, leg_split bool. Downsamples large masks so the
-    per-candidate cost stays bounded.
-    """
     try:
         h, w = mask.shape
     except (AttributeError, ValueError):
@@ -527,7 +502,6 @@ def _figure_features(mask):
     if h < 4 or w < 2:
         return None
     m = mask
-    # cap work: ~120px per side max
     step = max(1, max(h, w) // 120)
     if step > 1:
         m = mask[::step, ::step]
@@ -539,10 +513,8 @@ def _figure_features(mask):
     except Exception:
         return None
     fill = area / float(h * w) if h * w else 0.0
-    # row / column occupancy
     row_fill = m.mean(axis=1)
     coverage = float((row_fill > 0.15).mean()) if h else 0.0
-    # mirror symmetry around vertical axis
     w2 = w // 2
     sym = 0.0
     try:
@@ -554,7 +526,6 @@ def _figure_features(mask):
             sym = (inter / float(union)) if union > 0 else 0.0
     except Exception:
         sym = 0.0
-    # band widths: head (top 20%) vs torso (35-65%) vs legs (bottom 20%)
     def _band_width(y0f, y1f):
         y0 = int(h * y0f)
         y1 = max(y0 + 1, int(h * y1f))
@@ -578,8 +549,6 @@ def _figure_features(mask):
             taper = 0.4
     except Exception:
         taper = 0.0
-    # leg split: bottom-third centre row shows a background gap flanked
-    # by mass (two legs). Cheap single-row test.
     leg_split = False
     try:
         probe_y = int(h * 0.88)
@@ -587,9 +556,6 @@ def _figure_features(mask):
         row = m[probe_y]
         if w >= 7 and int(row.sum()) >= 2:
             q = w // 4
-            # side posts of a hollow frame also show a bottom gap: only
-            # count legs when the torso above is actually wide (a real
-            # figure narrows from torso to legs, a frame stays narrow).
             try:
                 _mid_gate = mid_w >= max(6, int(w * 0.45))
             except Exception:
@@ -599,11 +565,6 @@ def _figure_features(mask):
                                  and not row[q:-q].all())
     except Exception:
         leg_split = False
-    # occlusion cuts: a mask border filled over most of its length is a
-    # wall/edge truncation, not a natural contour. One-sided side cut +
-    # body cues = half-visible figure (walls, corners, screen edges).
-    # Both sides cut = spanning slab/background, never occlusion.
-    # Contiguous run (not mean) so limb gaps along the cut do not hide it.
     def _cut_run(col):
         try:
             v = np.asarray(col).reshape(-1).astype(bool)
@@ -665,13 +626,6 @@ def _figure_features(mask):
 
 
 def _figure_score(bw, bh, area, mask=None):
-    """Continuous 0..1 figure score. Mask-aware when available.
-
-    Without a mask this degrades to the ratio curve (fast path for
-    callers that only have bw/bh/area). With a mask it runs the chain
-    in _figure_detail (body -> 1:2 ratio -> others) and returns its
-    score; the tier comes from _figure_tier.
-    """
     try:
         bw = int(bw)
         bh = int(bh)
@@ -683,7 +637,6 @@ def _figure_score(bw, bh, area, mask=None):
     r = float(bh) / float(bw)
     rs = _ratio_score(r)
     if mask is None:
-        # fast ratio-only path (backwards compatible magnitude)
         small_ok = (bh >= SHAPE_MIN_H and area >= SHAPE_MIN_AREA)
         if not small_ok:
             return 0.0
@@ -694,7 +647,6 @@ def _figure_score(bw, bh, area, mask=None):
         return 0.0
     return s
 def _trap(x, a, b, c, d):
-    """Trapezoidal membership 0..1: ramp up a->b, flat b->c, down c->d."""
     try:
         x = float(x)
     except (TypeError, ValueError):
@@ -709,17 +661,6 @@ def _trap(x, a, b, c, d):
 
 
 def _profile_cues(m):
-    """Head-neck-shoulder measurements from a bool mask's row widths.
-
-    Direction-agnostic: reads the width profile top-down - head bump,
-    neck pinch, shoulder corner, waist dip, head centered over the
-    torso column. Present from any azimuth (front, back, side profile,
-    45-degree); also run on transposed masks for prone figures. All
-    values normalized; every failure path returns safe zeros.
-
-    Hot path: one vectorized span pipeline, then plain-Python list
-    arithmetic (numpy per-call overhead dominates at this size).
-    """
     out = {"rw": 0.0, "rh": 0.0, "ha": 0.0, "pinch": 0.0, "step": 0.0,
            "dip": 0.0, "cent": 0.0, "maxpos": 0.0, "w_sh": 0.0,
            "y_sh": -1}
@@ -740,9 +681,6 @@ def _profile_cues(m):
         ys = [i for i, s in enumerate(span) if s > 0]
         y0 = ys[0]
         extent = max(1, ys[-1] - y0 + 1)
-        # shoulder line: robust width over the upper-body band (60th
-        # pct survives a rifle held across the chest), then the first
-        # row reaching 80% of it
         b0 = min(h - 1, max(y0 + 1, int(h * 0.10)))
         b1 = min(h, max(b0 + 2, int(h * 0.62)))
         band = sorted(s for s in span[b0:b1] if s > 0)
@@ -766,11 +704,6 @@ def _profile_cues(m):
                 if span[i] > best:
                     best = span[i]
                     y_sh = i
-        # refinement: the first crossing can land inside the skull when
-        # the head is as deep as the torso (side profiles). Only a
-        # crown-slice head block triggers the search; it re-anchors
-        # below a neck dip, accepted only for human head proportions,
-        # so a waist dip can never drag the anchor down.
         if (y_sh - y0) * 100 < 9 * extent:
             lim = min(h - 1, y0 + max(3, int(0.35 * extent)))
             dthr = 0.72 * w_sh
@@ -793,7 +726,6 @@ def _profile_cues(m):
                     hh2 = float(cand - y0)
                     if 0.05 * extent <= hh2 <= 0.30 * extent:
                         y_sh = cand
-        # head block: mass above the shoulder line
         hb = [s for s in span[y0:max(y0 + 1, y_sh)] if s > 0]
         if not hb:
             k = max(1, int(extent * 0.15))
@@ -811,25 +743,17 @@ def _profile_cues(m):
         out["rw"] = w_hd / w_sh
         out["rh"] = hh / float(extent)
         out["ha"] = hh / max(1.0, w_hd)
-        # neck pinch: narrowest row between jaw and shoulder line. The
-        # crown is excluded: a circle also "pinches" to zero at its top
-        # rows, which is roundness, not a neck.
         z0 = min(y_sh, y0 + max(1, int(0.35 * hh)))
         zone = [s for s in span[z0:y_sh + 1] if s > 0]
         if len(zone) >= 2:
             neck = float(min(zone)) / max(1.0, w_hd)
             out["pinch"] = max(0.0, min(1.0, (0.95 - neck) / 0.20))
-        # shoulder step: largest one-row widening between jaw and
-        # shoulders, below the crown so a circle's apex curvature
-        # cannot fake it
         d0 = max(y0 + int(0.5 * hh), int(h * 0.03))
         d1 = min(h - 1, y_sh + 3, int(h * 0.65))
         if d1 > d0:
             seg = span[d0:d1 + 1]
             out["step"] = float(max(b - a for a, b in zip(seg, seg[1:]))) \
                 / w_sh
-        # waist dip: narrowing below where the span first reaches full
-        # shoulder width, so a circle's rising rows cannot fake a dip
         e0 = y_sh + max(1, int(h * 0.05))
         wlen = max(2, int(h * 0.15))
         full95 = 0.95 * w_sh
@@ -842,8 +766,6 @@ def _profile_cues(m):
         low = [s for s in span[e0:e1] if s > 0]
         if low:
             out["dip"] = max(0.0, (w_sh - float(min(low))) / w_sh)
-        # widest-row position: bodies are widest at shoulders/chest
-        # (upper third), circles and many blobs at mid height
         seg2 = span[y0:y0 + extent]
         y_max = y0
         best = -1
@@ -852,7 +774,6 @@ def _profile_cues(m):
                 best = s
                 y_max = y0 + i
         out["maxpos"] = float(y_max - y0) / float(extent)
-        # head centered over the torso column (blob bumps sit anywhere)
         t0c = min(h - 1, max(y0, y_sh))
         t1c = min(h, max(t0c + 1, y0 + int(extent * 0.65)))
         hw = [(first_l[i] + last_l[i]) * 0.5
@@ -872,7 +793,6 @@ def _profile_cues(m):
 
 
 def _head_cue(c):
-    """Score a _profile_cues dict as head-neck-shoulder evidence 0..1."""
     rw_s = _trap(c.get("rw", 0.0), 0.20, 0.30, 0.95, 1.10)
     rh_s = _trap(c.get("rh", 0.0), 0.045, 0.08, 0.24, 0.32)
     ha_s = _trap(c.get("ha", 0.0), 0.35, 0.55, 1.90, 2.80)
@@ -882,14 +802,10 @@ def _head_cue(c):
          + 0.14 * float(c.get("cent", 0.0))
          + 0.10 * mp_s)
     if float(c.get("rw", 0.0)) > 1.15:
-        # "head" wider than the shoulders: mushroom cap, slab top
         s = min(s, 0.30)
     if ha_s < 0.15:
-        # flat-wide head block (wider than tall): a dome, not a head
         s = min(s, 0.55)
     if rh_s < 0.15 and ha_s < 0.15:
-        # head block wildly off human proportions: bottle neck,
-        # raised arms, UI knob - not a head on a body
         s = min(s, 0.35)
     return s
 
@@ -902,15 +818,6 @@ def _body_combine(head_s, taper_s, sym_s, cov_s, fill_s):
 
 
 def _figure_body_score(feats):
-    """Stage 1 of the chain: direction-agnostic body evidence 0..1.
-
-    Head-neck-shoulder structure + head-shoulder taper/legs + vertical
-    coverage + fill, with mirror symmetry as a small bonus only: side
-    profiles, backs and 45-degree silhouettes are asymmetric by nature,
-    so symmetry must never veto them. Deliberately ratio-free, so a
-    crouching (1:1), prone or foreshortened figure still scores as a
-    body here and the ratio stage cannot veto it alone.
-    """
     sym = feats["sym"]
     if sym <= FIGURE_SYM_LO:
         sym_s = 0.0
@@ -943,13 +850,6 @@ def _figure_body_score(feats):
 
 
 def _figure_prone_detail(feats, bw, bh):
-    """Structure pass for prone (lying) figures. Returns (score, tier).
-
-    Runs the same head-neck-shoulder analysis along the long
-    (horizontal) axis - precomputed in _figure_features for both head
-    directions - plus an elongation prior. Gated hard: horizontal UI
-    bars, slabs and text rows must never pass here.
-    """
     try:
         c = feats.get("prone_cues")
         hs = float(feats.get("prone_head_s", 0.0) or 0.0)
@@ -979,17 +879,6 @@ def _figure_prone_detail(feats, bw, bh):
 
 
 def _figure_detail(bw, bh, area, mask):
-    """The chain: body -> 1:2 ratio -> others. Returns (score, tier).
-
-    Stage 1 (body) decides figure-ness from direction-agnostic
-    structure - head-neck-shoulder profile, taper, coverage, fill,
-    symmetry as bonus - so any viewpoint, crouch or partial occlusion
-    survives it. Stage 2 (ratio) confirms the tall 1:2 shape, rescues
-    fast/blurred figures whose proportions held, and can no longer
-    veto strong structure (run strides, slim upright soldiers). Wide
-    masks take the prone pass instead. Stage 3 (tier 1/0) ranks
-    whatever is left by squareness and residue.
-    """
     try:
         bw = int(bw)
         bh = int(bh)
@@ -1007,8 +896,6 @@ def _figure_detail(bw, bh, area, mask):
     tiny = (bh < SHAPE_MIN_H or area < SHAPE_MIN_AREA)
     if tiny:
         if bh < FIGURE_SMALL_H or area < FIGURE_SMALL_AREA:
-            # thin side profiles and far figures carry little area;
-            # unmistakable head structure can still vouch for them
             if not (bh >= FIGURE_SMALL_H
                     and area >= 0.6 * FIGURE_SMALL_AREA
                     and float(feats.get("head_s", 0.0) or 0.0) >= 0.80):
@@ -1016,8 +903,6 @@ def _figure_detail(bw, bh, area, mask):
         if feats["coverage"] < 0.65:
             return 0.0, 0
         if feats["sym"] < 0.60 and feats.get("head_s", 0.0) < 0.55:
-            # a small side profile has neither mirror symmetry nor
-            # much else: clear head-shoulder structure qualifies it
             return 0.0, 0
     r = float(bh) / float(bw)
     if r < 0.72 and bw >= 16 and bh >= 8:
@@ -1052,9 +937,6 @@ def _figure_detail(bw, bh, area, mask):
                  or float(feats.get("neck_pinch", 0.0) or 0.0) >= 0.50
                  or float(feats.get("shoulder_step", 0.0) or 0.0)
                  >= FIGURE_STEP_MIN):
-        # run strides, deep crouches and slim upright soldiers collapse
-        # the bbox ratio although the silhouette structure is
-        # unmistakable: the ratio stage must not veto alone.
         rs = FIGURE_RESCUE_RS
     score = 0.5 * body + 0.5 * rs
     try:
@@ -1064,8 +946,6 @@ def _figure_detail(bw, bh, area, mask):
         if fill > 0.94:
             score = min(score, 0.49)
         elif fill < 0.28 and not (head_s >= FIGURE_HEAD_STRONG and struct):
-            # spread-limb poses (run, jump) fill less of the bbox
-            # legitimately; strong structure overrides
             score = min(score, 0.49)
         try:
             _top = float(feats["top_w"])
@@ -1076,20 +956,12 @@ def _figure_detail(bw, bh, area, mask):
                 and head_s < FIGURE_HEAD_OK:
             if fill < 0.32 or (_mid >= 1 and _top > _mid * 1.4):
                 score = min(score, 0.45)
-        # anti-blob: bodies have a shoulder step and a waist; circles,
-        # ellipses and random blobs have a smooth width profile and no
-        # leg separation. Occlusion-cut masks legitimately lack the
-        # structure and are exempt.
         if not feats["leg_split"] and not occ_side \
                 and head_s < FIGURE_HEAD_STRONG \
                 and not bool(feats.get("cut_top", False)) \
                 and float(feats.get("shoulder_step", 0.0)) < FIGURE_STEP_MIN \
                 and float(feats.get("waist_dip", 0.0)) < FIGURE_DIP_MIN:
             score = min(score, 0.45)
-        # no-head cap: an upright mass with no head bump at all
-        # (bottle, vase, pole, UI knob) is not a strong figure - unless
-        # occlusion cut the head off or a strong torso structure says
-        # arms-raised / helmet merged into the shoulders.
         if head_s < FIGURE_HEAD_MIN and not occ_side \
                 and not bool(feats.get("cut_top", False)):
             torso_ok = (float(feats.get("shoulder_step", 0.0)) >= 0.15
@@ -1098,8 +970,6 @@ def _figure_detail(bw, bh, area, mask):
             score = min(score, 0.52 if torso_ok else 0.48)
         r_cap = 5.0 if occ_side else 3.5
         if head_s >= FIGURE_HEAD_STRONG:
-            # a true side profile is chest-depth vs height: legitimately
-            # 5-7:1 and still unmistakably a body
             r_cap = max(r_cap, 7.5)
         if r > r_cap or r < 0.60:
             score = min(score, 0.28)
@@ -1125,7 +995,6 @@ def _figure_tier(bw, bh, area, mask=None):
         s = _s
     else:
         s = _figure_score(bw, bh, area, mask)
-    # stage 3 (others): square fallback + weak-body residue
     try:
         r = float(bh) / float(max(1, int(bw)))
     except (TypeError, ValueError, ZeroDivisionError):
@@ -1146,7 +1015,6 @@ def _shape_mult(bw, bh, area, mask=None):
     if mask is not None:
         s = _figure_score(bw, bh, area, mask)
         if s >= FIGURE_TIER2_THRESH:
-            # strong figure: up to 1 + BOOST (2.1x), scaled by quality
             q = min(1.0, (s - FIGURE_TIER2_THRESH)
                     / max(1e-6, 1.0 - FIGURE_TIER2_THRESH))
             return 1.0 + FIGURE_BOOST * (0.55 + 0.45 * q)
@@ -1154,7 +1022,6 @@ def _shape_mult(bw, bh, area, mask=None):
             q = (s - FIGURE_TIER1_THRESH) / max(
                 1e-6, FIGURE_TIER2_THRESH - FIGURE_TIER1_THRESH)
             return 1.0 + SHAPE_SQ_BONUS * (0.5 + 0.5 * q)
-        # fall through to square-only check below
         try:
             r = float(bh) / float(max(1, int(bw)))
         except (TypeError, ValueError, ZeroDivisionError):
@@ -1306,14 +1173,19 @@ class FollowMemory(object):
         return (sig, x - int(origin_x), y - int(origin_y), decay)
 
     def snapshot(self):
-        """Consistent (x, y, sig, when) read under the memory's own lock.
-
-        Reading the attributes directly from another thread can tear
-        across a concurrent store(): the four fields belong to ONE
-        sighting, and no caller's lock orders them against the writer.
-        """
         with self._lock:
             return self.x, self.y, self.sig, self.when
+
+    def clear(self):
+        with self._lock:
+            self.when = 0.0
+            self.x = 0
+            self.y = 0
+            self.sig = None
+            self.area = 0
+            self.bw = 0
+            self.bh = 0
+            self.hits = 0
 
 
 FIGURE_STICKY_S = 0.9
@@ -1325,14 +1197,6 @@ FIGURE_SOLID_MIN = 0.55
 
 
 class FigureMemory(object):
-    """Temporal hysteresis for figure picks: kills back-and-forth.
-
-    Remembers the last accepted figure (absolute screen coords +
-    size + quality). The next scan boosts figure-tier candidates
-    near that spot with a similar size, so a one-frame split/blur
-    that drops the shape score cannot hand the win to nearby clutter.
-    Expires after FIGURE_STICKY_S so a truly lost target releases.
-    """
 
     def __init__(self):
         import threading as _th
@@ -1434,11 +1298,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
 
 
             if subject_mode:
-                # Figures split horizontally (head/torso/legs) with a
-                # vertical gap but strong x-overlap: tolerate ~2x the
-                # vertical gap when the boxes line up in x. This
-                # re-joins a blurred/split figure without merging
-                # unrelated side-by-side clutter.
                 try:
                     x_overlap = max(0, min(ax1, bx1) - max(ax0, bx0))
                     min_w = max(1, min(ax1 - ax0, bx1 - bx0))
@@ -1757,9 +1616,6 @@ def _accent_lab_quantised(ah, asat, av):
 
 
 def _accent_lab(ah, asat, av):
-    """Lab/rgb of an accent, cached on a 2-decimal quantisation of the HSV
-    triple: the caller's hues jitter in the low bits, and caching the raw
-    floats turned a 128-entry cache into a miss on every call."""
     return _accent_lab_quantised(round(float(ah), 2), round(float(asat), 2),
                                  round(float(av), 2))
 
@@ -2486,14 +2342,37 @@ def _frame_movers(prev_gray, curr_gray):
         if p.shape != c.shape or p.size == 0:
             raise ValueError("shape")
         d = np.abs(c - p)
-        m = (d >= MOTION_DIFF_LO) & (
-            (d <= MOTION_DIFF_HI) | (c < MOTION_WHITE_CUT))
+        lo = float(np.percentile(d, 10)) + 3.0
+        hi = float(np.percentile(d, 90))
+        lo = min(max(lo, MOTION_DIFF_LO), MOTION_DIFF_HI)
+        hi = max(hi, lo + 1.0)
+        m = (d >= lo) & ((d <= hi) | (c < MOTION_WHITE_CUT))
         return _erode(m, 1)
     except Exception:
         try:
             return np.zeros(np.asarray(curr_gray).shape[:2], dtype=bool)
         except Exception:
             return np.zeros((0, 0), dtype=bool)
+
+
+def _estimate_cam_shift(prev_gray, curr_gray):
+    try:
+        import cv2
+        if prev_gray is None or curr_gray is None:
+            return 0.0, 0.0
+        p = np.asarray(prev_gray, dtype=np.float32)
+        c = np.asarray(curr_gray, dtype=np.float32)
+        if p.shape != c.shape or p.size == 0:
+            return 0.0, 0.0
+        if p.shape[0] < 16 or p.shape[1] < 16:
+            return 0.0, 0.0
+        r = cv2.phaseCorrelate(p, c)
+        if not r:
+            return 0.0, 0.0
+        s = r[0]
+        return float(s[0]), float(s[1])
+    except Exception:
+        return 0.0, 0.0
 
 
 def motion_sense_of(cfgv):
@@ -2703,7 +2582,6 @@ def _is_clipped(Y0, X0, bw, bh, w, h, edge_flags):
 
 
 def _hpose_enabled(cfgv) -> bool:
-    """Is the hpose path switched on for this configuration?"""
     try:
         import hpose_bridge
     except Exception:
@@ -2715,14 +2593,6 @@ def _hpose_enabled(cfgv) -> bool:
 
 
 def _hpose_box_stats(img, box):
-    """Area, contrast and the dominant colour of a person.
-
-    The classical path fills these from the ink mask it built.  The
-    hpose path has a real person's box instead, so the same numbers
-    are measured from the picture: the size of the box, how much
-    brighter the person is than the ground around them, and the colour
-    of their clothes.
-    """
     area = 0.0
     contrast = 0.0
     sig = None
@@ -2744,7 +2614,6 @@ def _hpose_box_stats(img, box):
         if ring.size:
             contrast = abs(inner - float(ring.astype(np.float32)
                                            .mean(axis=2).mean()))
-        # the colour of the clothes: the median of the middle band
         band = patch[int(patch.shape[0] * 0.25):int(patch.shape[0] * 0.75)]
         if band.size:
             flat = band.reshape(-1, band.shape[-1])
@@ -2758,15 +2627,49 @@ def _hpose_box_stats(img, box):
     return area, contrast, sig
 
 
-def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
-                collect=None):
-    """Ask the hpose pipeline for a person worth aiming at.
+HINT_SIZE_LO = 0.30
+HINT_SIZE_HI = 3.40
 
-    Returns a SnapTarget in the same shape the classical path builds,
-    carrying the extra answers hpose has: which way the person is
-    facing, what they are doing, how fast they are moving and where
-    they will be after the configured lead time.
-    """
+
+def _hpose_hint_match(img, subject, ox, oy, hint, cfgv):
+    if hint is None:
+        return True
+    want_track = int(hint.get("track", 0) or 0)
+    track = int(getattr(subject, "track_id", 0) or 0)
+    if want_track and track and track == want_track:
+        return True
+    want_sig = hint.get("sig")
+    if want_sig is None:
+        return False
+    box = getattr(subject, "box", None)
+    if box is None:
+        return False
+    lb = (box[0] - ox, box[1] - oy, box[2] - ox, box[3] - oy)
+    try:
+        area, _contrast, sig = _hpose_box_stats(img, lb)
+    except Exception:
+        return False
+    if sig is None:
+        return False
+    try:
+        tol = float(cfgv.get("accent_tolerance", 26) or 26)
+    except (TypeError, ValueError):
+        tol = 26.0
+    if not _sig_matches_accents(sig, [want_sig], tol,
+                                accent_soft_of(cfgv),
+                                accent_matcher_of(cfgv),
+                                variants=accent_variants_of(cfgv)):
+        return False
+    want_area = float(hint.get("area", 0) or 0)
+    if want_area > 0.0 and float(area) > 0.0:
+        ratio = float(area) / want_area
+        if ratio < HINT_SIZE_LO or ratio > HINT_SIZE_HI:
+            return False
+    return True
+
+
+def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
+                collect=None, hint=None):
     try:
         import hpose_bridge
     except Exception:
@@ -2781,21 +2684,25 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
         return None
     ox, oy = (int(origin[0]), int(origin[1])) if origin else (0, 0)
     try:
-        # the zoom pass gets four scan budgets of headroom: it only
-        # runs on scans that found nobody, so the latency is paid
-        # where there is nothing to click on anyway
         try:
             budget_s = min(max(float(cfgv.get("scan_budget_ms", 100)),
                                60.0), 2000.0) / 1000.0
         except (TypeError, ValueError):
             budget_s = 0.1
         subjects = engine.scan(img, (ox, oy), deadline=deadline,
-                               zoom_deadline=deadline + 3.0 * budget_s)
+                               zoom_deadline=deadline + 3.0 * budget_s,
+                               aim=(int(cx), int(cy)),
+                               aim_radius=float(radius or 0.0))
     except Exception as exc:
         _log("hpose scan failed: %r" % (exc,))
         return None
     if not subjects:
         return None
+    if hint is not None:
+        subjects = [sb for sb in subjects
+                    if _hpose_hint_match(img, sb, ox, oy, hint, cfgv)]
+        if not subjects:
+            return None
     screen_cx = ox + cx
     screen_cy = oy + cy
     if collect is not None:
@@ -2817,8 +2724,13 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
         return None
     aim = str(cfgv.get("hpose_aim", "center") or "center").lower()
     if aim == "head":
-        tx = subject.center[0]
-        ty = subject.box[1] + subject.height * 0.15
+        kps = getattr(subject, "kps", None)
+        if kps and len(kps) > 0:
+            tx = float(kps[0])
+            ty = float(kps[1])
+        else:
+            tx = subject.center[0]
+            ty = subject.box[1] + subject.height * 0.15
     else:
         tx, ty = subject.center
     lead_s = 0.0
@@ -2835,7 +2747,9 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     ddx = int(round(tx + lx - screen_cx))
     ddy = int(round(ty + ly - screen_cy))
     move = math.hypot(ddx, ddy)
-    area, contrast, sig = _hpose_box_stats(img, subject.box)
+    lb = (subject.box[0] - ox, subject.box[1] - oy,
+          subject.box[2] - ox, subject.box[3] - oy)
+    area, contrast, sig = _hpose_box_stats(img, lb)
     bw = int(round(subject.width))
     bh = int(round(subject.height))
     target = SnapTarget(ddx, ddy, move, area, contrast, bw, bh, sig,
@@ -2848,9 +2762,6 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     target.speed = float(subject.speed)
     target.track_id = int(subject.track_id)
     return target
-
-
-# ================= the blob watcher ==================================
 
 """Last-resort person watcher: high-contrast, roughly 1:2 ink blobs.
 
@@ -2870,16 +2781,15 @@ ever runs as the last stage, only when human detection is switched on,
 and only inside the configured search radius.
 """
 
-BLOB_MIN_H = 14.0      # px at window scale: below this nothing is aimable
-BLOB_MAX_H = 64.0      # px: above this the neural path should have it
-BLOB_ASPECT_LO = 0.30  # w/h: a standing person is ~0.3-0.5, crouched ~0.7
+BLOB_MIN_H = 14.0
+BLOB_MAX_H = 64.0
+BLOB_ASPECT_LO = 0.30
 BLOB_ASPECT_HI = 0.85
-BLOB_FILL_MIN = 0.30   # ink fraction of the bounding box
+BLOB_FILL_MIN = 0.30
 BLOB_CONTRAST_MIN = 26.0
 
 
 def _blob_components_cells(cells):
-    """Connected components of a cell mask: boxes in cell units + size."""
     gh, gw = cells.shape
     if gh < 2 or gw < 2:
         return []
@@ -2921,13 +2831,6 @@ def _blob_components_cells(cells):
 
 
 def _blob_watch(img, cx, cy, radius):
-    """The best person-shaped blob near (cx, cy), or None.
-
-    The mask is built the way the classical scanner builds theirs -
-    strong ink grown through weak ink - because a 20 px person at a
-    hard threshold is not a blob but a pile of horizontal edge strips;
-    the hysteresis is what reconnects them into a body.
-    """
     a = img.astype(np.float32)
     if a.ndim == 3 and a.shape[2] > 3:
         a = a[..., :3]
@@ -2995,7 +2898,7 @@ def _blob_watch(img, cx, cy, radius):
 def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 deadline_ms=None, collect=None, anchor_blind_area=0,
                 motion_ctx=None, focus_bias=0.0, require_tier=0,
-                subject_ctx=None, origin=None):
+                subject_ctx=None, origin=None, follow_hint=None):
     if deadline_ms is None:
         try:
             deadline_ms = float(cfgv.get("scan_budget_ms", 350))
@@ -3008,21 +2911,18 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     deadline = t0 + deadline_ms / 1000.0
     _SCAN_DEADLINE.deadline = deadline
 
-    # --- the hpose path ---------------------------------------------
-    # When it is switched on, a person found by the neural detector
-    # answers first: the classical scanner cannot tell a person from
-    # a picture of a person, cannot say which way they are facing and
-    # cannot follow one that is moving.  When hpose finds nobody, the
-    # classical scanner runs exactly as before.
     if _hpose_enabled(cfgv):
         try:
             _ht = _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
-                                collect=collect)
+                                collect=collect, hint=follow_hint)
         except Exception as exc:
             _log("hpose stage failed: %r" % (exc,))
             _ht = None
         if _ht is not None:
             return ScanResult("target", _ht,
+                              (time.perf_counter() - t0) * 1000.0)
+        if follow_hint is not None:
+            return ScanResult("none", None,
                               (time.perf_counter() - t0) * 1000.0)
 
     a = img.astype(np.float32)
@@ -3337,7 +3237,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         ddy = max(Y0 - cy, 0, cy - (Y1 - 1))
         dist = math.hypot(ddx, ddy)
 
-        if dist > radius + 20:
+        if dist > radius:
             continue
 
         cl_cells = (lab[gy0:gy1, gx0:gx1] == cid)
@@ -3489,10 +3389,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     subj_active = (bool(cfgv.get("subject_priority", False))
                    or bool(cfgv.get("subject_only", False)))
     if subj_active and candidates:
-        # Smart subject-first ranking: mask-aware multi-cue scores +
-        # quality gate + temporal stickiness. Replaces the old hard
-        # bbox-ratio cut that flickered whenever a figure split,
-        # blurred, crouched to 1:1 or changed speed.
         hscores = []
         for c in candidates:
             try:
@@ -3504,21 +3400,13 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                              or _shape_tier(c[7], c[8], c[5]) == 1)
                        else 0)
                  for c, s in zip(candidates, hscores)]
-        # re-apply the stronger mask-aware multiplier on top of the
-        # ratio-only one baked into _base_score (ratio-only max 1.6x,
-        # mask-aware up to ~2.1x): divide out the old, multiply the new.
         rescored = []
         for c, s in zip(candidates, hscores):
             try:
                 old_m = _shape_mult(c[7], c[8], c[5])
                 new_m = _shape_mult(c[7], c[8], c[5], c[3])
                 boost = (new_m / old_m) if old_m > 0 else new_m
-                # clamp: never punish (boost>=1 when figure), cap 1.6x
-                # extra on top of what _base_score already gave.
                 boost = min(1.6, max(1.0, boost)) if s >= 0.3 else 1.0
-                # extra lift for strong figures so close calls go to
-                # the figure even when it is farther / lower contrast
-                # (handles slow vs fast contrast wobble).
                 if s >= FIGURE_TIER2_THRESH:
                     boost *= 1.0 + 0.35 * min(
                         1.0, (s - FIGURE_TIER2_THRESH)
@@ -3527,8 +3415,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 boost = 1.0
             rescored.append((c[0] * boost,) + c[1:])
         candidates = rescored
-        # temporal stickiness: boost figure-tier candidates near the
-        # last accepted figure with similar size (kills back-and-forth).
         sticky = None
         try:
             if subject_ctx is not None:
@@ -3549,19 +3435,12 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                     if d <= FIGURE_POS_PAD and pbw > 0 and pbh > 0:
                         sw = min(c[7], pbw) / float(max(c[7], pbw))
                         sh = min(c[8], pbh) / float(max(c[8], pbh))
-                        # geometric mean: uniform grow/shrink (approach /
-                        # retreat, sideways blur widening) scores like a
-                        # linear change, not a squared one, so a figure
-                        # that doubles between lock updates still sticks.
-                        # The lock refreshes on every accepted pick, so
-                        # this only needs to span inter-frame change.
                         size_sim = math.sqrt(max(0.0, sw * sh))
                     else:
                         size_sim = 0.0
                 except Exception:
                     d, size_sim = 1e9, 0.0
                 stuck.append((d, size_sim))
-            # map back with tiers/hscores
             boosted = []
             for c, s, tr, (d, size_sim) in zip(
                     candidates, hscores, tiers, stuck):
@@ -3572,20 +3451,9 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                     c = (c[0] * mult,) + c[1:]
                 boosted.append(c)
             candidates = boosted
-        # gated hard preference: only eliminate lower tiers when the
-        # best figure is solid (>= FIGURE_SOLID_MIN, above the 0.50 tier
-        # line, so the guard can actually hold back filtering). A
-        # borderline figure keeps soft ranking - sticky boost still
-        # applies - so weak evidence cannot discard a strong square
-        # frame to frame.
         best_tier = max(tiers) if tiers else 0
         best_h = max(hscores) if hscores else 0.0
         if best_tier == 2 and best_h >= FIGURE_SOLID_MIN:
-            # keep every solid figure, plus sticky-near figures that
-            # dipped just below the tier line this frame (split/blur).
-            # But a clearly excellent figure elsewhere (best_h high)
-            # overrides the sticky keep: the lock must not drag a
-            # near-Lock square above a far figure scoring 0.65+.
             keep = []
             for c, tr, s in zip(candidates, tiers, hscores):
                 if tr == 2:
@@ -3605,9 +3473,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             if keep:
                 candidates = keep
         elif best_tier == 1:
-            # no figure present: squares beat shapeless, with or without
-            # a lock (a lock only ever boosts tier-2, of which there is
-            # none here). Keeps desktop use unchanged.
             candidates = [c for c, tr in zip(candidates, tiers)
                           if tr == best_tier]
 
@@ -3621,7 +3486,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     except (TypeError, ValueError):
         _need = 0
     if _need > 0 and candidates:
-        # mask-aware tier so crouched/split figures still pass the gate
         kept = []
         for c in candidates:
             try:
@@ -3633,10 +3497,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         candidates = kept
 
     if bool(cfgv.get("subject_only", False)) and candidates:
-        # The simple human-shape watcher: everything below tier 2 is
-        # discarded, mask-aware so crouched/split figures still pass.
-        # No figure present means no target (callers pass the click
-        # through), never a fallback snap.
         kept = []
         for c in candidates:
             try:
@@ -4015,15 +3875,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     ms = (time.perf_counter() - t0) * 1000.0
     _report_drops()
-    # --- the blob watcher: last resort for tiny people -------------
-    # A 20-30 px person can be below the neural detector's floor and
-    # outside the classical scanner's item priors at the same time,
-    # and still be an unmistakable high-contrast 1:2 blob.  It runs
-    # only when human detection is on and BOTH the neural path and the
-    # classical scanner came up empty: running it earlier lets its
-    # occasional clutter blob steal answers the classical scanner
-    # would have got right (measured).  Its size band (14-64 px)
-    # keeps it out of the way of everything bigger.
     if _hpose_enabled(cfgv) and bool(cfgv.get("blob_watch", True)):
         try:
             _bt = _blob_watch(img, cx, cy, radius)
@@ -4039,25 +3890,13 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
 
 def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
-    """Draw debug visualization on an image copy.
-
-    Draws:
-    - A circle at (cx, cy) with the configured search radius
-    - Boxes around each candidate (green for chosen, yellow for others)
-    - Candidate index and score text
-
-    Returns the annotated image (BGR uint8, same channel order as the
-    capture; every colour below is a BGR triple).
-    """
     vis = img.copy()
     h, w = vis.shape[:2]
 
-    # Search radius circle
     try:
         import cv2
         cv2.circle(vis, (int(cx), int(cy)), int(radius), (0, 255, 255), 2, cv2.LINE_AA)
     except Exception:
-        # Fallback: draw circle manually using numpy
         y, x = np.ogrid[:h, :w]
         mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
         edge = mask & ~(
@@ -4066,7 +3905,6 @@ def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
         )
         vis[edge] = [0, 255, 255]
 
-    # Draw candidate boxes
     for i, c in enumerate(candidates):
         _s, Y0, X0, cl_px, dist, area, contrast, bw, bh = c
         x1, y1 = int(X0), int(Y0)
@@ -4078,13 +3916,11 @@ def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
             cv2.putText(vis, f"{i}:{_s:.2f}", (x1, max(0, y1 - 4)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
         except Exception:
-            # Fallback without cv2
             vis[y1:y1+2, x1:x2] = color
             vis[y2-2:y2, x1:x2] = color
             vis[y1:y2, x1:x1+2] = color
             vis[y1:y2, x2-2:x2] = color
 
-    # Draw center reticle
     ch = 15
     try:
         import cv2

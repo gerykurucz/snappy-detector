@@ -1,15 +1,3 @@
-"""The trained artefact: one file that holds everything inference needs.
-
-A bundle contains
-
-* the canonical body template used to repair missing joints,
-* the view head (front / back / side / 45 degrees),
-* the stance head (standing / crouch / prone / jump),
-* the feature standardisation statistics.
-
-It is a plain ``.npz`` of float32 arrays, so it loads in a
-millisecond and needs nothing beyond numpy at run time.
-"""
 
 from __future__ import annotations
 
@@ -27,7 +15,6 @@ DEFAULT_BUNDLE_NAME = "hpose_bundle.npz"
 
 
 class Bundle(object):
-    """Everything the analyser needs to classify a person."""
 
     def __init__(self, template=None, view_head=None, stance_head=None,
                  view_classes=None, stance_classes=None, meta=None):
@@ -40,7 +27,6 @@ class Bundle(object):
         self.stance_classes = list(stance_classes or [])
         self.meta = dict(meta or {})
 
-    # -- persistence ---------------------------------------------------
     def save(self, path: str) -> str:
         arrays = {"template": self.template}
         if self.view_head is not None:
@@ -83,7 +69,6 @@ class Bundle(object):
                    stance_classes=meta_blob.get("stance_classes") or [],
                    meta=meta_blob.get("meta") or {})
 
-    # -- convenience ---------------------------------------------------
     def has_view(self) -> bool:
         return self.view_head is not None
 
@@ -104,14 +89,6 @@ class Bundle(object):
 
 
 def default_bundle_path() -> str:
-    """Where the trained heads live.
-
-    The bundle ships in ``models/`` beside the code, so the whole
-    project can be copied to another machine and still work.
-    ``HPOSE_BUNDLE`` overrides everything, and a frozen build checks
-    the folder beside the executable first (the portable layout)
-    before the bundled copy.
-    """
     env = os.environ.get("HPOSE_BUNDLE")
     if env:
         return env
@@ -130,7 +107,6 @@ def default_bundle_path() -> str:
 
 
 def load_bundle(path: str = None) -> Bundle:
-    """Load a bundle, or return an empty one when none is available."""
     path = path or default_bundle_path()
     if not os.path.isfile(path):
         return Bundle()

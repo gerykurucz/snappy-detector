@@ -1,25 +1,3 @@
-"""Which way is this person facing?
-
-Eight classes are distinguished:
-
-``front``, ``front_left_45``, ``front_right_45``, ``side_left``,
-``side_right``, ``back_left_45``, ``back_right_45`` and ``back``.
-
-The names describe the direction the body is *facing* on screen, so
-``side_left`` means the person is walking towards the left of the image
-and their left side is turned towards the camera.
-
-Two pieces of evidence are combined:
-
-* a learned head over the keypoint features, which knows how a face
-  fades out as a body turns away and how the shoulders foreshorten;
-* the geometric body fit, which measures the turn directly by fitting
-  a rigid 3D body to the joints.
-
-The learned head carries most of the weight; the geometric fit is a
-second opinion that is blended in, and it is what keeps the answer
-sensible when the head is unsure.
-"""
 
 from __future__ import annotations
 
@@ -31,7 +9,6 @@ from hpose_model3d import VIEW_CLASSES, VIEW_CLASS_YAW
 
 
 class ViewResult(object):
-    """The answer for one person."""
 
     __slots__ = ("name", "confidence", "probs", "yaw", "facing_camera",
                  "back_turned", "sideways", "secondary")
@@ -61,13 +38,11 @@ class ViewResult(object):
 
 
 def _circular_delta(a: float, b: float) -> float:
-    """Shortest signed distance from ``a`` to ``b`` in degrees."""
     d = (float(a) - float(b) + 180.0) % 360.0 - 180.0
     return d
 
 
 def geometric_prior(yaw: float, sigma: float = 32.0) -> np.ndarray:
-    """Class probabilities implied by a geometric yaw, by itself."""
     out = np.zeros(len(VIEW_CLASSES), dtype=np.float64)
     for i, name in enumerate(VIEW_CLASSES):
         d = _circular_delta(yaw, VIEW_CLASS_YAW[name])
@@ -81,7 +56,6 @@ def geometric_prior(yaw: float, sigma: float = 32.0) -> np.ndarray:
 
 
 class ViewClassifier(object):
-    """Turns a feature vector into a view class."""
 
     def __init__(self, bundle, geometric_weight: float = None,
                  sigma: float = 32.0, back_weight: float = None):
@@ -104,7 +78,6 @@ class ViewClassifier(object):
         return self.head is not None
 
     def probs(self, feats: np.ndarray, fit: dict = None) -> np.ndarray:
-        """Fused class probabilities for one feature vector."""
         if self.head is None:
             prior = geometric_prior(float((fit or {}).get("yaw", 0.0)),
                                     self.sigma)
@@ -112,7 +85,6 @@ class ViewClassifier(object):
         p = np.asarray(self.head.proba(feats)[0], dtype=np.float64)
         classes = self.classes or list(VIEW_CLASSES)
         if len(p) != len(VIEW_CLASSES):
-            # the head was trained on a different class list
             out = np.zeros(len(VIEW_CLASSES))
             for i, name in enumerate(classes):
                 if name in VIEW_CLASSES:
@@ -121,9 +93,6 @@ class ViewClassifier(object):
         if fit is not None and self.geometric_weight > 0.0:
             g = geometric_prior(float(fit.get("yaw", 0.0)), self.sigma)
             if str(fit.get("branch", "")) == "back":
-                # no face to go on: the silhouette cannot tell left
-                # from right, so the geometric opinion is spread over
-                # both and given less weight
                 g = _symmetrise(g)
                 weight = self.back_weight
             else:
@@ -134,15 +103,6 @@ class ViewClassifier(object):
 
     def predict(self, feats: np.ndarray, fit: dict = None,
                 face_visible=None) -> ViewResult:
-        """Classify one person.
-
-        ``face_visible`` is what a face detector found in the head
-        region.  It is worth a great deal: a face can only be seen
-        when the body is turned towards the camera, so a face rules out
-        "seen from behind" completely, and no face at all rules out
-        "facing the camera".  The learned head gets a vote, but this
-        evidence overrules it.
-        """
         p = self.probs(feats, fit)
         if face_visible is None and fit is not None:
             face_visible = (str(fit.get("branch", "")) == "front")
@@ -151,8 +111,6 @@ class ViewClassifier(object):
         idx = int(np.argmax(p))
         name = VIEW_CLASSES[idx]
         probs = {VIEW_CLASSES[i]: float(p[i]) for i in range(len(p))}
-        # the runner-up, which is what the tracker uses to decide that
-        # a person is on the edge of turning
         order = np.argsort(p)[::-1]
         second = VIEW_CLASSES[int(order[1])] if len(order) > 1 else ""
         yaw = circular_mean_yaw(p)
@@ -162,21 +120,11 @@ class ViewClassifier(object):
 
     @staticmethod
     def _apply_face_rule(p: np.ndarray, face_visible: bool) -> np.ndarray:
-        """Rule out the answers a face makes impossible.
-
-        A body turned square on to the camera always shows its face,
-        and a body turned square away from it never does.  The
-        forty-five degree and side views are less certain - a profile
-        face is easy to miss - so they are only discouraged.
-        """
         p = np.array(p, dtype=np.float64, copy=True)
         for i, name in enumerate(VIEW_CLASSES):
             if name == "back":
-                # a face that can be seen means the body is not turned
-                # away from the camera
                 p[i] *= 1e-4 if face_visible else 1.0
             elif name == "front":
-                # no face at all means the body is not square on
                 p[i] *= 1e-4 if not face_visible else 1.0
             elif name.startswith("back"):
                 p[i] *= 0.15 if face_visible else 1.0
@@ -186,11 +134,6 @@ class ViewClassifier(object):
         return p / total if total > 1e-9 else p
 
 
-#: Each view class and the class that looks the same in a mirror.
-#: A body seen from behind is symmetric, so without a face there is
-#: nothing in the silhouette that says whether the person is turned to
-#: the left or to the right.  The geometric answer has to be treated
-#: as if it applied to both.
 MIRROR = {
     "front": "front",
     "front_left_45": "front_right_45",
@@ -204,7 +147,6 @@ MIRROR = {
 
 
 def _symmetrise(p: np.ndarray) -> np.ndarray:
-    """Spread a probability over the mirrored class as well."""
     out = np.array(p, dtype=np.float64, copy=True)
     for i, name in enumerate(VIEW_CLASSES):
         other = MIRROR.get(name)
@@ -218,7 +160,6 @@ def _symmetrise(p: np.ndarray) -> np.ndarray:
 
 
 def circular_mean_yaw(p: np.ndarray) -> float:
-    """The average yaw of a probability distribution over classes."""
     s = 0.0
     c = 0.0
     for i, name in enumerate(VIEW_CLASSES):

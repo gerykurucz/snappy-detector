@@ -1,23 +1,3 @@
-"""Check the human-detection pipeline, end to end.
-
-    python hpose_check.py [picture-folder]
-
-Two layers:
-
-* **unit checks** - platform-neutral, no pictures and no networks
-  needed: the keypoint vocabulary, the geometric body fit, the feature
-  vector, the bundle round trip, the motion model and the tracker.
-  (Ported from the old hpose package self test.)
-* **integration checks** - need opencv, onnxruntime and a few pictures
-  with people in them: the real scan path (``vision.scan_region``)
-  with human detection off and on, the view filter, the aim point and
-  the moving-target lead.
-
-Pictures are taken from the folder given on the command line, or from
-``%TEMP%\\hpose_check`` and ``%TEMP%\\probe\\coco_eval2``.  When none are
-found the integration layer is skipped rather than failed, so the unit
-checks still gate a build on any machine.
-"""
 
 import math
 import os
@@ -49,9 +29,6 @@ class Check(object):
         self.ok(name, abs(float(got) - float(want)) <= tol,
                 "got %.4f want %.4f" % (got, want))
 
-
-# ================= unit checks (no pictures, no networks) ============
-
 def test_keypoints(c):
     from hpose_keypoints import box_iou, derive_joints
     kps = np.zeros((17, 3), dtype=np.float32)
@@ -80,7 +57,6 @@ def test_model3d(c):
         expect = {0.0: "front", 45.0: "front_right_45", 90.0: "side_right",
                   180.0: "back", 270.0: "side_left"}[yaw]
         c.ok("yaw %.0f maps to %s" % (yaw, name), name == expect, name)
-    # a body turned away must not show a confident face
     front = model3d.face_visibility(0.0)
     back = model3d.face_visibility(180.0)
     c.ok("face is confident from the front", front["nose"] > 0.8,
@@ -99,28 +75,20 @@ def test_fit(c):
     back_err = []
     for _ in range(30):
         s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
-        # the analyser tells the fit what a face detector saw; the test
-        # does the same, using the angle it knows the truth to be
         face = math.cos(math.radians(s["yaw"])) > 0.34
         r = posefit.fit(s["kps"], focal_px=s["focal"], face_visible=face)
         if face:
             front_err.append(abs(((r["yaw"] - s["yaw"] + 180.0) % 360.0)
                                   - 180.0))
         else:
-            # without a face the silhouette is a mirror image, so only
-            # the folded angle can be compared
             back_err.append(abs(posefit.fold_yaw(r["yaw"])
                                 - posefit.fold_yaw(s["yaw"])))
     fe = np.array(front_err) if front_err else np.array([0.0])
     be = np.array(back_err) if back_err else np.array([0.0])
-    # the tolerance is loose on purpose: the template has its arms
-    # straight down, and a real person has them wherever they please,
-    # which costs a few degrees of angle
     c.ok("geometric yaw is close with a face (median %.1f deg)"
          % (np.median(fe),), np.median(fe) < 30.0, str(fe))
     c.ok("geometric yaw is close without a face (median %.1f deg)"
          % (np.median(be),), np.median(be) < 20.0, str(be))
-    # the repair must replace the uncertain joints and keep the rest
     kps = np.zeros((17, 3), dtype=np.float32)
     kps[:, :2] = np.random.default_rng(0).normal(50, 5, (17, 2))
     kps[:, 2] = 0.9
@@ -147,10 +115,8 @@ def test_features(c):
     c.ok("feature vector length matches the names",
          len(vec) == len(names), "%d vs %d" % (len(vec), len(names)))
     c.ok("feature vector is finite", bool(np.all(np.isfinite(vec))))
-    # the same sample must give the same vector
     vec2 = features.extract(Pose(s["kps"], s["box"], 1.0), fit=fit)
     c.ok("features are repeatable", bool(np.allclose(vec, vec2)))
-    # a broken pose must not produce nonsense
     empty = Pose(np.zeros((17, 3), dtype=np.float32), (0, 0, 10, 10), 1.0)
     v3 = features.extract(empty, fit=None)
     c.ok("features survive an empty pose", bool(np.all(np.isfinite(v3))))
@@ -180,7 +146,6 @@ def test_bundle(c):
         os.remove(path)
     except OSError:
         pass
-    # the shipped bundle must be where the app looks for it
     shipped = load_bundle()
     c.ok("the shipped bundle is found and trained",
          shipped.has_view() and shipped.has_stance(),
@@ -225,7 +190,6 @@ def test_tracker(c):
     c.ok("track knows the stance", tracks[0].stance == "standing",
          tracks[0].stance)
     c.ok("track is moving", tracks[0].speed > 1.0, str(tracks[0].speed))
-    # a completely different picture must not steal the track
     far = [{"box": (900.0, 900.0, 950.0, 990.0), "score": 0.9,
             "view_probs": {"front": 0.9, "back": 0.1},
             "stance_probs": {"standing": 1.0}}]
@@ -244,15 +208,11 @@ def unit_checks(c):
     test_motion(c)
     test_tracker(c)
 
-
-# ================= integration checks (real scan path) ===============
-
 def tempfile_dir():
     return os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
 
 
 def _sample_images(extra_dir=None):
-    """Some pictures with people in them."""
     out = []
     folders = []
     if extra_dir:
@@ -272,7 +232,6 @@ def integration_checks(c, images, cv2):
     print("integration checks (%d picture(s))" % (len(images),))
     cfg = dict(config.DEFAULT_CONFIG)
 
-    # --- the classical path must be untouched ------------------------
     cfg["hpose_mode"] = "off"
     worked = 0
     for path in images[:6]:
@@ -287,7 +246,6 @@ def integration_checks(c, images, cv2):
     c.ok("the classical scanner still answers with hpose off",
          worked > 0, "%d of 6" % (worked,))
 
-    # --- hpose must take over when it is on -------------------------
     cfg["hpose_mode"] = "on"
     cfg["hpose_min_conf"] = 25
     hpose_bridge.preload(cfg)
@@ -315,7 +273,6 @@ def integration_checks(c, images, cv2):
     c.ok("the target says who it is", described > 0,
          "%d described" % (described,))
 
-    # --- the filters must be obeyed ----------------------------------
     img = cv2.imread(images[0])
     if img is not None:
         h, w = img.shape[:2]
@@ -343,7 +300,6 @@ def integration_checks(c, images, cv2):
                  "%d targets" % (seen,))
         cfg["hpose_view"] = "any"
 
-    # --- the aim point must land on the person -----------------------
     for path in images[:8]:
         pic = cv2.imread(path)
         if pic is None:
@@ -361,17 +317,12 @@ def integration_checks(c, images, cv2):
              "%s" % ((ax, ay),))
         break
 
-    # --- a moving target must lead -----------------------------------
     if img is not None:
         h, w = img.shape[:2]
         hpose_bridge.reset()
         lead_seen = False
         moved = False
         for i in range(8):
-            # 40 px per pass: the motion model's "static" floor is
-            # 60 px/s of REAL time, and the passes run as fast as this
-            # machine scans - a smaller step would measure the CPU,
-            # not the tracker
             frame = np.roll(img, -i * 40, axis=1)
             res = vision.scan_region(frame, w // 2, h // 2, cfg,
                                      radius=600, origin=(0, 0))

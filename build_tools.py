@@ -1,7 +1,3 @@
-"""Build-time helpers: secret exposure scan, hash manifest, DLL pins.
-
-Stdlib only, no imports from the app, safe to run on any platform.
-"""
 
 import argparse
 import ast
@@ -12,9 +8,6 @@ import sys
 BLOB_MODULE = "general_utils.py"
 MANIFEST_NAME = "SHA256SUMS.txt"
 
-# Files/folders the APP itself may create next to the exe (portable
-# installs write config/logs beside the binary): user data, not shipped
-# payload - verify must not report them as UNLISTED tampering.
 _RUNTIME_FILES = frozenset((
     "config.json", "config.ini", "macros.json", "pad_macros.json",
     "reticle_presets.json",
@@ -35,7 +28,6 @@ def _sha256_file(path, chunk=1 << 20):
 
 
 def read_secret_blob(project_dir):
-    """Pull _KEY and _BLOB straight out of the source with ast (no import)."""
     path = os.path.join(project_dir, BLOB_MODULE)
     with open(path, "r", encoding="utf-8") as handle:
         tree = ast.parse(handle.read(), filename=path)
@@ -73,7 +65,6 @@ def decode_blob(key, blob):
 
 
 def read_env_map(project_dir):
-    """Pull the _ENV field -> environment-variable map out of the source."""
     path = os.path.join(project_dir, BLOB_MODULE)
     with open(path, "r", encoding="utf-8") as handle:
         tree = ast.parse(handle.read(), filename=path)
@@ -87,7 +78,6 @@ def read_env_map(project_dir):
 
 
 def encode_value(key, value):
-    """Inverse of decode_blob's XOR layer for one plaintext value."""
     import base64
     ks = hashlib.sha256(key).digest()
     data = value.encode("utf-8")
@@ -104,16 +94,6 @@ def _blocker_count(values):
 
 
 def encode_blob(project_dir, clear=(), write=False):
-    """Re-embed build secrets into general_utils.py's _BLOB.
-
-    Frozen builds ignore the SNAPPYAI_* environment (general_utils._get
-    only consults it when not frozen), so rotated credentials have to be
-    written back into the blob before shipping. Each field takes its new
-    value from the environment variable named in general_utils._ENV;
-    fields passed via --clear become empty. Dry run unless --write.
-    After writing, the file is re-read and decoded to prove the round
-    trip; on any mismatch the original content is restored.
-    """
     path = os.path.join(project_dir, BLOB_MODULE)
     key, blob = read_secret_blob(project_dir)
     envmap = read_env_map(project_dir)
@@ -206,7 +186,6 @@ def encode_blob(project_dir, clear=(), write=False):
 
 
 def _needles(value, raw):
-    """Byte patterns a `strings`-style attacker would find for one secret."""
     found = []
     if value:
         found.append(("plaintext", value.encode("utf-8")))
@@ -225,7 +204,6 @@ def _mask(value):
 
 
 def _blockers(decoded):
-    """Plain-language problems, safe to paste into a build log."""
     out = []
     if decoded.get("DISCORD_CLIENT_SEC"):
         out.append("a Discord OAuth CLIENT SECRET ships inside the exe. It is "
@@ -247,13 +225,6 @@ def _blockers(decoded):
 
 
 def scan_binary(target, project_dir, verbose=False, reveal=False):
-    """Report which build secrets are recoverable from a shipped file.
-
-    Returns the number of RELEASE BLOCKERS found (rotatable credentials
-    in the binary, Stripe test links, missing row pepper) so CI can fail
-    on it. "RECOVERABLE" lines for the public-by-design values (pubkey,
-    payment links) are informational and do not count.
-    """
     key, blob = read_secret_blob(project_dir)
     decoded = decode_blob(key, blob)
     with open(target, "rb") as handle:
@@ -371,7 +342,6 @@ def verify_manifest(dist_dir):
 
 
 def pin_dll(dll_path):
-    """Write <dll>.sha256 so the app can refuse a swapped DLL at load time."""
     digest = _sha256_file(dll_path)
     out = dll_path + ".sha256"
     with open(out, "w", encoding="utf-8", newline="\n") as handle:
@@ -381,11 +351,6 @@ def pin_dll(dll_path):
 
 
 def sign(dist_dir, exe_name):
-    """Authenticode-sign the exe when a certificate is configured.
-
-    Skipped silently unless SNAPPYAI_CERT_SUBJECT (store lookup) or
-    SNAPPYAI_CERT_PFX + SNAPPYAI_CERT_PASSWORD (file) is set.
-    """
     subject = os.environ.get("SNAPPYAI_CERT_SUBJECT", "").strip()
     pfx = os.environ.get("SNAPPYAI_CERT_PFX", "").strip()
     if not subject and not pfx:
@@ -425,15 +390,6 @@ def sign(dist_dir, exe_name):
 
 
 def hpose_bundle_args(project_dir):
-    """The PyInstaller arguments the human-detection pipeline needs.
-
-    The hpose_* modules are ordinary app code and are found on their
-    own, but the model files under models/ are data, not code, and
-    have to be copied into the build.  opencv and onnxruntime are only
-    imported lazily, so they are pinned as hidden imports.  Without
-    the models the frozen program still starts - it simply falls back
-    to the classical scanner.
-    """
     models = os.path.join(project_dir, "models")
     args = [
         "--add-data", "%s%smodels" % (models, os.pathsep),
@@ -444,7 +400,6 @@ def hpose_bundle_args(project_dir):
 
 
 def check_hpose(project_dir):
-    """Report whether the human-detection files are all present."""
     missing = []
     wanted = [
         "hpose_bridge.py",

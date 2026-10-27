@@ -1,5 +1,3 @@
-"""The latency pipeline: system reading (backends), plan building (engine),
-PowerShell emission (scripts) and report emission (markdown/HTML)."""
 
 from __future__ import annotations
 
@@ -34,8 +32,6 @@ __all__ = [
     "PlanResult", "build_plan", "build_report", "evaluate_all", "render",
     "load_baseline", "save_baseline",
 ]
-
-# ===== merged from backend.py =====
 
 _SCHEME_RE = re.compile(r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\s*\(([^)]*)\)")
 _AC_INDEX_RE = re.compile(r"Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)")
@@ -623,9 +619,6 @@ def make_backend(name: str | None) -> Backend:
     return FakeBackend()
 
 
-# ===== merged from script.py =====
-
-
 def _exit_name(brand: str) -> str:
     clean = "".join(c for c in brand if c.isalnum()) or "SnappyAI"
     return f"Exit-{clean}"
@@ -1030,13 +1023,6 @@ _PS_VALUE_TYPES = ("DWord", "String", "QWord", "Binary", "MultiString",
 
 
 def _ps_lit(value: Any) -> str:
-    """Body of a PowerShell single-quoted literal: only ' needs doubling.
-
-    Registry paths and value names reach the generated script through
-    single-quoted literals; user-supplied payloads may contain apostrophes
-    (legal in registry names), which would otherwise terminate the literal
-    and inject arbitrary script text.
-    """
     return str(value).replace("'", "''")
 
 
@@ -1381,17 +1367,6 @@ def render_bundle(
 def render_maintenance_script(
     steps: list[Step], *, title: str, generated_at: str, brand: str = "latency"
 ) -> str:
-    """One self-contained maintenance script.
-
-    Registry and command steps record their prior state into
-    <script>.snapshot.json as they apply, and the SAME script run with
-    -Undo restores that snapshot (newest first) - so the "reversible"
-    promise the debloat/policy operations make is actually kept. Steps
-    without a recorded undo say so openly instead of pretending.
-    Irreversible steps prompt before running unless -Force is passed;
-    declining one skips ONLY that step (no top-level `return` - that
-    would abort the whole script).
-    """
     exit_name = _exit_name(brand)
     out = [
         "<#",
@@ -1663,9 +1638,6 @@ def _render_manual_block(tweak_id: str, step: Step, skip_var: str = "") -> str:
     out.append("    Read-Host 'Press Enter when you have read this'")
     out.append("}")
     return "\n".join(out)
-
-
-# ===== merged from report.py =====
 
 
 _VERDICT_ICON = {
@@ -2350,9 +2322,6 @@ def _card(o: TweakOutcome, e) -> str:
     return "\n".join(bits)
 
 
-# ===== merged from engine.py =====
-
-
 
 
 @dataclass
@@ -2540,14 +2509,6 @@ def render(
     generated_at: str | None = None,
     brand: str = "lattool",
 ) -> ScriptBundle:
-    """Script bundle for the planned changes.
-
-    Measurement payloads (network, bufferbloat, route, render budget,
-    comparisons) deliberately do NOT belong here - they ride on the
-    Report via build_report(), which accepts and renders every one of
-    them. This function only ever produced apply/undo/manifest, so the
-    parameters this signature used to accept were silently discarded.
-    """
     ts = generated_at or _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     nic = result.inventory.primary_nic
     return render_bundle(

@@ -53,6 +53,9 @@ DEFAULT_CONFIG = {
 
     "radius": 150,
 
+    "unibot_aim": True,
+    "aim_speed": 1.0,
+
 
 
 
@@ -137,7 +140,6 @@ DEFAULT_CONFIG = {
 
 
 
-    "server_url": "ws://127.0.0.1:19561",
 
 
 
@@ -200,19 +202,13 @@ DEFAULT_CONFIG = {
     "motion_predict": False,
     "motion_lead_ms": 50,
 
-    # --- the hpose path -------------------------------------------
-    # A neural person detector with a body fit behind it: it tells a
-    # person from a picture of a person, which way they are facing,
-    # what they are doing and how fast they are moving.  Off by
-    # default - the classical scanner stays in charge until this is
-    # switched on.
     "hpose_mode": "off",
     "hpose_view": "any",
     "hpose_stance": "any",
     "hpose_aim": "center",
     "hpose_lead_ms": 60,
     "hpose_min_conf": 35,
-    "hpose_model": "yolo11n-pose.onnx",
+    "hpose_model": "yolo26n-pose.onnx",
     "blob_watch": True,
 
 
@@ -280,7 +276,6 @@ DEFAULT_CONFIG = {
 
 
 
-    "auto_click": False,
 
 
 
@@ -408,6 +403,9 @@ DEFAULT_CONFIG = {
 
 
 
+
+    "motion_priority": True,
+    "motion_camera_comp": True,
 
     "subject_priority": True,
     "subject_only": False,
@@ -618,8 +616,8 @@ class SafeConfigReader:
             val = str(overrides["input_backend"]).strip().lower()
             if val == "interception":
                 overrides["input_backend"] = "driver"
-            elif val == "rebind":
-                overrides["input_backend"] = "server"
+            elif val in ("rebind", "server"):
+                overrides["input_backend"] = "win32"
 
         for section, key, raw in bad:
             log("config.ini: ignored invalid %s in [%s]: %r"
@@ -703,8 +701,6 @@ def _coerce_value(raw, default, key=None):
 
 class Config:
     def __init__(self):
-        # RLock: set()/import_from() hold it and call save(), which takes
-        # it again for a consistent dict snapshot.
         self.lock = threading.RLock()
         self.dir = config_dir()
         self.path = os.path.join(self.dir, "config.json")
@@ -721,7 +717,6 @@ class Config:
                 _RENAMED_KEYS = {
                     "figure_head_bias": "subject_focus_bias",
                     "game_shape_priority": "subject_priority",
-                    "rebind_url": "server_url",
                 }
                 for _old, _new in _RENAMED_KEYS.items():
                     if _old in data and _new not in data:
@@ -731,8 +726,8 @@ class Config:
                             % (_old, _new, _new))
                 if str(data.get("input_backend", "")).strip().lower() == "interception":
                     data["input_backend"] = "driver"
-                elif str(data.get("input_backend", "")).strip().lower() == "rebind":
-                    data["input_backend"] = "server"
+                elif str(data.get("input_backend", "")).strip().lower() in ("rebind", "server"):
+                    data["input_backend"] = "win32"
                 for key in DEFAULT_CONFIG:
                     if key in data:
                         ok, value = _coerce_value(data[key],
@@ -766,12 +761,14 @@ class Config:
 
 
 
-                retired = ("auto_click_interval",
+                retired = ("auto_click",
+                           "auto_click_interval",
                            "auto_click_min_contrast",
                            "auto_click_max_clicks",
                            "auto_click_settle_ms",
                            "auto_click_repeat_px",
                            "auto_click_radius",
+                           "server_url", "rebind_url",
                            "block_bound_keys", "bare_mode_keys")
                 dropped = [k for k in retired if k in data]
                 if dropped:
@@ -801,7 +798,6 @@ class Config:
 
 
                     self.values["config_version"] = 8
-                     # self.save()  # moved after _sanitize
         except (OSError, ValueError):
             pass
 
@@ -838,6 +834,7 @@ class Config:
         "motion_sense": (0, 100),
         "merge_distance": (0, 64),
         "accent_tolerance": (4, 90),
+        "aim_speed": (0.1, 2.0),
         "accent_soft": (0, 100),
         "accent_boost": (0.0, 3.0),
         "follow_boost": (0.0, 3.0),
@@ -847,12 +844,8 @@ class Config:
         "stall_pause_seconds": (0.0, 3.0),
         "on_target_dist": (0, 100),
         "motion_lead_ms": (0, 300),
-
-
-
-
-
-
+        "hpose_lead_ms": (0, 300),
+        "hpose_min_conf": (0, 99),
         "scan_budget_ms": (60, 2000),
 
 
@@ -889,7 +882,7 @@ class Config:
     _CHOICES = {
         "accent_matcher": ("hsv", "oklab"),
         "capture_backend": ("auto", "dxcam", "mss", "wgc"),
-        "input_backend": ("win32", "driver", "server"),
+        "input_backend": ("win32", "driver"),
         "follow_learn": ("accent", "any"),
         "reticle_shape": ("cross", "plus", "dot", "circle", "x"),
         "reticle_mode": ("center", "custom"),
@@ -899,20 +892,14 @@ class Config:
     }
 
     _LEGACY_CHOICES = {
-        "input_backend": {"interception": "driver", "rebind": "server"},
+        "input_backend": {"interception": "driver",
+                          "rebind": "win32", "server": "win32"},
         "pad_output": {"vigembus": "vigem", "emulated": "emulate",
                        "km": "emulate", "keyboard": "emulate"},
     }
 
     @classmethod
     def _normalize_choice(cls, key, raw):
-        """(value, accepted) for a setting with a fixed vocabulary.
-
-        Shared by _sanitize() and set() so a value written at runtime cannot
-        be one that no consumer understands - input_backend used to be
-        validated on load only, so set() could park "driver" in the config and
-        make_input_backend() silently fell back to Win32.
-        """
         allowed = cls._CHOICES.get(key)
         if allowed is None:
             return raw, True
@@ -979,12 +966,6 @@ class Config:
                 "it stays on and simply does nothing until a colour "
                 "is set again.")
 
-        if self.values.get("auto_click") \
-                and not parse_accents(self.values.get("accent_color")):
-            log("config: auto_click is on with no accent colour - it "
-                "will click the highest-contrast item in the centre "
-                "square instead.")
-
 
 
         lang = str(self.values.get("language", "en")).strip().lower()
@@ -1017,10 +998,6 @@ class Config:
             else:
                 self.values[key] = gamepad.PAD_BUTTONS[index]
 
-        # One button cannot hold both mouse roles: the hook classifies a press
-        # as trigger OR options, so a collision would silently drop one of
-        # them. The trigger wins (nothing works without it) and options goes
-        # back to its default, with a line in the log to say so.
         if (str(self.values.get("options_button"))
                 == str(self.values.get("trigger_button"))):
             log("config: options_button %r is the same as trigger_button; "
@@ -1109,10 +1086,6 @@ class Config:
 
     def reload(self):
         with self.lock:
-            # The live mode (flipped by the 1/2 keys) is the user's most recent
-            # intent; a stale mode= line in config.ini must not silently
-            # revert it on every reload/Apply. The ini still sets the STARTUP
-            # mode through the first _load().
             live_mode = self.values.get("mode")
             self.values = dict(DEFAULT_CONFIG)
             self._load()

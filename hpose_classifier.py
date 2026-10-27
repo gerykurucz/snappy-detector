@@ -1,15 +1,3 @@
-"""Tiny classifiers with numpy-only inference.
-
-Two heads are enough for this problem and both are cheap:
-
-* :class:`LinearHead` - multinomial logistic regression.
-* :class:`MLPHead` - one hidden layer with ReLU.
-
-The shipped heads live in ``models/hpose_bundle.npz`` as a flat
-``.npz`` of float32 arrays with their standardisation statistics, so
-inference needs nothing but numpy. (The torch training code that
-produced them is in the git history under ``hpose/train.py``.)
-"""
 
 from __future__ import annotations
 
@@ -17,7 +5,6 @@ import numpy as np
 
 
 class LinearHead(object):
-    """Multinomial logistic regression over ``D`` features."""
 
     kind = "linear"
 
@@ -53,7 +40,6 @@ class LinearHead(object):
 
 
 class MLPHead(object):
-    """One hidden layer, ReLU, softmax output."""
 
     kind = "mlp"
 
@@ -93,7 +79,6 @@ class MLPHead(object):
 
 
 def head_from_arrays(arrays: dict, classes=None):
-    """Rebuild a head from a bundle's arrays."""
     if "head_w" in arrays:
         return LinearHead(arrays["head_w"], arrays["head_b"],
                           arrays.get("feat_mean"), arrays.get("feat_std"),

@@ -5419,9 +5419,6 @@ def surface_image(tk_module, size, hex_bg):
     if _SURF_CACHE[key] is not None:
         return tk_module.PhotoImage(data=base64.b64encode(_SURF_CACHE[key]).decode("ascii"))
 
-    # Pure-Python path: PNG decode + per-pixel composite run ONCE per
-    # (size, background); the row data is cached and only the (cheap)
-    # PhotoImage creation + put repeats per call.
     img = tk_module.PhotoImage(width=size, height=size)
     try:
         rows = _SURF_ROWS.get(key)

@@ -1308,12 +1308,6 @@ _last_nudge = [0.0]
 
 
 def nudge_publisher(cfg=None):
-    """Ask the controller workflow to republish now.
-
-    Dev builds only: a shipped exe never carries a dispatch PAT, and this
-    refuses to run frozen so a customer cannot trigger workflows. Throttled
-    to one dispatch per minute because it sits on the manual re-check path.
-    """
     if getattr(sys, "frozen", False):
         return False
     now = time.monotonic()
@@ -1809,8 +1803,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
             time.sleep(0.6)
         _kill_browser_tree(launch.proc)
 
-    # (the single _ATTEMPT cleanup already happened above, next to
-    #  att.live = False - a second block here was dead code)
     result = att.result
     if not came or result is None or result[0] != "ok":
         if result and result[0] == "error":

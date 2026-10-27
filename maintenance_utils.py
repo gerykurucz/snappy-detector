@@ -1,4 +1,3 @@
-# ===== merged from cleanup.py =====
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -195,9 +194,6 @@ def cleanup_report() -> list[dict]:
     ]
 
 
-# ===== merged from memory.py =====
-
-
 @dataclass(slots=True)
 class MemoryOp:
     id: str
@@ -361,9 +357,6 @@ def memory_report() -> list[dict]:
     ]
 
 
-# ===== merged from power.py =====
-
-
 @dataclass(slots=True)
 class PowerOp:
     id: str
@@ -487,10 +480,6 @@ def build_power_steps(
                 )
             )
     return steps
-
-
-
-# ===== merged from registry.py =====
 
 import json
 from pathlib import Path
@@ -639,9 +628,6 @@ def registry_steps(changes: list[RegistryChange]) -> list[Step]:
         )
     return steps
 
-
-# ===== merged from host.py =====
-
 import base64
 
 from system_core import (TIMER_TARGET_US, BudgetComponent, Confidence, Risk,
@@ -656,14 +642,6 @@ _TIMER_MAX_UNITS = 200000
 
 
 def resident_timer_command(units: int) -> str:
-    """The hidden logon command that holds a finer system tick.
-
-    A timer request belongs to the process that made it and is dropped the
-    moment that process exits, which is why this is a resident hidden
-    powershell rather than a one-shot call. -EncodedCommand keeps the whole
-    body out of the quoting chain: the Run value, the generated apply.ps1 and
-    the C# source all stay literal, so nothing needs escaping twice.
-    """
     units = int(units)
     if not _TIMER_MIN_UNITS <= units <= _TIMER_MAX_UNITS:
         raise ValueError(
@@ -1107,9 +1085,6 @@ HOST_TWEAKS: tuple[Tweak, ...] = (
     ),
 )
 
-
-# ===== merged from network.py =====
-
 def _wifi_probe(inv: Any) -> Finding:
     if not inv.nics:
         return Finding(verdict=Verdict.UNKNOWN, summary="no network adapter was found")
@@ -1418,9 +1393,6 @@ NETWORK_TWEAKS: tuple[Tweak, ...] = (
         measure_needs_load=True,
     ),
 )
-
-
-# ===== merged from debloat.py =====
 
 import re
 
@@ -1890,11 +1862,6 @@ def build_selected(
     return steps
 
 
-
-# ===== merged from tweak_utils.py =====
-# ===== merged from experimental.py =====
-
-
 def _platform_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
@@ -2010,9 +1977,6 @@ EXPERIMENTAL_TWEAKS: tuple[Tweak, ...] = (
 )
 
 
-# ===== merged from gaming.py =====
-
-
 def _game_mode_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
@@ -2050,9 +2014,6 @@ GAMING_TWEAKS: tuple[Tweak, ...] = (
         caveats="Neither state is a defect; apply only the measured winner.",
     ),
 )
-
-
-# ===== merged from redist.py =====
 
 
 @dataclass(slots=True)
@@ -2187,9 +2148,6 @@ def redist_report() -> list[dict]:
         }
     ]
 
-
-# ===== merged from refused.py =====
-
 from system_core import RefusedTweakError
 
 
@@ -2256,8 +2214,6 @@ REFUSED_TWEAKS: tuple[Tweak, ...] = (
         ),
     ),
 )
-
-# ===== merged from catalog.py =====
 
 from models import validate_catalog
 from input_utils import TWEAKS as _DISPLAY_TWEAKS

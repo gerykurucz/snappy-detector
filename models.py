@@ -296,9 +296,6 @@ class DebloatOp:
                 f"{self.id}: must state that it is not a latency change"
             )
 
-
-# ===== merged from common.py (Step factories) =====
-
 def manual(description: str, text: str, notes: str = "") -> Step:
     return Step(
         kind=StepKind.MANUAL,

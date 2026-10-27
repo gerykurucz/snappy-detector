@@ -40,6 +40,38 @@ _FALLBACK_STYLE = {
     "danger": "Danger.TButton",
 }
 
+# Default fonts used when gui.py's font dict is not provided
+_DEFAULT_FONTS = {
+    "base":   ("Segoe UI", 11),
+    "bold":   ("Segoe UI", 11, "bold"),
+    "h1":     ("Segoe UI", 19, "bold"),
+    "entry":  ("Segoe UI", 11),
+}
+
+class _PalTheme:
+    """Attribute-style view over gui.py's pal dict, so lattool_gui.py's
+    existing `t.raised` / `t.accent` etc. keep working unchanged."""
+    def __init__(self, pal, fonts):
+        self.bg       = pal["bg"]
+        self.raised   = pal["card"]
+        self.inset    = pal["entry"]
+        self.fg       = pal["text"]
+        self.muted    = pal["muted"]
+        self.accent   = pal["accent"]
+        self.good     = pal["green"]
+        self.warn     = pal["amber"]
+        self.bad      = pal["accent"]
+        self.border   = pal["entry_bd"]
+        self.entry_bg = pal["entry"]
+        self.entry_fg = pal["text"]
+        self.font        = fonts["base"]
+        self.font_bold   = fonts["bold"]
+        self.font_h1     = fonts["h1"]
+        self.font_h2     = fonts["h1"]
+        self.font_big    = fonts["h1"]
+        self.font_entry  = fonts["entry"]
+        self.font_mono   = ("Consolas", 10)
+
 
 class DarkCheck(ttk.Frame):
     SIZE = 15
@@ -97,12 +129,28 @@ class SnappyAIApp:
     ) -> None:
         self.root = root
         self.ctl = controller or GuiController()
-        self.theme = (embed.get("theme") if embed else None) or DEFAULT_THEME
-        self._button_factory: ButtonFactory | None = (
-            embed.get("button") if embed else None
+
+        # --- styling sources, in priority order ---
+        self._kit = (embed.get("kit") if embed else None)
+        self._pal = ((embed.get("pal") if embed else None)
+                     or (self._kit.pal if self._kit else None))
+        self._fonts = (embed.get("fonts") if embed else None)
+
+        if self._pal is not None:
+            self.theme = _PalTheme(self._pal, self._fonts or _DEFAULT_FONTS)
+        else:
+            self.theme = (embed.get("theme") if embed else None) or DEFAULT_THEME
+
+        self._button_factory = (
+            (embed.get("button") if embed else None)
+            or (self._kit.button if self._kit else None)
         )
         self._on_timer_persist = (embed.get("on_timer_persist") if embed else None)
         self.last_script_path = ""
+
+        # For embed mode: trace timer var so on_timer_toggle fires when kit.bool_switch changes it
+        self._embed_timer_var_traced = False
+
         if embed is None:
             root.title(APP_TITLE)
             root.geometry("1080x760")
@@ -136,6 +184,10 @@ class SnappyAIApp:
         self, parent, text: str, command: Any = None, kind: str = "plain",
         big: bool = False,
     ):
+        # Map lattool_gui's "danger" kind to kit's "amber"
+        kit_kind = {"danger": "amber"}.get(kind, kind)
+        if self._kit is not None:
+            return self._kit.button(parent, text, command, kind=kit_kind, big=big)
         if self._button_factory is not None:
             return self._button_factory(
                 parent, text, command, kind=kind, big=big
@@ -144,6 +196,27 @@ class SnappyAIApp:
             parent, text=text, command=command,
             style=_FALLBACK_STYLE["big" if big else kind],
         )
+
+    def _check(self, parent, text, variable, surface="bg"):
+        """Create a checkbox row using kit.bool_switch when available,
+        otherwise fall back to DarkCheck."""
+        if self._kit is not None:
+            row = tk.Frame(parent, bg=self.theme.raised if surface == "card"
+                                        else self.theme.bg)
+            self._kit.bool_switch(row, variable, word=True).pack(side="left")
+            lbl = tk.Label(
+                row, text=text, anchor="w", justify="left",
+                bg=row.cget("bg"), fg=self.theme.fg,
+                font=self.theme.font, wraplength=800, cursor="hand2",
+            )
+            lbl.pack(side="left", padx=(8, 0))
+            # click on the text toggles the switch too
+            lbl.bind("<Button-1>", lambda _e: variable.set(not variable.get()))
+            return row
+        # fallback for standalone mode
+        dc = DarkCheck(parent, text=text, variable=variable,
+                       surface=surface, theme=self.theme)
+        return dc
 
     def _configure_style(self, safe: bool = False) -> None:
         t = self.theme
@@ -214,6 +287,15 @@ class SnappyAIApp:
             insertcolor=t.entry_fg, bordercolor=t.border, padding=5, font=t.font_entry,
         )
         style.configure(
+            "TCombobox",
+            fieldbackground=t.entry_bg, background=t.entry_bg,
+            foreground=t.entry_fg, arrowcolor=t.entry_fg,
+            bordercolor=t.border, padding=4, font=t.font,
+        )
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", t.entry_bg)],
+                  foreground=[("readonly", t.entry_fg)])
+        style.configure(
             "Horizontal.TProgressbar", background=t.accent, troughcolor=t.inset,
             bordercolor=t.inset, lightcolor=t.accent, darkcolor=t.accent,
             thickness=8,
@@ -233,22 +315,26 @@ class SnappyAIApp:
             "Card.TLabelframe.Label", background=t.raised, foreground=t.accent,
             font=t.font_bold,
         )
-        if not safe:
-            for orient in ("Vertical", "Horizontal"):
-                style.configure(
-                    f"{orient}.TScrollbar", background=t.raised,
-                    troughcolor=t.inset, arrowcolor=t.muted,
-                    bordercolor=t.inset, relief="flat", arrowsize=13, gripcount=0,
-                )
-                style.map(
-                    f"{orient}.TScrollbar",
-                    background=[("active", t.border), ("disabled", t.raised)],
-                )
+        for orient in ("Vertical", "Horizontal"):
+            style.configure(
+                f"{orient}.TScrollbar", background=t.raised,
+                troughcolor=t.inset, arrowcolor=t.muted,
+                bordercolor=t.inset, relief="flat", arrowsize=13, gripcount=0,
+            )
+            style.map(
+                f"{orient}.TScrollbar",
+                background=[("active", t.border), ("disabled", t.raised)],
+            )
 
     def retheme(self, theme: Theme) -> None:
         """Live light/dark switch when embedded in a host app: restyle ttk,
         remap the raw tk widgets that captured colours at build time, and
         redraw the canvases."""
+        if self._kit is not None:
+            # kit.switch_to() repaints every registered surface, but the raw
+            # tk.Label/tk.Canvas widgets below are not registered with kit - walk
+            # them explicitly.
+            theme = _PalTheme(self._kit.pal, self._fonts or _DEFAULT_FONTS)
         old = self.theme
         self.theme = theme
         self._configure_style(safe=True)
@@ -636,15 +722,13 @@ class SnappyAIApp:
         trow = ttk.Frame(timer, style="Raised.TFrame")
         trow.pack(fill="x")
         self.var_timer = tk.BooleanVar(value=False)
-        self.chk_timer = DarkCheck(
-            trow,
-            text="Hold a 0.5 ms system tick while SnappyAI runs",
-            variable=self.var_timer,
-            command=self.on_timer_toggle,
-            surface="card",
-            theme=t,
+        self.chk_timer = self._check(
+            trow, "Hold a 0.5 ms system tick while SnappyAI runs",
+            self.var_timer, surface="card",
         )
         self.chk_timer.pack(side="left")
+        # kit.bool_switch doesn't take command=; trace the variable instead
+        self.var_timer.trace_add("write", lambda *_a: self.on_timer_toggle())
         ttk.Label(
             trow,
             text="Raises the clock interrupt frequency so sub-millisecond waits "
@@ -664,23 +748,13 @@ class SnappyAIApp:
         )
         gen.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         self.var_del = tk.BooleanVar(value=False)
-        DarkCheck(
-            gen,
-            text="Cleanup scripts may delete files (otherwise they only report "
+        self._check(gen, "Cleanup scripts may delete files (otherwise they only report "
             "what could be deleted)",
-            variable=self.var_del,
-            surface="card",
-            theme=t,
-        ).pack(anchor="w")
+            self.var_del, surface="card").pack(anchor="w")
         self.var_removals = tk.BooleanVar(value=False)
-        DarkCheck(
-            gen,
-            text="Include irreversible removals (Edge, Xbox overlay, OneDrive, "
+        self._check(gen, "Include irreversible removals (Edge, Xbox overlay, OneDrive, "
             "Outlook) in the debloat script",
-            variable=self.var_removals,
-            surface="card",
-            theme=t,
-        ).pack(anchor="w", pady=(6, 0))
+            self.var_removals, surface="card").pack(anchor="w", pady=(6, 0))
         row = ttk.Frame(gen, style="Raised.TFrame")
         row.pack(fill="x", pady=(12, 0))
         self._button(row, "Cleanup script", self.on_gen_cleanup).pack(side="left")

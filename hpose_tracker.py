@@ -1,23 +1,3 @@
-"""Tracking people across frames.
-
-A detector answers "where is everybody in this picture".  A tracker
-answers "where is the person I was following, and how have they
-changed".  For a target that moves, that difference matters: the
-detector's box jitters by a few pixels every frame, and its class
-answers flicker between two labels when a body sits on the boundary
-between them.
-
-:class:`Tracker` keeps a Kalman filter on every box, a motion history
-on every centre point and a running average on every class
-probability, with a margin that stops a label changing on a single
-uncertain frame.
-
-Association is two-stage, the same idea ByteTrack uses: confident
-detections are matched first, and the detections the detector was less
-sure about are then given a chance to keep a track alive.  Without the
-second stage a target that is briefly blurred loses its identity, its
-velocity and its history.
-"""
 
 from __future__ import annotations
 
@@ -29,24 +9,19 @@ from hpose_stance import STANCE_CLASSES
 
 
 class Track(object):
-    """One tracked person."""
 
     __slots__ = ("id", "box", "score", "hits", "misses", "age", "kf",
                  "motion", "view_probs", "stance_probs", "view", "stance",
                  "view_history", "stance_history", "last_t", "fit",
-                 "confirmed", "has_face", "kp_conf", "raw_score")
+                 "confirmed", "has_face", "kp_conf", "raw_score", "head_kp")
 
     def __init__(self, tid: int, box, score: float, t: float):
         self.id = int(tid)
         self.box = tuple(float(v) for v in box)
         self.score = float(score)
-        #: mean confidence of the four torso joints of the last
-        #: detection - the skeleton quality behind the box
         self.kp_conf = 1.0
-        #: the detector's own box score of the last detection, before
-        #: skeleton fusion - weak-box tracks need a second frame
-        #: before they may be aimed at
         self.raw_score = float(score)
+        self.head_kp = None
         self.hits = 0
         self.misses = 0
         self.age = 0
@@ -66,7 +41,6 @@ class Track(object):
         self.confirmed = False
         self.has_face = False
 
-    # -- geometry ------------------------------------------------------
     @property
     def center(self):
         return ((self.box[0] + self.box[2]) * 0.5,
@@ -77,6 +51,10 @@ class Track(object):
         return self.motion.vel
 
     @property
+    def velocity_raw(self):
+        return self.motion.vel_raw
+
+    @property
     def speed(self) -> float:
         return self.motion.speed
 
@@ -85,7 +63,14 @@ class Track(object):
         return self.motion.state()
 
     def lead(self, seconds: float):
-        """Where this target will be after ``seconds``."""
+        if self.hits >= 3 and self.motion.samples:
+            t = max(0.0, float(seconds))
+            vx, vy = self.motion.vel_raw
+            ox = vx * t
+            oy = vy * t
+            x = self.motion.samples[-1][1] + ox
+            y = self.motion.samples[-1][2] + oy
+            return x, y, ox, oy
         return self.motion.predict(seconds)
 
     def as_dict(self) -> dict:
@@ -110,7 +95,6 @@ class Track(object):
 
 
 def _greedy_match(tracks, dets, iou_threshold: float):
-    """Match tracks to detections by IoU, best pairs first."""
     pairs = []
     for ti, tr in enumerate(tracks):
         for di, det in enumerate(dets):
@@ -131,7 +115,6 @@ def _greedy_match(tracks, dets, iou_threshold: float):
 
 
 class Tracker(object):
-    """Multi-object tracker with smoothed classifications."""
 
     def __init__(self, max_age: int = 20, min_hits: int = 2,
                  iou_threshold: float = 0.30, low_iou_threshold: float = 0.15,
@@ -148,16 +131,12 @@ class Tracker(object):
         self.tracks = []
         self._next_id = 1
 
-    # -- helpers -------------------------------------------------------
     def _smooth(self, store: dict, incoming: dict, alpha: float,
                 current: str, margin: float) -> str:
-        """Blend class probabilities and pick a label with hysteresis."""
         if not incoming:
             return current
         total = sum(store.values())
         if total <= 1e-9:
-            # first sighting: take the detector's answer as it is, so
-            # that a single frame already carries a real confidence
             for key in store:
                 store[key] = float(incoming.get(key, 0.0))
             best = max(store, key=lambda k: store[k])
@@ -173,9 +152,7 @@ class Tracker(object):
             return best
         return current
 
-    # -- main ----------------------------------------------------------
     def update(self, detections, t: float) -> list:
-        """Feed one frame of detections.  Returns the live tracks."""
         dets = list(detections or [])
         for tr in self.tracks:
             tr.kf.predict(t)
@@ -186,7 +163,6 @@ class Tracker(object):
         matches, used = _greedy_match(self.tracks, high, self.iou_threshold)
         matched_det = set(di for _, di in matches)
 
-        # second chance for the detections the detector was unsure about
         rest = [i for i in range(len(high)) if i not in matched_det]
         if rest and self.tracks:
             unmatched = [i for i, tr in enumerate(self.tracks)
@@ -213,7 +189,6 @@ class Tracker(object):
             self._apply(track, det, t)
             self.tracks.append(track)
 
-        # age out the tracks that were not seen
         alive = []
         for tr in self.tracks:
             if tr.misses > self.max_age:
@@ -232,6 +207,9 @@ class Tracker(object):
             track.kp_conf = float(det["kp_conf"])
         if "raw_score" in det:
             track.raw_score = float(det["raw_score"])
+        hk = det.get("head_kp")
+        if hk:
+            track.head_kp = hk
         track.last_t = float(t)
         track.kf.update(track.box, t)
         cx = (track.box[0] + track.box[2]) * 0.5
@@ -247,9 +225,6 @@ class Tracker(object):
                                     det.get("stance_probs"),
                                     self.stance_smoothing, track.stance,
                                     self.switch_margin)
-        # A picture cannot tell a person who is standing still from one
-        # who is walking past, because the difference is a stride.  The
-        # tracker can: a body that is covering ground is walking.
         if track.stance == "standing" and track.motion_state == "fast":
             track.stance = "walk"
         elif track.stance == "walk" and track.motion_state == "static" \
@@ -264,9 +239,7 @@ class Tracker(object):
         if not track.confirmed and track.hits >= self.min_hits:
             track.confirmed = True
 
-    # -- queries -------------------------------------------------------
     def best(self, score_fn=None):
-        """The most interesting track, by default the biggest one."""
         if not self.tracks:
             return None
         if score_fn is not None:

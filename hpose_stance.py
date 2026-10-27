@@ -1,35 +1,12 @@
-"""What is this person doing?
-
-Four body states are distinguished:
-
-``standing`` - upright, legs together or nearly so,
-``walk``     - upright, legs apart, one foot forward,
-``crouch``   - down low, knees bent, the head well below its
-               standing height,
-``prone``    - down on the ground, the body more horizontal than
-               vertical,
-``jump``     - off the ground, knees tucked, arms up.
-
-The classifier works on the geometry alone: where the hips sit inside
-the bounding box, how far the knees are bent, how far the torso
-leans, and how wide the box is compared with how tall it is.  A prone
-figure is the easy case - the body is wider than it is tall - and a
-crouch is the hard one, because a crouching person and a short person
-standing still look alike until the knee angles are read.
-"""
 
 from __future__ import annotations
 
 import numpy as np
 
-#: The five body states, in the order the stance head was trained.
-#: (Lived in the training generator; the generator is gone, this is the
-#: canonical copy.)
 STANCE_CLASSES = ("standing", "crouch", "prone", "jump", "walk")
 
 
 class StanceResult(object):
-    """The answer for one person."""
 
     __slots__ = ("name", "confidence", "probs", "secondary", "crouched",
                  "prone", "airborne")
@@ -54,7 +31,6 @@ class StanceResult(object):
 
 
 class StanceClassifier(object):
-    """Turns a feature vector into a body state."""
 
     def __init__(self, bundle):
         self.bundle = bundle
@@ -94,15 +70,6 @@ class StanceClassifier(object):
 
     @staticmethod
     def _apply_knee_rule(p: np.ndarray, feats: np.ndarray) -> np.ndarray:
-        """Let the knees have the last word.
-
-        A person whose knees are straight is not crouching and not
-        lying down, whatever the box around them says.  A person whose
-        knees are bent and whose body is upright is not standing still.
-        The learned head sees all of this, but it also sees a hundred
-        other things, and on a photograph it is often distracted by the
-        shape of the box.
-        """
         import hpose_features as _features
         names = _features.feature_names()
         feats = np.asarray(feats, dtype=np.float64).reshape(-1)
@@ -120,17 +87,13 @@ class StanceClassifier(object):
         out = np.array(p, dtype=np.float64, copy=True)
         idx = {name: i for i, name in enumerate(STANCE_CLASSES)}
         if spine > 0.45:
-            # the body is lying down
             out[idx["standing"]] *= 0.02
             out[idx["walk"]] *= 0.02
             out[idx["jump"]] *= 0.25
         elif knee > 0.86:
-            # straight legs and an upright body: standing, or walking
             out[idx["crouch"]] *= 0.02
             out[idx["prone"]] *= 0.02
             out[idx["jump"]] *= 0.02
-            # a stride shows up as one foot being lower than the
-            # other, but only when the feet were actually seen
             if value("legs_seen") > 0.5:
                 stride = value("ankle_dy")
             else:
@@ -141,7 +104,6 @@ class StanceClassifier(object):
                 out[idx["walk"]] *= 0.15
                 out[idx["standing"]] *= 3.0
         elif knee < 0.72:
-            # bent knees
             out[idx["standing"]] *= 0.15
         total = out.sum()
         return out / total if total > 1e-9 else out

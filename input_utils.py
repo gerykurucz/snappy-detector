@@ -1,4 +1,3 @@
-# ===== merged from input.py =====
 from __future__ import annotations
 
 import sys
@@ -23,7 +22,9 @@ METHOD = (
 LIMITS = (
     "Excludes the physical switch debounce and the USB wire/poll time, which no "
     "software can observe. Includes driver, HID class driver, input thread and "
-    "hook dispatch. One-way values assume symmetric dispatch and are RTT/2."
+    "hook dispatch. One-way values assume symmetric dispatch and are RTT/2. "
+    "Each press is held 50 ms so receiver windows render it; a small "
+    "on-screen pad flashes with every synthetic click."
 )
 
 
@@ -87,8 +88,12 @@ def _remove_hook(handle: Any) -> None:
         pass
 
 
+CLICK_HOLD_S = 0.05
+
+
 def _send_click(user32: Any) -> None:
     import ctypes
+    import time
     from ctypes import wintypes
 
     class MOUSEINPUT(ctypes.Structure):
@@ -108,13 +113,118 @@ def _send_click(user32: Any) -> None:
         wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int
     ]
     user32.SendInput.restype = wintypes.UINT
-    for flag in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
+
+    def _one(flag: int) -> None:
         inp = INPUT()
         inp.type = INPUT_MOUSE
         inp.mi.dwFlags = flag
         inp.mi.dwExtraInfo = ctypes.c_void_p(TAG)
         if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             raise OSError("SendInput injected nothing")
+
+    _one(MOUSEEVENTF_LEFTDOWN)
+    time.sleep(CLICK_HOLD_S)
+    _one(MOUSEEVENTF_LEFTUP)
+
+
+def _click_pad() -> dict[str, Any]:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+    ]
+    user32.DefWindowProcW.restype = wintypes.LPARAM
+
+    W = 244
+    H = 64
+    state = {"down": False}
+
+    @ctypes.WINFUNCTYPE(
+        wintypes.LPARAM, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+        wintypes.LPARAM,
+    )
+    def _wndproc(hwnd: int, msg: int, wp: int, lp: int) -> int:
+        try:
+            if msg in (WM_LBUTTONDOWN, WM_LBUTTONUP):
+                state["down"] = msg == WM_LBUTTONDOWN
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wp, lp)
+        except Exception:
+            return 0
+
+    class WNDCLASSEXW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.UINT),
+            ("style", wintypes.UINT),
+            ("lpfnWndProc", type(_wndproc)),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", wintypes.HINSTANCE),
+            ("hIcon", wintypes.HICON),
+            ("hCursor", wintypes.HCURSOR),
+            ("hbrBackground", wintypes.HBRUSH),
+            ("lpszMenuName", wintypes.LPCWSTR),
+            ("lpszClassName", wintypes.LPCWSTR),
+            ("hIconSm", wintypes.HICON),
+        ]
+
+    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    user32.RegisterClassExW.restype = wintypes.ATOM
+    user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.UpdateWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.UnregisterClassW.argtypes = [
+        wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.SetLayeredWindowAttributes.argtypes = [
+        wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD
+    ]
+    hinst = kernel32.GetModuleHandleW(None)
+    name = "SnappyAIClickPad"
+    cls = WNDCLASSEXW()
+    cls.cbSize = ctypes.sizeof(WNDCLASSEXW)
+    cls.lpfnWndProc = _wndproc
+    cls.hInstance = hinst
+    cls.lpszClassName = name
+    if not user32.RegisterClassExW(ctypes.byref(cls)):
+        return {}
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    x = max(0, pt.x - W // 2)
+    y = max(0, pt.y - H - 24)
+    hwnd = user32.CreateWindowExW(
+        0x00080008, name, "input leg monitor (clicks flash here)",
+        0x80000000, x, y, W, H, None, None, hinst, None,
+    )
+    if not hwnd:
+        return {}
+    user32.SetLayeredWindowAttributes(hwnd, 0, 0, 0x00000002)
+    user32.ShowWindow(hwnd, 8)
+    user32.UpdateWindow(hwnd)
+
+    def close() -> None:
+        try:
+            user32.DestroyWindow(hwnd)
+        except Exception:
+            pass
+        try:
+            user32.UnregisterClassW(name, hinst)
+        except Exception:
+            pass
+
+    return {"user32": user32, "hwnd": hwnd, "proc": _wndproc,
+            "close": close, "size": (W, H)}
 
 
 def _pump_until(stop: threading.Event, user32: Any, timeout: float) -> None:
@@ -149,6 +259,11 @@ def run_click_test(
     except OSError as exc:
         return ClickLeg(ok=False, error=str(exc))
     user32 = handle["user32"]
+    pad = None
+    try:
+        pad = _click_pad() or None
+    except Exception:
+        pad = None
     errors = 0
     rtts: list[float] = []
 
@@ -188,6 +303,8 @@ def run_click_test(
     _pump_until(stop, user32, timeout=count * (interval + 1.0) + 10.0)
     stop.set()
     t.join(timeout=5.0)
+    if pad is not None:
+        pad["close"]()
     _remove_hook(handle)
     if not rtts:
         detail = f"; {errors} injection failures" if errors else ""
@@ -280,9 +397,6 @@ def measure_input(
         "limits": LIMITS,
     }
 
-
-# ===== merged from hotkeys.py =====
-
 import re
 
 from system_core import IS_WINDOWS, log
@@ -328,8 +442,6 @@ _MOD_HEAD = re.compile(r"^(ctrl|alt|shift|win)\+(.*)$",
 
 
 def _parse_hotkey(spec):
-    """"ctrl+alt+r" -> (mods, vk). The key is whatever follows the last
-    modifier, so "+" itself stays bindable ("ctrl++", "shift+-")."""
     if spec is None:
         return None
     raw = re.sub(r"\s*\+\s*", "+", str(spec).strip())
@@ -356,24 +468,50 @@ def _parse_hotkey(spec):
     return mods, vk
 
 
+MACRO_MAX_TOKENS = 5
+
+
+def _parse_macro_spec(spec, max_tokens=MACRO_MAX_TOKENS):
+    if spec is None:
+        return None
+    raw = re.sub(r"\s*\+\s*", "+", str(spec).strip()).strip().lower()
+    if not raw:
+        return None
+    tokens = raw.split("+")
+    if not tokens or len(tokens) > max_tokens:
+        return None
+    mods = 0
+    keys = []
+    for tok in tokens:
+        if not tok:
+            return None
+        bit = HOTKEY_MODS.get(tok)
+        if bit is not None:
+            if mods & bit:
+                return None
+            mods |= bit
+            continue
+        vk = _key_to_vk(tok)
+        if vk is None or vk in keys:
+            return None
+        keys.append(vk)
+    if not mods and not keys:
+        return None
+    return mods, tuple(keys)
+
+
+def _macro_spec_text(mods, key_tokens):
+    head = [name for name, _bit in ((n, HOTKEY_MODS[n]) for n in MOD_ORDER)
+            if mods & HOTKEY_MODS[name]]
+    return "+".join(head + [str(t) for t in key_tokens])
+
+
 MOD_VKS = {"ctrl": (0x11,), "alt": (0x12,), "shift": (0x10,),
            "win": (0x5B, 0x5C)}
 MOD_ORDER = ("ctrl", "alt", "shift", "win")
 
 
 def parse_bypass_spec(spec):
-    """A HELD-input spec -> (mods, vk); vk is None for modifiers only.
-
-    A hotkey is a press, so its grammar needs a non-modifier key at the end
-    ("shift" alone is not a shortcut). The bypass is a hold, and "while Shift
-    is down" is exactly what people expect from it, so this also accepts what
-    _parse_hotkey rejects: one modifier on its own, or several together. A
-    normal combination goes through the shared parser, so "ctrl+alt+x" means
-    the same thing here as it does everywhere else.
-
-    None means "reject": an empty spec, an unknown name, or a repeated
-    modifier. Callers keep the previous value and say so.
-    """
     parsed = _parse_hotkey(spec)
     if parsed is not None:
         return parsed[0] & ~HOTKEY_NOREPEAT, parsed[1]
@@ -390,12 +528,6 @@ def parse_bypass_spec(spec):
 
 
 def describe_bypass_spec(spec):
-    """The canonical spelling of a bypass spec, or "" when it is invalid.
-
-    Modifiers first, in a fixed order, so "SHIFT + ctrl" and "ctrl+shift"
-    store and display identically - the same rule format_buttons applies to
-    controller combinations.
-    """
     parsed = parse_bypass_spec(spec)
     if parsed is None:
         return ""
@@ -403,8 +535,6 @@ def describe_bypass_spec(spec):
     head = [name for name in MOD_ORDER if mods & HOTKEY_MODS[name]]
     if vk is None:
         return "+".join(head)
-    # The key keeps its own spelling, so "+" stays bindable ("ctrl++"): strip
-    # the modifier heads the same way the parser does and keep the remainder.
     raw = re.sub(r"\s*\+\s*", "+", str(spec).strip().lower())
     while True:
         match = _MOD_HEAD.match(raw)
@@ -415,11 +545,6 @@ def describe_bypass_spec(spec):
 
 
 def bypass_mod_vks(mods):
-    """The virtual-key codes a modifier mask stands for, one tuple per mod.
-
-    GetAsyncKeyState on a generic VK (VK_SHIFT) reports either side down, and
-    Win has no generic VK at all, so left and right are both listed.
-    """
     out = []
     for name in MOD_ORDER:
         if mods & HOTKEY_MODS[name]:
@@ -555,9 +680,9 @@ def build_macro_table(cfg):
         if not tspec or not aspec:
             continue
 
-        trig = _parse_hotkey(tspec)
-        act = _parse_hotkey(aspec)
-        if trig is None:
+        trig = _parse_macro_spec(tspec)
+        act = _parse_macro_spec(aspec)
+        if trig is None or (not trig[1] and not trig[0]):
             log("Macro %d: macro key %r is invalid; macro skipped."
                 % (i, tspec))
             continue
@@ -566,16 +691,32 @@ def build_macro_table(cfg):
                 % (i, aspec))
             continue
 
-        key = (trig[0] & 0x000F, trig[1])
-        if key in seen:
-            log("Macro %d: macro key %r is already used by macro %d; "
-                "skipped." % (i, tspec, seen[key]))
+        skip = False
+        if trig[1]:
+            key = (trig[0] & 0x000F, trig[1][0])
+            if key in seen:
+                log("Macro %d: macro key %r is already used by macro %d; "
+                    "skipped." % (i, tspec, seen[key]))
+                skip = True
+            else:
+                seen[key] = i
+        else:
+            for tmods, tvks, _, _ in macros:
+                if not tvks and tmods == trig[0]:
+                    log("Macro %d: mods-only macro key %r already used; "
+                        "skipped." % (i, tspec))
+                    skip = True
+                    break
+        if skip:
             continue
-        seen[key] = i
 
         macros.append((trig[0], trig[1], act[0], act[1]))
 
-    macro_map = {(m[0] & 0x000F, m[1]): m for m in macros}
+    macro_map = {}
+    for m in macros:
+        tmods, tvks, _, _ = m
+        if tvks:
+            macro_map[(tmods & 0x000F, tvks[0])] = m
     return macros, macro_map
 
 
@@ -609,10 +750,6 @@ CONTROL_ACTION_NAMES = ("record_macro", "stop_macro", "play_macro",
 
 MODE_KEY_IDS = {1: (20, 22, 23, 24), 2: (21, 25, 26, 27)}
 MAX_KEYS_PER_MODE = 4
-
-
-
-# ===== merged from display.py =====
 
 from system_core import BudgetComponent, Confidence, Risk, Verdict
 from models import manual, reg_set
@@ -820,10 +957,6 @@ TWEAKS: tuple[Tweak, ...] = (
 )
 
 
-# ===== merged from gui_utils.py =====
-# ===== merged from lattool_theme.py =====
-
-
 @dataclass
 class Theme:
     bg: str = "#14171a"
@@ -853,11 +986,6 @@ ButtonFactory = Callable[..., Any]
 
 
 def snappy_theme(pal: dict[str, str], fonts: dict[str, tuple]) -> Theme:
-    """Map the host palette onto the lattool Theme so the embedded tabs read
-    as native Snappy surfaces: the host builds every page on pal["card"],
-    sections/rows on pal["desc_bg"], and inputs on pal["entry"]. Mapping
-    lattool's root bg to pal["bg"] instead would leave white-on-white panels
-    (light) and mismatched label patches on the page."""
     return Theme(
         bg=pal["card"],
         raised=pal["desc_bg"],
@@ -879,9 +1007,6 @@ def snappy_theme(pal: dict[str, str], fonts: dict[str, tuple]) -> Theme:
         font_big=(fonts["base"][0], 30),
         font_entry=fonts["entry"],
     )
-
-
-# ===== merged from latency_tabs.py =====
 
 import os
 
@@ -912,11 +1037,6 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
     from lattool_controller import GuiController
     from lattool_gui import SnappyAIApp
 
-    def button(parent, text, command, kind="plain", big=False):
-        return kit.button(parent, text, command,
-                          kind={"danger": "amber"}.get(kind, kind), big=big,
-                          surface="card")
-
     ctl = GuiController(
         backend_name=backend, out_root=out_root or default_out_root(),
         brand=brand,
@@ -944,8 +1064,9 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
                 "monitor": pages[TAB_LIVE],
                 "tools": pages[TAB_TOOLS],
             },
-            "theme": snappy_theme(pal, fonts),
-            "button": button,
+            "kit": kit,
+            "pal": pal,
+            "fonts": fonts,
             "on_timer_persist": on_timer_persist,
         },
     )
@@ -955,7 +1076,7 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
         ctl.start_timer_request(float(startup_timer_us))
 
     def _restyle():
-        app.retheme(snappy_theme(pal, fonts))
+        app.retheme(snappy_theme(kit.pal, fonts))
 
     kit.repaint(_restyle)
     return {"app": app, "ctl": ctl}
@@ -986,9 +1107,6 @@ def shutdown(handle):
         stop_timer_request()
     except Exception:
         pass
-
-
-# ===== merged from gamepad.py =====
 
 """Native controller input: XInput, the button vocabulary, and the spec grammar.
 
@@ -1114,7 +1232,6 @@ class _Vibration(ctypes.Structure):
 
 
 def _load_dll():
-    """Load the first XInput that this Windows has. Cached; never raises."""
     global _dll, _dll_tried
     with _dll_lock:
         if _dll_tried:
@@ -1156,22 +1273,10 @@ def _load_dll():
 
 
 def available():
-    """True when an XInput runtime could be loaded (a pad may still be absent).
-
-    Safe on every platform; the GUI reads it to word the switch, and it is the
-    reason enabling the switch on a machine with no XInput says so once
-    instead of failing silently.
-    """
     return _load_dll() is not None
 
 
 class PadState(object):
-    """One normalised sample of a pad.
-
-    `buttons` is a bitmask over PAD_BUTTONS indices (triggers included, so a
-    binding never has to know that lt/rt are analogue); `raw` keeps the
-    un-thresholded trigger bytes for recording.
-    """
 
     __slots__ = ("connected", "packet", "buttons", "lt", "rt",
                  "lx", "ly", "rx", "ry", "when")
@@ -1220,12 +1325,6 @@ def _threshold_triggers(lt, rt, threshold):
 
 
 def read(index=0, trigger_threshold=DEFAULT_TRIGGER_THRESHOLD, reader=None):
-    """One sample from pad `index`. Never raises; answers EMPTY_STATE on any
-    failure so the caller can treat "no pad" and "pad glitch" identically.
-
-    `reader` is injectable: the tests drive the whole engine from synthetic
-    frames, and no other seam in this project needs a physical device.
-    """
     if reader is not None:
         try:
             state = reader(index)
@@ -1270,7 +1369,6 @@ def read(index=0, trigger_threshold=DEFAULT_TRIGGER_THRESHOLD, reader=None):
 
 
 def capabilities(index=0):
-    """(type, subtype, flags) for a connected pad, or None."""
     dll = _load_dll()
     if dll is None or not hasattr(dll, "XInputGetCapabilities"):
         return None
@@ -1287,12 +1385,6 @@ def capabilities(index=0):
 
 
 def set_rumble(index, left=0.0, right=0.0, seconds=0.0):
-    """Spin the motors (0.0-1.0 each). Fire-and-forget, never raises.
-
-    Used for the two moments a pad user cannot see: recording started and
-    recording saved. Rumble is scheduled by XInput itself, so `seconds` only
-    bounds how long we keep the motors on.
-    """
     dll = _load_dll()
     if dll is None or seconds <= 0:
         return False
@@ -1312,12 +1404,6 @@ def set_rumble(index, left=0.0, right=0.0, seconds=0.0):
 
 
 def apply_deadzone(x, y, deadzone, scale=1.0):
-    """Radial deadzone, the one Xbox documentation recommends.
-
-    Per-axis deadzones make a stick drift diagonally; a radial one does not.
-    Returns (fx, fy) in -1.0..1.0, already scaled, so a caller can turn them
-    straight into a cursor delta.
-    """
     try:
         x = float(x)
         y = float(y)
@@ -1334,7 +1420,6 @@ def apply_deadzone(x, y, deadzone, scale=1.0):
 
 
 def normalise_axis(index, value):
-    """Clamp a recorded axis value to the range its axis really has."""
     name = PAD_AXES[index]
     try:
         v = int(value)
@@ -1346,7 +1431,6 @@ def normalise_axis(index, value):
 
 
 def parse_token(token):
-    """One button name -> its PAD_BUTTONS index, or None."""
     name = str(token or "").strip().lower()
     if not name:
         return None
@@ -1357,12 +1441,6 @@ def parse_token(token):
 
 
 def parse_spec(spec):
-    """A binding spec -> a frozenset of button indices, or None if invalid.
-
-    None means "reject this binding" (the caller logs and keeps the previous
-    value); an EMPTY spec is also None, because an unbound slot must never
-    match a pad that is doing nothing.
-    """
     if spec is None:
         return None
     raw = str(spec).strip()
@@ -1382,7 +1460,6 @@ def parse_spec(spec):
 
 
 def spec_mask(spec):
-    """A binding spec -> the bitmask its buttons set, or 0 when invalid."""
     indices = parse_spec(spec)
     if not indices:
         return 0
@@ -1393,8 +1470,6 @@ def spec_mask(spec):
 
 
 def format_buttons(buttons):
-    """A bitmask -> the canonical spec text ("rb+a"). Sorted by PAD_BUTTONS
-    order so the same combination always renders the same way."""
     if not buttons:
         return ""
     names = [PAD_BUTTONS[i] for i in range(len(PAD_BUTTONS))
@@ -1403,7 +1478,6 @@ def format_buttons(buttons):
 
 
 def describe_spec(spec):
-    """Human text for the GUI: the canonical spelling, or why it was rejected."""
     indices = parse_spec(spec)
     if indices is None:
         return ""
@@ -1415,13 +1489,6 @@ def describe_spec(spec):
 
 
 class PadTracker(object):
-    """Turns a stream of samples into one event per press.
-
-    A combination fires only while EVERY button of it is down, and only once
-    per press - holding never auto-repeats. That is the keyboard's rule
-    (HOTKEY_NOREPEAT), and it is what makes a held trigger safe to steer with:
-    the drive path needs the press and the release, not a burst of actions.
-    """
 
     def __init__(self, indices):
         self.indices = frozenset(indices or ())
@@ -1437,7 +1504,6 @@ class PadTracker(object):
         return bool(self._mask) and (buttons & self._mask) == self._mask
 
     def update(self, buttons, now=None):
-        """Advance one sample. Returns "press" for a new press, else None."""
         if not self.matches(buttons):
             self.down = False
             return None
@@ -1448,17 +1514,6 @@ class PadTracker(object):
 
 
 def shadowed_indices(bindings, buttons):
-    """Indices of bindings that a LONGER matching binding swallows this sample.
-
-    With "a" bound to launch and "rb+a" bound to record, pressing rb+a must
-    record and must not also launch. A binding is shadowed while another
-    binding that is down right now contains all of its buttons plus more.
-
-    The shadowed tracker is still advanced (so its own down/fired state stays
-    honest) - only its EVENT is dropped. Dropping the update as well would
-    make the shorter binding fire late: hold rb, press a, release rb and the
-    lone "a" would suddenly launch.
-    """
     matching = [b for b in bindings if b.indices and b.tracker.matches(buttons)]
     out = set()
     for short in matching:
@@ -1472,7 +1527,6 @@ def shadowed_indices(bindings, buttons):
 
 
 class PadBinding(object):
-    """A resolved binding: what to press, and what to do about it."""
 
     __slots__ = ("key", "spec", "indices", "tracker", "action")
 
@@ -1489,12 +1543,6 @@ class PadBinding(object):
 
 
 def build_bindings(table):
-    """{config key: (spec, action)} -> [PadBinding], duplicates reported.
-
-    A spec claimed by two keys is kept by the FIRST, in the order the caller
-    declared them, and the second is logged - the same policy
-    `hotkeys.build_hotkey_table` uses for keyboard bindings.
-    """
     out = []
     seen = {}
     for key in table:
@@ -1539,12 +1587,6 @@ ACTION_KEYS = (
 
 
 def action_ids():
-    """Action name -> the hotkey id that already implements it.
-
-    Reusing hotkeys.ACTION_IDS means a controller binding and a keyboard
-    binding run the SAME code path in assist.handle_hotkey, which is what
-    makes the two feature sets 1:1 instead of two parallel implementations.
-    """
     out = {}
     for hid, name in ACTION_IDS.items():
         out.setdefault(name, hid)
@@ -1552,7 +1594,6 @@ def action_ids():
 
 
 def build_action_bindings(cfg):
-    """{config key -> PadBinding} for the twelve action slots."""
     ids = action_ids()
     table = {}
     for key, name in ACTION_KEYS:
@@ -1563,13 +1604,6 @@ def build_action_bindings(cfg):
 
 
 def parse_macro_action(spec):
-    """A macro's output: ("key", mods, vk) or ("pad", mask), or None.
-
-    A keyboard/mouse combo works everywhere. A "pad:a+b" combo needs the
-    ViGEmBus virtual pad - there is no other way to make a controller press
-    appear - so the caller checks the active output backend before firing one
-    and says so once instead of silently doing nothing.
-    """
     raw = str(spec or "").strip()
     if not raw:
         return None
@@ -1585,11 +1619,6 @@ def parse_macro_action(spec):
 
 
 def build_pad_macro_table(cfg):
-    """Pad macros, mirroring hotkeys.build_macro_table slot for slot.
-
-    Returns [(slot, spec, indices, action)]. A trigger claimed by an earlier
-    slot is logged and skipped, exactly as the keyboard macros do.
-    """
     macros = []
     seen = {}
     for slot in range(1, MACRO_SLOTS + 1):
@@ -1617,12 +1646,6 @@ def build_pad_macro_table(cfg):
 
 
 def first_connected(index=0, reader=None, count=XUSER_MAX_COUNT):
-    """The index of the first pad that answers, or None.
-
-    `pad_index = -1` (the default) means "whoever is plugged in", which is
-    what an accessibility tool wants: the user has one pad and does not care
-    which slot Windows gave it.
-    """
     if reader is None and not available():
         return None
     if index is not None and int(index) >= 0:
@@ -1635,7 +1658,6 @@ def first_connected(index=0, reader=None, count=XUSER_MAX_COUNT):
 
 
 def describe(index=None, reader=None):
-    """One-paragraph status for the console `gamepad` command and the log."""
     if reader is None and not available():
         return ("Controller: no XInput runtime on this machine, so controller "
                 "support is unavailable.")
@@ -1659,9 +1681,6 @@ def describe(index=None, reader=None):
     if not found:
         lines.append("  no pad is connected right now.")
     return "\n".join(lines)
-
-
-# ===== merged from recordings.py =====
 
 import json
 
@@ -1702,7 +1721,6 @@ FORMAT_VERSION = 3
 
 
 def pad_axis_range(index):
-    """(low, high) for a recorded controller axis, per PAD_AXES."""
     name = PAD_AXES[index]
     if name in ("lt", "rt"):
         return 0, TRIGGER_FULL
@@ -1813,9 +1831,6 @@ def _clean_rec(data, fallback_name):
 
 
 class RecordingStore(object):
-    """The macro library. Every mutation persists: callers used to have to
-    remember save() after remove/set_name/set_loop, and any caller that
-    forgot lost the change at the next start-up."""
 
     def __init__(self, path=None):
         if path is None:
@@ -1870,6 +1885,42 @@ class RecordingStore(object):
             return False
 
 
+    def _load_items(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        items = data.get("recordings") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return []
+        out = []
+        for i, item in enumerate(items):
+            if len(out) >= MAX_RECORDINGS:
+                log("macros.json: library cap is %d - ignored %d extra "
+                    "recording(s)." % (MAX_RECORDINGS, len(items) - i))
+                break
+            rec = _clean_rec(item, "Recording %d" % (i + 1))
+            if rec is None:
+                log("macros.json: ignored an invalid recording entry.")
+                continue
+            out.append(rec)
+        return out
+
+
+    def reload_from_disk(self):
+        fresh = self._load_items()
+        if fresh is None:
+            return False
+        nxt = 1
+        for rec in fresh:
+            rec["id"] = nxt
+            nxt += 1
+        self.recordings[:] = fresh
+        self._next_id = nxt
+        self.revision += 1
+        return True
+
     def _add_clean(self, rec):
         rec["id"] = self._next_id
         self._next_id += 1
@@ -1910,7 +1961,7 @@ class RecordingStore(object):
             return False
         self.recordings.remove(rec)
         if not self.save():
-            self.recordings.append(rec)  # rollback
+            self.recordings.append(rec)
             return False
         return True
 
@@ -1998,7 +2049,6 @@ class RecordingStore(object):
         if not isinstance(data, dict):
             return False, i18n.L("rec.notfile")
 
-        # Check format version
         version = data.get("snappyai_recording") or data.get("snappyai_recordings")
         if version is not None and version != FORMAT_VERSION:
             log("recordings: import format version %r != %d, ignoring" % (version, FORMAT_VERSION))

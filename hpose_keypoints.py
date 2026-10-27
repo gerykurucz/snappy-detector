@@ -1,25 +1,3 @@
-"""COCO-17 keypoint vocabulary, skeleton topology and pose containers.
-
-Every pose that travels through this package is a :class:`Pose`: a
-``(17, 3)`` array of ``(x, y, confidence)`` in *image* pixels plus the
-axis-aligned box the person occupies and the detector score that
-produced it.  Coordinates are image pixels, origin at the top-left of
-the frame, x to the right and y downwards.
-
-The 17 joints follow the COCO ordering used by the YOLO pose family so
-the ONNX decoders can hand their raw tensors over untouched:
-
-    0 nose        1 left_eye     2 right_eye   3 left_ear
-    4 right_ear   5 left_shoulder               6 right_shoulder
-    7 left_elbow  8 right_elbow  9 left_wrist 10 right_wrist
-   11 left_hip   12 right_hip   13 left_knee  14 right_knee
-   15 left_ankle 16 right_ankle
-
-Two joints that COCO does not publish are derived on the fly: the neck
-(midpoint of the shoulders) and the pelvis (midpoint of the hips).
-Both are needed to measure torso geometry, and deriving them keeps every
-downstream consumer working with a single, stable joint vocabulary.
-"""
 
 from __future__ import annotations
 
@@ -34,11 +12,8 @@ KEYPOINT_NAMES = (
     "left_knee", "right_knee", "left_ankle", "right_ankle",
 )
 
-#: Index of every joint, by name.
 KP = {name: i for i, name in enumerate(KEYPOINT_NAMES)}
 
-#: Pairs of joints that are physically connected.  Used for limb
-#: visibility checks and for drawing.
 SKELETON = (
     (0, 1), (0, 2), (1, 3), (2, 4),
     (0, 5), (0, 6), (5, 6),
@@ -55,7 +30,6 @@ WRIST_IDX = (9, 10)
 KNEE_IDX = (13, 14)
 ANKLE_IDX = (15, 16)
 
-#: Names of the derived joints appended to the COCO-17 array.
 DERIVED_NAMES = ("neck", "pelvis", "head_center")
 N_KP_DERIVED = N_KP + len(DERIVED_NAMES)
 DERIVED_OFFSET = N_KP
@@ -63,12 +37,6 @@ DERIVED_OFFSET = N_KP
 
 
 def derive_joints(kps: np.ndarray) -> np.ndarray:
-    """Append neck, pelvis and head_center to a COCO-17 array.
-
-    The returned array has 20 rows.  A derived joint inherits the
-    *lower* confidence of the two joints it was built from, so a neck
-    with one bad shoulder is not treated as solid.
-    """
     kps = np.asarray(kps, dtype=np.float32)
     if kps.ndim != 2 or kps.shape[0] < N_KP or kps.shape[1] < 3:
         raise ValueError("expected a (17, 3) keypoint array")
@@ -91,7 +59,6 @@ def derive_joints(kps: np.ndarray) -> np.ndarray:
 
 
 def midpoint(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Midpoint of two (x, y, conf) joints."""
     a = np.asarray(a, dtype=np.float32)
     b = np.asarray(b, dtype=np.float32)
     return np.array([(a[0] + b[0]) * 0.5,
@@ -100,10 +67,6 @@ def midpoint(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 class Pose(object):
-    """One detected person: keypoints, box and score.
-
-    The box is ``(x1, y1, x2, y2)`` in image pixels.
-    """
 
     __slots__ = ("kps", "box", "score", "meta")
 
@@ -115,20 +78,16 @@ class Pose(object):
         self.score = float(score)
         self.meta = dict(meta or {})
 
-    # -- accessors ---------------------------------------------------
     @property
     def derived(self) -> np.ndarray:
-        """COCO-17 plus neck / pelvis / head_center."""
         return derive_joints(self.kps)
 
     @property
     def xy(self) -> np.ndarray:
-        """(17, 2) array of joint positions."""
         return self.kps[:N_KP, :2]
 
     @property
     def conf(self) -> np.ndarray:
-        """(17,) array of joint confidences."""
         return self.kps[:N_KP, 2]
 
     @property
@@ -157,7 +116,6 @@ class Pose(object):
 
 
 def box_iou(a, b) -> float:
-    """IoU of two ``(x1, y1, x2, y2)`` boxes."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     ix1 = max(ax1, bx1)
@@ -180,7 +138,6 @@ def box_iou(a, b) -> float:
 
 
 def clip_box(box, width, height):
-    """Clamp a box to the frame, keeping x1 < x2 and y1 < y2."""
     x1 = min(max(0.0, float(box[0])), float(width))
     y1 = min(max(0.0, float(box[1])), float(height))
     x2 = min(max(0.0, float(box[2])), float(width))

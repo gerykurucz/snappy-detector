@@ -1,6 +1,7 @@
 
 import colorsys
 import io
+import os
 import base64
 import threading
 import time
@@ -72,10 +73,20 @@ def hex2rgb(value):
 
 RETEXT = []
 
-
 def R(fn):
     RETEXT.append(fn)
     return fn
+
+
+def dispatch_ret():
+    for fn in list(RETEXT):
+        try:
+            fn()
+        except Exception:
+            try:
+                RETEXT.remove(fn)
+            except ValueError:
+                pass
 
 
 
@@ -255,165 +266,101 @@ META = {
 
 
     "controller_input": ("Enable controller input",
-        "Read your controller through Windows' own XInput and let it do "
-        "everything a keyboard and mouse do here: the same assistance, the "
-        "same bindings, the same macros, the same recordings. The left stick "
-        "steers the cursor, the right trigger is the press, and Start and "
-        "Back launch and pause out of the box. Bind the rest on the "
-        "Keybindings tab; controller macros sit on the Macros tab. "
-        "Controller OUTPUT - replaying a controller recording, or a 'pad:' "
-        "macro, as a genuine virtual gamepad - needs the optional ViGEmBus "
-        "driver; without it that output falls back to keyboard and mouse. "
-        "Takes effect at once, no restart.",
+        "Read a gamepad through Windows' own XInput so it can launch, pause, "
+        "click and steer like the mouse, with the same bindings and macros. "
+        "Controller OUTPUT (replaying recordings as a virtual gamepad) needs "
+        "the optional ViGEmBus driver.",
         "bool", None),
     "pad_drive": ("Controller steers and clicks",
-        "With this on the left stick moves the cursor and the trigger is the "
-        "press, so snapping, guide mode, follow memory and auto-click all "
-        "work for somebody holding nothing but a controller. The right stick "
-        "steers the view while that press is held, exactly as holding a mouse "
-        "button does. Turn it off to keep the controller for bindings and "
-        "macros only and leave the mouse as the one pointer.",
+        "The left stick moves the cursor and the trigger is the click, so all "
+        "assistance works from a controller alone. The right stick steers the "
+        "view while the click is held.",
         "bool", None),
     "pad_output": ("Controller output method",
-        "How a recorded controller step or a 'pad:' macro leaves the "
-        "program. Automatic uses a ViGEmBus virtual pad when that driver is "
-        "installed - the game then sees a real Xbox 360 controller - and "
-        "keyboard/mouse emulation when it is not. Virtual pad insists on "
-        "ViGEm and says so once when it is missing. Emulation never touches "
-        "the driver: every button becomes the key or mouse button named in "
-        "the pad_emulate table in config.ini. Applies on restart.",
+        "How controller recordings and 'pad:' macros leave the program: "
+        "Automatic (ViGEmBus if installed, else keyboard/mouse), Virtual pad "
+        "(ViGEmBus only) or Keyboard/mouse emulation. Applies on restart.",
         "map", (('Automatic', 'auto'),
                  ('Virtual pad (ViGEmBus)', 'vigem'),
                  ('Keyboard/mouse', 'emulate'))),
     "pad_launch": ("Controller: launch",
-        "The controller button or combination that launches assistance - the "
-        "same action the keyboard launch shortcut performs. One button "
-        "('start') or several at once ('rb+start'). Empty = unbound.",
+        "Controller button that starts assistance - one button ('start') or a "
+        "combination ('rb+start'). Empty = unbound.",
         "pad", None),
     "pad_pause": ("Controller: pause",
-        "The controller button that pauses assistance and hands the "
-        "controller and the mouse back to you entirely. Empty = unbound.",
+        "Controller button that pauses assistance and hands all input back to "
+        "you. Empty = unbound.",
         "pad", None),
     "pad_mode1": ("Controller: classic mode",
-        "The controller button that switches to mode 1 (classic) - a "
-        "mis-click is suppressed, the cursor snaps and the click is delivered "
-        "for you. Empty = unbound.",
+        "Controller button that switches to mode 1 (classic): a mis-click is "
+        "caught, snapped and pressed for you. Empty = unbound.",
         "pad", None),
     "pad_mode2": ("Controller: guide mode",
-        "The controller button that switches to mode 2 (guide) - your click "
-        "always goes through and the cursor moves afterwards. Empty = "
-        "unbound.",
+        "Controller button that switches to mode 2 (guide): your click always "
+        "goes through. Empty = unbound.",
         "pad", None),
     "pad_record": ("Controller: record",
-        "The controller button that starts a controller recording. If "
-        "'Controller: stop recording' is empty this same button also stops "
-        "and saves it into the Controller Recordings list, so one "
-        "button toggles. Empty = unbound.",
+        "Starts a controller recording; also stops and saves one when "
+        "'Controller: stop recording' is empty. Empty = unbound.",
         "pad", None),
     "pad_record_stop": ("Controller: stop recording",
-        "The controller button that stops and saves a controller recording "
-        "into the Controller Recordings list. Leave it "
-        "empty to let the record button toggle instead. Empty = unbound.",
+        "Stops and saves a controller recording. Leave empty to let the "
+        "record button toggle instead. Empty = unbound.",
         "pad", None),
     "pad_play": ("Controller: play recording",
-        "The controller button that replays the selected controller "
-        "recording, or the "
-        "newest one when nothing is selected. Pressing it while that "
-        "recording is looping stops the loop. Empty = unbound.",
+        "Replays the selected controller recording, or the newest one when "
+        "nothing is selected; pressing again stops a loop. Empty = unbound.",
         "pad", None),
     "hold_follow": ("Keep following while the button is held",
-                    "While you keep the left button pressed right "
-                    "after a snap - or press again on the remembered "
-                    "item - the cursor stays on that item's colour, "
-                    "which steadies drags like scrollbar thumbs. "
-                    "Presses anywhere else are never touched.",
+                    "After a snap, holding the trigger keeps the cursor on "
+                    "that item's colour - steadies drags like scrollbar "
+                    "thumbs. Clicks elsewhere are untouched.",
                     "bool", None),
     "rapid_click_snap": ("Assist every click in a fast burst",
-                         "Off (default): while one click is still "
-                         "being handled, extra left clicks go straight "
-                         "to Windows. On: every left click is assisted, "
-                         "so double-clicking keeps snapping to items "
-                         "instead of leaking plain clicks. For rapid "
-                         "click sequences, on is usually right.",
-                         "bool", None),
+                          "On: every left click is assisted, so rapid clicks "
+                          "keep snapping. Off: extra clicks during one "
+                          "handling go straight to Windows.",
+                          "bool", None),
     "trigger_button": ("Assist trigger button",
-                       "The mouse button assistance listens to. Hold it and "
-                       "the cursor is guided onto the nearest clear item; in "
-                       "Classic mode the click is caught, snapped and pressed "
-                       "for you. Default mouse1 (left). Move it when a game or "
-                       "an application needs that button for itself - the "
-                       "whole behaviour follows, including which button is "
-                       "re-delivered after a snap.", "mouse", None),
+                       "The mouse button assistance listens to; hold it to be "
+                       "guided onto the nearest clear target. In classic mode "
+                       "the click is caught, snapped and pressed for you. "
+                       "Default mouse1 (left).", "mouse", None),
     "options_button": ("Extra-options button",
                        "The button behind the two extra-action settings "
-                       "(short press and hold). Default mouse2 (right): the "
-                       "click itself always keeps its normal Windows "
-                       "function, the action is added on top. It cannot be "
-                       "the same button as the assist trigger - if the two "
-                       "collide, this one returns to its default.",
-                       "mouse", None),
+                       "(short press and hold); the click itself keeps its "
+                       "normal function. Default mouse2 (right). It cannot "
+                       "match the assist trigger.", "mouse", None),
     "shift_bypass": ("Bypass input stops assistance",
-                     "On (default): holding the bypass input lets every click "
-                     "pass through untouched - a precision override. Turn it "
-                     "off when that input is held during regular use, or "
-                     "holding it silently disables every correction. Which "
-                     "input that is: 'Bypass key (held)' on the Keyboard & "
-                     "Mouse tab, and its controller equivalent on the "
-                     "Controller tab.",
+                     "While the bypass key (its controller equivalent too) is "
+                     "held, every click passes through untouched - a "
+                     "precision override.",
                      "bool", None),
     "bypass_key": ("Bypass key (held)",
-                   "The key or combination that, held down, stops assistance "
-                   "while 'Bypass input stops assistance' on the Assistance "
-                   "tab is on. Default Shift, the "
-                   "long-standing desktop precision override. A modifier on "
-                   "its own is accepted here - this is a hold, not a shortcut "
-                   "- and so is any combination ('ctrl+alt', 'ctrl+alt+x'). "
-                   "Press the button beside it, then press and release what "
-                   "you want.", "keymod", None),
+                   "Key that stops assistance while held, when 'Bypass input "
+                   "stops assistance' is on. Default Shift.",
+                   "keymod", None),
     "bypass_pad": ("Controller bypass button",
-                   "The controller button or combination that does on a pad "
-                   "what the bypass key does on a keyboard: while it is held, "
-                   "assistance is off. The switch on the Assistance tab still "
-                   "decides whether that counts. Empty = unbound, so a "
-                   "controller-only setup keeps assisting until you choose "
-                   "one.", "pad", None),
+                   "Controller button that stops assistance while held (needs "
+                   "'Bypass input stops assistance'). Empty = unbound.",
+                   "pad", None),
     "pad_click_button": ("Controller click button",
-                         "The controller button that clicks: hold it and the "
-                         "cursor is steered onto the target, exactly like "
-                         "holding the assist trigger button with a mouse. "
-                         "Default rt (right trigger). One button only - a "
-                         "combination here could never be held and released "
-                         "as a click.", "padsingle", None),
+                         "Controller button that acts as the click: hold it "
+                         "to be steered onto the target. Default "
+                         "rt (right trigger). One button only.",
+                         "padsingle", None),
     "pad_right_button": ("Controller extra-options button",
-                         "The controller button behind the same two extra "
-                         "actions the mouse's extra-options button performs. "
+                         "Controller button behind the two extra actions. "
                          "Default lt (left trigger). One button only.",
                          "padsingle", None),
     "subject_priority": ("Subject-first targets",
-                     "On (default): figure figures "
-                     "win close calls anywhere in range - scored by "
-                     "head-shoulder structure, taper, coverage and "
-                     "motion from any direction (front, back, side "
-                     "profile, 45-degree), not just box ratio or "
-                     "symmetry, so crouched (1:1), distant, split or "
-                     "fast-moving figures hold the lock instead of "
-                     "flickering. No figure present: square "
-                     "shapes outrank unshaped items. Off: normal "
-                     "ranking - nearest wins, shape and colour break "
-                     "ties. "
-                     "Combine with colour filtering for precise "
-                     "selection.",
+                     "In a close call, prefer detected people over other "
+                     "targets (scored by head-shoulder shape, taper and "
+                     "motion). Off: nearest target wins.",
                      "bool", None),
-    "subject_only": ("Only watch human shapes",
-                     "Only figure figures can be assisted; clicks "
-                     "anywhere else pass straight through to Windows. "
-                     "A simpler, single-job watcher: no squares, no "
-                     "clutter, just the figure score. Recognises the "
-                     "body from any direction - front, back, side "
-                     "profile, 45-degree, crouched, running or prone - "
-                     "by head-shoulder structure, not mirror symmetry. "
-                     "Works alone; combine with Subject-first for "
-                     "ranked preference between several figures.",
+    "subject_only": ("Only aim at people",
+                     "Only detected people can be assisted; all other clicks "
+                     "pass straight through untouched.",
                      "bool", None),
     "debug_visualize": ("Debug: show detections",
                         "Draw a box around every candidate the scanner "
@@ -422,14 +369,12 @@ META = {
                         "bool", None),
     "reticle_enabled": ("Show custom reticle",
                           "Draw your own reticle on top of everything, "
-                          "games included. The overlay is click-through: "
-                          "aim with it, click through it. Keep it small - "
-                          "a big marker near the centre can be picked up "
-                          "as a target itself. Feature idea inspired by "
-                          "Reticle Y (MIT, YSSF8).",
+                          "games included; the overlay is click-through. "
+                          "Keep it small - a big marker near the centre can "
+                          "be picked up as a target itself.",
                           "bool", None),
     "reticle_shape": ("Reticle shape",
-                        "Which figure to draw: cross, plus, dot, circle "
+                        "Which shape to draw: cross, plus, dot, circle "
                         "or X.",
                         "map", (("Cross", "cross"), ("Plus", "plus"),
                                 ("Dot", "dot"), ("Circle", "circle"),
@@ -466,87 +411,64 @@ META = {
                     "Vertical screen position for custom mode.",
                     "int", None),
     "mouse2_action": ("Extra-options button: short press",
-                      "What a short press of the extra-options button ALSO "
-                      "does - the click itself always keeps its normal "
-                      "Windows function. Which button that is: "
-                      "'Extra-options button' on the Keyboard & Mouse tab, or "
-                      "its controller equivalent. The two follow choices only "
-                      "steer in mode 2; in mode 1 that button never moves the "
-                      "cursor. Default: nothing.",
+                      "What a short press of the extra-options button does on "
+                      "top of its normal click. The follow options only steer "
+                      "in mode 2; default: do nothing.",
                       "map", (('Do nothing', 4),
                                ('Clear follow task', 1),
                                ('Follow last colour', 2),
                                ('Pick colour, then follow', 3))),
     "mouse2_hold_action": ("Extra-options button: hold",
-                           "The same choices, fired when you HOLD the "
-                           "extra-options button for about half a second "
-                           "instead of clicking it. A press is either "
-                           "a click or a hold, never both. The follow "
-                           "choices only steer in mode 2. Default: "
-                           "nothing.",
+                           "The same options, fired by holding the "
+                           "extra-options button for about half a second. A "
+                           "press is one or the other, never both.",
                            "map", (('Do nothing', 4),
                                     ('Clear follow task', 1),
                                     ('Follow last colour', 2),
                                     ('Pick colour, then follow', 3))),
-    "radius": ("How far from the cursor to look",
-               "Search distance in pixels (40-400). Raise it when the "
-               "item you want sits just out of reach; lower it when "
-               "the wrong neighbour keeps winning.", "int", None),
-    "center_blind_area": ("Centre self-target blindness (ink px)",
-               "Assisted-centre only (hidden cursor): ignore items this small "
-               "that sit exactly on the centre anchor - the overlay's own "
-               "drawn marker and brief flashes, which otherwise "
-               "outscore every real item so corrections land "
-               "~zero. 900 ~= 30x30. 0 disables. Standard cursor "
-               "clicks are never affected.", "int", None),
-    "center_max_step": ("Centre steering cap (px)",
-               "Assisted-centre steering steps are clamped to this size with "
-               "direction exact: a far pick corrects toward the item "
-               "without jumping the view in one step. 160 default. "
-               "0 disables (uncapped).", "int", None),
-    "subject_focus_bias": ("Subject focus bias (0-100)",
-               "For tall 1:2 subject-shape winners only: pull the snap point "
-               "from the mass centroid toward the box top by this "
-               "share - 30 lands near the upper part. 0 (default) off.",
-               "int", None),
+    "radius": ("Search distance (px)",
+               "How far around the anchor assistance looks (40-400). The "
+               "anchor is the screen centre in centre-watch mode, the cursor "
+               "otherwise.", "int", None),
+    "center_blind_area": ("Centre blindness threshold",
+               "Centre-watch only: ignore tiny items sitting right on the "
+               "centre anchor, e.g. a drawn reticle (900 ~= 30x30 px). "
+               "0 disables.", "int", None),
+    "center_max_step": ("Steering step cap (px)",
+               "Largest single correction of the classic steerer (0 = "
+               "uncapped). The Unibot steering loop is exempt; click snaps "
+               "stay capped.", "int", None),
+    "subject_focus_bias": ("Subject aim bias (0-100)",
+               "For tall 1:2 body-shape targets, move the snap point from "
+               "the middle toward the box top by this share. 0 (default) "
+               "off.", "int", None),
     "motion_sense": ("Motion sense (0-100)",
-               "Prefer items that moved since the previous scan - a "
-               "moving item outranks static ones in close "
-               "calls. Assisted-centre only. 0 (default) off; 35 is a sane "
-               "first try. Brief flashes are ignored.",
+               "Centre-watch only: moving targets outrank static ones in "
+               "close calls. 0 (default) off; brief flashes are ignored.",
                "int", None),
-    "on_target_dist": ("Already-on-item distance",
-                       "If your click lands within this many pixels of "
-                       "an item's centre, nothing moves - you hit it.",
-                       "int", None),
+    "on_target_dist": ("On-target distance (px)",
+                        "Clicks landing this close to a target's middle "
+                        "are left alone - you already hit it.",
+                        "int", None),
     "glide_ms": ("Animate cursor moves",
-                 "0 (default) jumps instantly - fastest. 40-120 glides "
-                 "so you can watch the cursor travel; moving the mouse "
-                 "yourself cancels the glide and keeps control.",
-                 "int", None),
-    "watcher_seconds": ("Double-click window",
-                        "In classic mode, a second snap near the same "
-                        "spot within this time becomes a double-click "
-                        "on the item.", "float", None),
+                  "0 (default) jumps instantly; 40-120 glides so you can "
+                  "watch. Moving the mouse yourself cancels a glide.",
+                  "int", None),
+    "watcher_seconds": ("Double-click window (s)",
+                        "Classic mode: a second snap near the same spot "
+                        "within this time becomes a double-click on the "
+                        "item.", "float", None),
 
 
     "accent_color": ("My colour(s)",
-                     "The colour Snappy AI should prefer, shown as "
-                     "colour boxes on the right. Pick a colour below "
-                     "and press 'Add to preferred colours' to add it "
-                     "- fifteen boxes at most; click a box to remove "
-                     "that colour again. Items containing one of them "
-                     "win ties. An empty list shows a crossed-out box "
-                     "and disables the setting.",
+                     "The colours assistance prefers; items containing one "
+                     "win ties. Pick a colour below and press 'Add to "
+                     "preferred colours'; click a box to remove it.",
                      "colors", None),
     "accent_only": ("Only assist my colour",
-                    "Only items containing your colour can be "
-                    "assisted; clicks anywhere else pass straight "
-                    "through to Windows. Needs a colour in 'My "
-                    "colour(s)' first - with none set this switch stays "
-                    "on and simply does nothing, and the log says so "
-                    "(your switch is never rewritten behind your "
-                    "back).", "bool", None),
+                    "Only items containing your colour can be assisted; all "
+                    "other clicks pass through untouched. Needs colours set "
+                    "first.", "bool", None),
     "accent_tolerance": ("Colour match strictness",
                          "How close a colour must be to count as yours "
                          "(4-90). Lower = stricter.", "int", None),
@@ -563,12 +485,10 @@ META = {
                     "matching engine below makes no difference - raise "
                     "this first.", "int", None),
     "accent_matcher": ("Colour matching engine",
-                       "How colours are compared. Perceptual ranks by "
-                       "how colours actually look and is recommended; "
-                       "Classic is the older engine, kept for "
-                       "comparison. Only applies while 'Accept "
-                       "near-miss shades' is above 0 - at 0 both use the "
-                       "same exact colour box.",
+                       "Perceptual (recommended) ranks colours the way they "
+                       "look; Classic is the older engine, kept for "
+                       "comparison. Only applies when 'Accept near-miss "
+                       "shades' is above 0.",
                        "map", (('Perceptual (recommended)', 'oklab'),
                                 ('Classic (older engine)', 'hsv'))),
     "accent_boost": ("Colour tie-break strength",
@@ -577,132 +497,111 @@ META = {
                      "still wins.", "float", None),
 
     "exclude_color": ("Never-click colour(s)",
-                      "Items containing these colours are never "
-                      "assisted: clicks on them go straight to "
-                      "Windows, in both modes. Shown as colour boxes "
-                      "on the right - pick a colour below and press "
-                      "'Add to refused colours' to add one (fifteen "
-                      "at most), click a box to remove it. An empty "
-                      "list shows a crossed-out box and disables the "
-                      "setting.",
+                      "Items containing these colours are never assisted, in "
+                      "both modes. Pick a colour below and press 'Add to "
+                      "refused colours'; click a box to remove it.",
                       "colors", None),
-    "motion_3d": ("Smarter following for moving items",
-                   "Track moving items with position AND size instead of "
-                   "a straight-line fit: single bad scans are ignored "
-                   "instead of blinding the follower, turns are followed "
-                   "through, and a sudden size jump restarts the track "
-                   "(that means the scanner picked a different item). "
-                   "Same speed gates and the same 80 px cap - only the "
-                   "brains change. Runs on its own.",
+    "motion_3d": ("Track moving items robustly",
+                   "Follow moving targets by position AND size: single bad "
+                   "scans are ignored, turns are followed, and a sudden size "
+                   "jump restarts the track.",
                    "bool", None),
     "motion_predict": ("Lead moving items",
                        "For items that move while you click (scrolling "
                        "lists, video seek bars), move slightly ahead so "
                        "the click lands on the item, not where it was. "
                        "Still items are unaffected.", "bool", None),
-    "motion_lead_ms": ("How far ahead to lead",
-                       "Milliseconds of travel to lead a moving item "
-                       "(0-300): 40-80 suits slow scrolling, 100-150 a "
-                       "fast seek bar. The lead is capped at 80 px and "
-                       "switches off for slow or turning movement.",
+    "motion_lead_ms": ("Lead time (ms)",
+                       "How far ahead to lead a moving item (0-300); the "
+                       "lead is capped at 80 px and switches off for slow or "
+                       "turning movement.",
                        "int", None),
-    "hpose_mode": ("Human detection (hpose)",
-                   "Off: the classical scanner decides, as before. On: a "
-                   "neural person detector answers first - it tells a "
-                   "person from a picture of a person, and it knows which "
-                   "way they are facing and what they are doing. When it "
-                   "finds nobody the classical scanner takes over. Needs "
-                   "onnxruntime; the models download themselves.",
+    "hpose_mode": ("Person detection (hpose)",
+                   "On: an ONNX person detector answers first - it knows "
+                   "facing and posture - and the edge scanner takes over "
+                   "when it finds nobody. Needs onnxruntime; models sit in "
+                   "the models folder.",
                    "map", (('Off', 'off'), ('On', 'on'))),
-    "hpose_view": ("Which way the person must face",
-                   "Only people whose body faces this way are aimed at. "
-                   "Any takes everyone. Facing means the person is "
-                   "looking towards the screen - a face is visible. Away "
-                   "means their back is turned. Side means a profile.",
+    "hpose_view": ("Required facing",
+                   "Only people facing this way are aimed at: facing the "
+                   "screen, turned away, or side profile. Any takes "
+                   "everyone.",
                    "map", (('Any', 'any'), ('Facing the screen', 'facing'),
                               ('Turned away', 'away'),
                               ('Side profile', 'side'))),
-    "hpose_stance": ("Which posture the person must have",
-                     "Only people in this posture are aimed at. Any takes "
-                     "everyone. Low covers crouching and prone bodies. "
-                     "Walking and standing are told apart by the track, "
-                     "not by one picture.",
-                     "map", (('Any', 'any'), ('Standing', 'standing'),
-                                ('Crouching', 'crouch'), ('Prone', 'prone'),
-                                ('Walking', 'walk'), ('Low (crouch or prone)',
-                                                     'low'))),
-    "hpose_aim": ("Where to aim on the person",
-                  "The middle of the body, or the head. The head is "
-                  "where a person is usually meant to be hit, but it "
-                  "moves more than the body does, so it is steadier to "
-                  "take the middle.",
+    "hpose_stance": ("Required posture",
+                      "Only people in this posture are aimed at; Low covers "
+                      "crouching and prone. Any takes everyone.",
+                      "map", (('Any', 'any'), ('Standing', 'standing'),
+                                 ('Crouching', 'crouch'), ('Prone', 'prone'),
+                                 ('Walking', 'walk'),
+                                 ('Low (crouch or prone)', 'low'))),
+    "hpose_aim": ("Aim point on the body",
+                  "The middle of the body or the head; the body middle "
+                  "moves less and is steadier.",
                   "map", (('Middle of the body', 'center'),
                              ('Head', 'head'))),
-    "hpose_lead_ms": ("How far ahead to lead a person",
-                      "Milliseconds of travel to lead a person who is "
-                      "moving (0-300): 40-80 suits ordinary walking. The "
-                      "lead is only applied to a target that is "
-                      "actually moving, and is capped at 120 px.",
+    "hpose_lead_ms": ("Person lead (ms)",
+                      "How far ahead to lead a moving person (0-300); 40-80 "
+                      "suits walking. Only applied to a target that is "
+                      "actually moving, capped at 120 px.",
                       "int", None),
-    "hpose_min_conf": ("How sure a person must be",
-                       "The confidence the detector must have before a "
-                       "person is aimed at (10-90): higher is pickier "
-                       "and slower to find people, lower finds them "
-                       "sooner but makes more mistakes.",
+    "hpose_min_conf": ("Minimum confidence",
+                       "Detector confidence required before a person is "
+                       "aimed at (10-90). Higher is pickier, lower finds "
+                       "people sooner.",
                        "int", None),
-    "hpose_model": ("Person detector",
-                    "Which neural detector to use. The small one is fast "
-                    "and finds big people; the medium one is better at "
-                    "small and distant people and costs more time.",
-                    "map", (('Small and fast', 'yolo11n-pose.onnx'),
-                               ('Medium and sharper', 'yolo11s-pose.onnx'))),
+    "hpose_model": ("Detection model",
+                    "Which ONNX pose model to use, from the models folder.",
+                    "map", (('Fast (yolo26 nano)', 'yolo26n-pose.onnx'),
+                               ('Accurate (yolo26 large)',
+                                'yolo26l-pose.onnx'),
+                               ('Legacy (yolo11 nano)',
+                                'yolo11n-pose.onnx'))),
     "blob_watch": ("Blob watcher fallback",
-                   "When human detection and the classical scanner both "
-                   "find nothing, aim at a high-contrast blob shaped "
-                   "like a person (about twice as tall as wide, 14-64 "
-                   "px) - the last resort for 20-30 px people the "
-                   "neural detector cannot see. Only active while "
-                   "human detection is on.",
+                   "While person detection is on and finds nobody, also aim "
+                   "at person-shaped high-contrast blobs (about twice as "
+                   "tall as wide, 14-64 px).",
                    "bool", None),
     "follow_enabled": ("Remember the last clicked item",
-                       "After a successful snap, similar-looking items "
-                       "or items in the same place win ties for a "
-                       "while - handy for scrollbars and repeated "
-                       "clicks on one control.", "bool", None),
-    "watch_center_only": ("Watch the screen centre only",
-                          "For fixed layouts where the items never "
-                          "move: assistance ignores where your cursor "
-                          "is and always looks inside a square at the "
-                          "middle of the screen - as wide as your "
-                          "\"search distance\" setting (150 px by "
-                          "default) - treating the centre itself as "
-                          "the anchor. Highest-contrast items win, "
-                          "your colour only breaks ties. A mouse1 "
-                          "click inside the square snaps onto the "
-                          "item once; KEEP holding and it keeps "
-                          "re-snapping onto each fresh sighting about "
-                          "every 2-3 frames until you let go (or the "
-                          "item leaves the square). Clicks outside "
-                          "that square pass through completely "
-                          "untouched, like empty space. Off "
-                          "(default): the usual cursor-anchored "
-                          "search.",
+                       "After a successful snap, similar-looking items or "
+                       "items in the same place win ties for a while - "
+                       "handy for scrollbars and repeated clicks.",
+                       "bool", None),
+    "watch_center_only": ("Centre-watch mode",
+                          "Search only inside a square at the screen centre "
+                          "(its width = search distance) instead of around "
+                          "the cursor: clicks inside are assisted, clicks "
+                          "outside pass through untouched. The game mode "
+                          "for a fixed centre crosshair.",
                           "bool", None),
-    "center_follow": ("Keep the cursor on it",
-                      "Needs \"Watch the screen centre only\" on. Once "
-                      "an item inside the watched square is picked - "
-                      "by your click, or by resting the cursor on it - "
-                      "the cursor stays parked on it and keeps following "
-                      "it even while the item moves (a scrolling plane, "
-                      "an animated panel). No colour needed: without "
-                      "\"My colour(s)\" set it locks straight onto the "
-                      "best high-contrast item; with a colour set it "
-                      "waits for the brief dwell first. It never fights "
-                      "you: holding any mouse button pauses it, and it "
-                      "lets go about a second after the item "
-                      "disappears. Turn on \"Lead moving items\" as "
-                      "well for smooth fast chasing.",
+    "center_follow": ("Keep the crosshair on it",
+                      "Centre-watch only: once a target inside the square is "
+                      "picked, assistance steers to keep it centred - also "
+                      "while a mouse button is held (steered by mouse deltas "
+                      "when 'Unibot aim steering' is on, by a virtual stick "
+                      "otherwise).",
                       "bool", None),
+    "unibot_aim": ("Unibot aim steering",
+                   "Centre-watch only: steer the view with exact "
+                   "relative-mouse deltas each frame, pulling the target "
+                   "onto the screen centre while a mouse button is held "
+                   "(needs the driver input backend in games). Off: steering "
+                   "goes through a virtual gamepad stick.",
+                   "bool", None),
+    "aim_speed": ("Steering gain",
+                  "Multiplier on each Unibot steering delta (0.1-2.0); "
+                  "above 1 steers faster, below 1 softer.",
+                  "float", None),
+    "aim_y_speed_multiplier": ("Vertical steering gain",
+                  "Extra multiplier on the Y axis only (0.1-2.0); "
+                  "allows separate X/Y tuning like Unibot's y_speed_multiplier.",
+                  "float", None),
+    "motion_camera_comp": ("Camera motion compensation",
+                  "Subtract estimated camera pan from motion lead so steering "
+                  "stays relative to the scene. Requires motion_predict or "
+                  "motion_3d and a reticle. Default on.",
+                  "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
                      "somewhere else cannot retarget the memory. Every "
@@ -716,15 +615,14 @@ META = {
                      "map", (("Off", 0.0), ("25%", 0.25), ("50%", 0.5),
                              ("75%", 0.75), ("100%", 1.0), ("150%", 1.5),
                              ("200%", 2.0), ("300%", 3.0))),
-    "follow_seconds": ("How long to remember",
-                       "Seconds the remembered item stays preferred "
-                       "after your last successful snap (1-120).",
+    "follow_seconds": ("Memory retention (s)",
+                       "Seconds the remembered item stays preferred after "
+                       "your last successful snap (1-120).",
                        "int", None),
-    "merge_distance": ("Glue nearby pieces together",
+    "merge_distance": ("Merge nearby blobs (px)",
                        "Pieces closer than this many pixels (a broken "
-                       "outline, an icon beside its label) become one "
-                       "item. Two complete items are never glued, so "
-                       "the cursor cannot land between buttons.",
+                       "outline, an icon beside its label) become one item; "
+                       "two complete items are never merged.",
                        "int", None),
     "key_launch": ("Shortcut: start assisting",
                    "Format: ctrl+l, f5, space, ctrl+alt+1 ... "
@@ -757,14 +655,11 @@ META = {
                   "Keybindings tab for what guide mode does.",
                   "str", None),
     "capture_backend": ("Screen capture engine",
-                        "How the screen is photographed. Automatic "
-                        "uses the compatible capture that always "
-                        "works, including over Remote Desktop and in "
-                        "virtual machines. Desktop Duplication is "
-                        "faster and stays opt-in: a minority of GPU "
-                        "drivers and protected-content apps answer it "
-                        "with black frames, so it is never chosen for "
-                        "you. Applies on restart.",
+                        "How the screen is photographed. Automatic always "
+                        "works (RDP, VMs); Desktop Duplication and Windows "
+                        "Graphics Capture are faster opt-in picks - some "
+                        "drivers and protected-content apps answer them "
+                        "with black frames. Applies on restart.",
                         "map", (('Automatic (compatible)', 'auto'),
                                  ('Desktop Duplication', 'dxcam'),
                                  ('Compatible (RDP, VMs)', 'mss'),
@@ -774,64 +669,36 @@ META = {
 
 
     "input_backend": ("Click delivery method",
-                      "How your assisted clicks reach the screen. "
-                      "Standard works everywhere with nothing to "
-                      "install and is what almost everyone should "
-                      "keep. Driver level sends clicks through a "
-                      "kernel driver instead, for the "
-                      "few apps that ignore normal synthetic clicks "
-                      "- it needs only the driver installed (run "
-                      "interception.exe install as administrator, "
-                      "then reboot; no DLL needed, strokes go "
-                      "straight to keyboard.sys/mouse.sys). "
-                      "Server sends every move and click to a "
-                      "companion server over websocket "
-                      "- hardware-level input "
-                      "for apps that ignore SendInput and lack the "
-                      "driver; it needs that server running plus the "
-                      "websocket-client package, and holds arrive as "
-                      "repeated taps. If anything is missing, Snappy "
-                      "AI says so once and keeps working the "
-                      "standard way. Applies on restart.",
+                      "Standard Windows clicks work everywhere. Driver "
+                      "level (Interception) sends real kernel-driver input - "
+                      "what in-game view steering needs and what apps that "
+                      "ignore synthetic clicks respond to. Install the "
+                      "driver once with interception.exe install, then "
+                      "reboot. Applies on restart.",
                       "map", (('Standard Windows', 'win32'),
-                               ('Driver level (kernel)', 'driver'),
-                               ('Server (websocket)', 'server'))),
-    "server_url": ("Server address",
-                   "WebSocket URL of the companion server "
-                   "(ws://127.0.0.1:19561). Only used with the "
-                   "Server delivery method. Applies on "
-                   "restart.",
-                   "str", None),
+                               ('Driver level (kernel)', 'driver'))),
 
 
 
 
 
-    "contrast_threshold": ("How faint an edge may be",
-                           "Lower finds fainter items (and more "
-                           "noise); higher needs crisper edges. Raising "
-                           "this above 38 turns off the auto-adjust "
-                           "below for this control - a value you set "
-                           "deliberately is used exactly.",
+    "contrast_threshold": ("Edge threshold",
+                           "Lower finds fainter items (and more noise); "
+                           "higher needs crisper edges. Raising above the 38 "
+                           "default turns off the auto-adjust for this "
+                           "control.",
                            "int", None),
     "min_contrast": ("Minimum edge strength",
-                     "An item must be at least this crisp to be "
-                     "clickable at all. Values below 28 count as 28: "
-                     "a built-in quality floor keeps noise from "
-                     "becoming clickable. Raising this above 48 turns "
-                     "off the auto-adjust below for this control - your "
-                     "number is then used exactly. 'Click items by "
-                     "itself' holds its own stricter floor (60) so it "
-                     "only ever fires on a crisp item, whatever this is "
-                     "set to.", "int", None),
+                     "An item must be at least this crisp to be clickable; "
+                     "below 28 counts as 28. Raising above 48 turns off the "
+                     "auto-adjust for this control.",
+                     "int", None),
     "adaptive_threshold": ("Auto-adjust for dim screens",
-                           "Dark themes and washed-out documents lower "
-                           "their own detection bar automatically, so "
-                           "faint items are still found. Recommended "
-                           "on. It only ever LOWERS the bar, and it "
-                           "stands aside when you have deliberately "
-                           "raised either contrast control above its "
-                           "stock value (38 / 48).", "bool", None),
+                           "The detection bar lowers itself for dark themes "
+                           "and washed-out content, so faint items are "
+                           "still found. Recommended on; stands aside when "
+                           "you deliberately raise either contrast control.",
+                           "bool", None),
     "luminance_norm": ("Judge edges by relative brightness",
                        "Edges are scored against how bright their "
                        "surroundings are, so dark-mode items rank like "
@@ -847,10 +714,10 @@ META = {
                 "Items wider or taller than this are ignored; items at "
                 "a screen edge, like scrollbars, get double.",
                 "int", None),
-    "stall_pause_seconds": ("Pause after a hiccup",
-                            "If a scan ever stalls, assistance pauses "
-                            "this long and any held click is given "
-                            "back to you.", "float", None),
+    "stall_pause_seconds": ("Pause after a hiccup (s)",
+                             "If a scan ever stalls, assistance pauses this "
+                             "long and any held click is given back to you.",
+                             "float", None),
 
 
 
@@ -878,43 +745,26 @@ META = {
 
 
 
-    "snap_offset_x": ("Click point: shift left / right",
+    "snap_offset_x": ("Click offset X (px)",
                       "Moves the click point sideways from the middle of "
-                      "the item (-200 to 200, negative goes left). For a "
-                      "control whose middle is dead - a split button, a "
-                      "slider track - dial the click onto the live spot "
-                      "once instead of fighting every snap.",
+                      "the item (-200 to 200, negative goes left); for "
+                      "controls whose middle is dead.",
                       "int", None),
-    "snap_offset_y": ("Click point: shift up / down",
-                      "Moves the click point vertically from the middle "
-                      "of the item (-200 to 200, negative goes up). Same "
-                      "idea as the sideways shift: land on the live part "
-                      "of the control.",
+    "snap_offset_y": ("Click offset Y (px)",
+                      "Moves the click point vertically from the middle of "
+                      "the item (-200 to 200, negative goes up); for "
+                      "controls whose middle is dead.",
                       "int", None),
-    "scan_budget_ms": ("Scan time budget",
-                       "Milliseconds one scan of the whole search area "
-                       "may take before it gives up and lets your click "
-                       "through untouched (60-2000). Raise it on busy "
-                       "screens if detection seems to miss; lower it if "
-                       "clicks feel late on a slow machine. The budget is "
-                       "checked between stages, so a very busy frame can "
-                       "overrun it slightly.",
+    "scan_budget_ms": ("Scan budget (ms)",
+                       "Milliseconds one scan of the search area may take "
+                       "before it gives up and lets the click through "
+                       "untouched (60-2000). The budget is checked between "
+                       "stages, so a very busy frame can overrun slightly.",
                        "int", None),
 
 
 
 
-    "auto_click": ("Click items by itself",
-                   "Scans the screen centre on its own and clicks the "
-                   "best item - no click from you needed; turning this "
-                   "on IS the request. With 'My colour(s)' set it "
-                   "clicks only items in your colour; without a colour "
-                   "it clicks the highest-contrast item instead. "
-                   "Never while paused, never on Snappy AI's own "
-                   "windows, never on a Never-click colour, and it "
-                   "keeps clicking while the item stays visible. "
-                   "Press Pause any time to take the mouse back.",
-                   "bool", None),
 }
 
 
@@ -1000,11 +850,10 @@ TAB_ASSIST = ["controller_input", "pad_drive",
               "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
               "watch_center_only",
-              "center_follow",
+              "center_follow", "unibot_aim",
               "accent_only",
               "adaptive_threshold", "luminance_norm",
-              "color_adapt", "accent_variants", "accent_coherent",
-              "auto_click"]
+              "color_adapt", "accent_variants", "accent_coherent"]
 TAB_DETECT = ["accent_color", "exclude_color"]
 TAB_RETICLE = ["reticle_enabled", "reticle_shape", "reticle_mode",
                  "reticle_size", "reticle_gap", "reticle_thickness",
@@ -1013,8 +862,6 @@ TAB_RETICLE = ["reticle_enabled", "reticle_shape", "reticle_mode",
 TAB_KEYS = ["key_launch", "key_pause", "key_mode1", "key_mode2",
             "key_record", "key_record_stop", "key_play", "key_play1",
             "key_play2", "key_play3", "key_play4", "key_play5"]
-# The tab order. "help" is packed on the right of the bar; everything else on
-# the left. Module-level so the tests read the same list the UI is built from.
 TAB_NAMES = ["assist", "handler", "keyboard", "controller", "macros",
              "reticle",
              "advanced", "experimental", "latency_fix", "latency_live",
@@ -1023,17 +870,7 @@ TAB_NAMES = ["assist", "handler", "keyboard", "controller", "macros",
 TAB_PAD = ["pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
            "pad_record", "pad_record_stop", "pad_play",
            "pad_play1", "pad_play2", "pad_play3", "pad_play4", "pad_play5"]
-# The controller's two role buttons and its bypass. They were config.ini-only
-# until now, which left a controller user unable to say what clicks.
-TAB_PAD_ROLE = ["pad_click_button", "pad_right_button", "bypass_pad"]
-# The mouse's two role buttons: what assistance listens to, and what the
-# extra-action settings hang off. Both were hardcoded to left and right.
 TAB_MOUSE = ["trigger_button", "options_button"]
-# Flat rows for the two input tabs, with no section titles. Each position
-# mirrors the other tab: role, role, bypass, then the twelve actions in the
-# same order - so row N on one tab is the same kind of setting as row N on
-# the other. The bypass on each tab sets that input type only; the on/off
-# switch stays on the Assistance tab.
 TAB_KEYBOARD = ["trigger_button", "options_button", "bypass_key",
                 "key_launch", "key_pause", "key_mode1", "key_mode2",
                 "key_record", "key_record_stop", "key_play", "key_play1",
@@ -1046,24 +883,17 @@ TAB_CONTROLLER = ["pad_click_button", "pad_right_button", "bypass_pad",
 TAB_COLOR = ["contrast_threshold", "min_contrast",
              "min_area", "max_area", "max_dim",
              "accent_tolerance", "accent_soft", "accent_boost"]
-TAB_ADV = ["radius", "center_blind_area", "center_max_step", "subject_focus_bias", "motion_sense", "on_target_dist", "glide_ms", "watcher_seconds",
+TAB_ADV = ["radius", "center_blind_area", "center_max_step", "aim_speed", "aim_y_speed_multiplier", "subject_focus_bias", "motion_sense", "motion_camera_comp", "on_target_dist", "glide_ms", "watcher_seconds",
            "stall_pause_seconds", "merge_distance",
            "motion_lead_ms", "follow_seconds", "scan_budget_ms",
            "hpose_lead_ms", "hpose_min_conf",
-           "snap_offset_x", "snap_offset_y",
-           "server_url"]
+           "snap_offset_x", "snap_offset_y"]
 
 
 
 
-# Derived: every choice/map setting gets a row here. A setting that is
-# switched live by a hotkey instead of stored ("mode", which the 1/2 keys
-# flip) deliberately has no META entry at all, so it cannot creep back in.
-TAB_EXPERIMENTAL = [k for k in META if META[k][2] in ("choice", "map")]
+TAB_EXPERIMENTAL = [k for k in META if META[k][2] in ("choice", "map") and k not in TAB_RETICLE]
 
-# Bindings and macro fields are CAPTURED, not typed: rewrite their kind so
-# make_row/macro_entry give them a "Press" button. Done here rather than in 24
-# META entries so the two cannot drift apart when a slot is added.
 _CAPTURE_KIND = {}
 for _k in TAB_KEYS:
     _CAPTURE_KIND[_k] = "key"
@@ -1076,8 +906,8 @@ _CAPTURE_KIND["bypass_pad"] = "pad"
 _CAPTURE_KIND["pad_click_button"] = "padsingle"
 _CAPTURE_KIND["pad_right_button"] = "padsingle"
 for _i in range(1, MACRO_SLOTS + 1):
-    _CAPTURE_KIND["macro%d_key" % _i] = "key"
-    _CAPTURE_KIND["macro%d_action" % _i] = "key"
+    _CAPTURE_KIND["macro%d_key" % _i] = "combo"
+    _CAPTURE_KIND["macro%d_action" % _i] = "combo"
     _CAPTURE_KIND["pad_macro%d_key" % _i] = "pad"
     _CAPTURE_KIND["pad_macro%d_action" % _i] = "padkey"
 for _k, _kind in _CAPTURE_KIND.items():
@@ -1160,7 +990,8 @@ PROSE = {
         "not configure.",
     "help.1.t": "What happens when you click",
     "help.1.b":
-        "Snappy AI looks at the screen around your cursor, finds the "
+        "Snappy AI looks around the cursor (or the screen centre in "
+        "centre-watch mode), finds the "
         "solid item-shaped things near it - buttons, icons, links - "
         "and picks the best one: crisp edges, a decent size and close "
         "to your cursor win. Your colour, the never-click list and the "
@@ -1173,30 +1004,30 @@ PROSE = {
         "reaches the program and, after you release, the cursor moves "
         "onto the nearest clear item. Classic mode is stronger: a "
         "mis-click near an item is caught, the cursor snaps onto the "
-        "item and Snappy AI clicks it for you. 'How far from the "
-        "cursor to look' decides the search circle - raise it when the "
-        "item you want is just out of reach, lower it when the wrong "
-        "neighbour wins. Holding the bypass key (Keyboard & Mouse tab, Shift by "
+        "item and Snappy AI clicks it for you. 'Search distance (px)' "
+        "decides the search area, anchored on the screen centre in "
+        "centre-watch mode - raise it when the item you want is just "
+        "out of reach, lower it when the wrong neighbour wins.Holding the bypass key (Keyboard & Mouse tab, Shift by "
         "default) lets one click through untouched in both modes, and which "
         "button assistance listens to at all is yours to move on the "
         "Keyboard & Mouse tab.",
     "help.3.t": "Nothing is found - or too much is",
     "help.3.b":
-        "On the Handler tab, 'How faint an edge may be' and 'Minimum "
-        "edge strength' decide which edges count at all: lower them to "
+        "On the Detection tab, 'Edge threshold' and 'Minimum edge "
+        "strength' decide which edges count at all: lower them to "
         "find fainter items, raise them to ignore noise. 'Smallest "
         "item size', 'Largest item size' and 'Largest item width or "
-        "height' drop specks and whole windows. 'Glue nearby pieces "
-        "together' joins a broken outline, or an icon beside its "
-        "label, into one item. On the Assistance tab, 'Auto-adjust for "
-        "dim screens' and 'Judge edges by relative brightness' make "
-        "dark themes behave like light ones - keep both on.",
+        "height' drop specks and whole windows. 'Merge nearby blobs "
+        "(px)' joins a broken outline, or an icon beside its label, "
+        "into one item. On the Assistance tab, 'Auto-adjust for dim "
+        "screens' and 'Judge edges by relative brightness' make dark "
+        "themes behave like light ones - keep both on.",
     "help.4.t": "Working with colours",
     "help.4.b":
         "On the Colors tab, 'My colour(s)' is the colour Snappy AI "
         "prefers and 'Never-click colour(s)' is absolute: items with "
         "that colour are never assisted. 'Only assist my colour' "
-        "restricts assistance to matching items. On the Handler tab, "
+        "restricts assistance to matching items. On the Detection tab, "
         "'Colour match strictness' says how close a shade must be, "
         "'Accept near-miss shades' lets lighter or washed-out versions "
         "count partly, and 'Colour tie-break strength' says how much "
@@ -1216,15 +1047,15 @@ PROSE = {
     "help.6.t": "Clicking moving things",
     "help.6.b":
         "'Lead moving items' measures how fast the chosen item travels "
-        "and moves ahead by 'How far ahead to lead' milliseconds, so the "
-        "click lands on a scrolling list or a video seek bar instead "
-        "of behind it. The lead caps at 80 pixels and switches itself "
-        "off for still or turning items.",
+        "and moves ahead by the 'Lead time (ms)' setting, so the click "
+        "lands on a scrolling list or a video seek bar instead of "
+        "behind it. The lead caps at 80 pixels and switches itself off "
+        "for still or turning items.",
     "help.7.t": "How clicks feel",
     "help.7.b":
         "'Animate cursor moves' = 0 jumps instantly; 40-120 glides so "
         "you can watch, and moving the mouse yourself cancels the "
-        "glide. 'Double-click window' turns a second snap near the "
+        "glide. 'Double-click window (s)' turns a second snap near the "
         "same spot into a double-click in classic mode. 'Assist every "
         "click in a fast burst' assists every click of a rapid series "
         "instead of only the first. 'Pause after a hiccup' is the "
@@ -1250,12 +1081,12 @@ PROSE = {
         "1. Is it launched? Paused means nothing is intercepted - "
         "'Shortcut: start assisting' (Ctrl+L by default) is the only "
         "on/off.  2. Hold Shift for one click to confirm the "
-        "assistance was the problem.  3. Wrong item wins: lower 'How "
-        "far from the cursor to look', then set 'My colour(s)' or "
+        "assistance was the problem.  3. Wrong item wins: lower "
+        "'Search distance (px)', then set 'My colour(s)' or "
         "raise 'Colour tie-break strength'.  4. Nothing is found: "
-        "lower 'How faint an edge may be' and 'Minimum edge strength', "
-        "raise 'Largest item width or height', or raise 'Glue nearby "
-        "pieces together'.  5. One thing must never be assisted: put "
+        "lower 'Edge threshold' and 'Minimum edge strength', raise "
+        "'Largest item width or height', or raise 'Merge nearby blobs "
+        "(px)'.  5. One thing must never be assisted: put "
         "its colour in 'Never-click colour(s)'.  6. Still wrong: tell "
         "support what you clicked and what you expected instead, and "
         "include the log file Snappy AI writes to its data folder.",
@@ -1500,9 +1331,14 @@ PROSE = {
     "mac.pad_recordings": "Controller Recordings",
     "mac.sends": "sends",
     "mac.rename": "Rename",
+    "mac.edit": "Edit",
     "mac.export": "Export",
     "mac.import": "Import",
     "mac.delete": "Delete",
+    "st.rec_reloaded": "Recording file changed on disk - list reloaded.",
+    "st.rec_bad": "Recording file edit could not be loaded (invalid JSON?).",
+    "st.rec_edit_none": "No recording library file to open.",
+    "st.rec_edit_fail": "Could not open the recording file (%s).",
     "tab.keyboard": "Keyboard & Mouse",
     "tab.controller": "Controller",
     "tab.latency_fix": "Fix my PC",
@@ -1533,6 +1369,12 @@ PROSE = {
     "key.cap_unbound": "'%s' cannot be bound here.",
     "key.cap_invalid": "'%s' is not a valid shortcut.",
     "key.cap_timeout": "Nothing was pressed in time.",
+    "key.cap_head_multi": "Press up to 5 keys together - modifiers and keys, "
+                          "in any order. Release everything to set the "
+                          "combination. Escape cancels.",
+    "key.cap_holding_multi": "Holding %s - release everything to set the "
+                             "combination.",
+    "key.cap_max": "A combination can hold at most %d keys.",
     "key.cap_note": "Escape cancels. Mouse buttons cannot be bound - they are "
                     "what the assistance works on.",
     "key.cap_pad": "Escape cancels. Press a key for a keyboard combo, or a "
@@ -1546,7 +1388,7 @@ PROSE = {
         "extra software. The left stick steers the cursor, the right trigger "
         "is the press that assistance snaps from, the left trigger is a right "
         "click, and the right stick steers the view while that press is held, "
-        "so the snap, guide, follow and auto-click behaviour is the same code "
+        "so the snap, guide and follow behaviour is the same code "
         "a mouse user gets. Start launches and Back pauses out of the box; "
         "every action can be re-bound on the Controller tab, including to a "
         "combination, and a combination always wins over the shorter one it "
@@ -1566,7 +1408,8 @@ PROSE = {
     "help.12.b":
         "The scanner normally works from edges and shapes: it finds "
         "things that look like buttons, icons and people. Switch on "
-        "'Human detection' and a neural detector takes over for people. "
+        "'Person detection (hpose)' and a neural detector takes over "
+        "for people. "
         "It draws a real body, fits it to the picture and works out "
         "which way the person is facing - towards the screen, turned "
         "away, or in profile - and what they are doing: standing, "
@@ -1575,9 +1418,9 @@ PROSE = {
         "at crouching people'. A moving person is measured and led, so "
         "the aim lands where they are going rather than where they "
         "were. When the detector finds nobody, the ordinary scanner "
-        "takes over, so nothing is lost by leaving it on. The detector "
-        "and the models download themselves on the first use and need "
-        "onnxruntime; without it the ordinary scanner runs as before.",
+        "takes over, so nothing is lost by leaving it on. Models live "
+        "in the models folder and onnxruntime is required; without it "
+        "the ordinary scanner runs as before.",
 }
 
 i18n.publish("en", PROSE)
@@ -1639,25 +1482,589 @@ def _surf_of(widget, fallback="#ffffff"):
 
 HELP_KEYS = [("help.%d.t" % n, "help.%d.b" % n) for n in range(1, 12)]
 
-# One width for every dropdown, so the Experimental tab lines up. The option
-# names are deliberately short: each setting's hover text and the Help tab
-# carry the explanation, and a per-setting width made the column ragged.
 CHOICE_WIDTH = 26
 
 PAD_CAPTURE_SECONDS = 8.0
 PAD_CAPTURE_W = 84
 
 
-def _scrollable(page, kit, pal, bar=False):
-    """A page whose content can be taller than the window.
+SLIM_SCB_W = 10
+DD_H = 26
+DD_ROW_H = 30
+SLIDE_W = 176
+SLIDE_H = 24
+VAL_W = 8
 
-    The visible scrollbar is Help's alone (`bar=True`): on a settings tab a
-    permanent grey rail down the right edge is noise, and _fit_window sizes the
-    window so settings pages do not need to scroll at all. The canvas and the
-    wheel bindings stay either way, because on a short screen the window is
-    clamped and the content must still be reachable - hiding the rail must not
-    make settings unreachable.
-    """
+
+def _thumb_hex(kit, active):
+    pal = kit.pal
+    return pal["accent"] if active else pal["muted"]
+
+
+class _SlimScrollbar(tk.Canvas):
+
+    def __init__(self, master, kit, cvs, wheel=None):
+        super().__init__(master, width=SLIM_SCB_W, highlightthickness=0,
+                         takefocus=0, bd=0, bg=kit.pal["card"])
+        self._kit = kit
+        self._cvs = cvs
+        self._wheel_cb = wheel
+        self._first = 0.0
+        self._last = 1.0
+        self._hot = False
+        self._drag = None
+        self._imgs = []
+        kit.reg(self, "canvas_card")
+        kit.repaint(self._paint)
+        self.bind("<Enter>", lambda e: self._sethot(True))
+        self.bind("<Leave>", lambda e: self._sethot(False))
+        self.bind("<Configure>", lambda e: self._paint())
+        self.bind("<Button-1>", self._press)
+        self.bind("<B1-Motion>", self._drag_to)
+        self.bind("<ButtonRelease-1>", self._drop)
+        self.bind("<MouseWheel>", lambda e: self._step(-int(e.delta) // 120))
+        self.bind("<Button-4>", lambda e: self._step(-1))
+        self.bind("<Button-5>", lambda e: self._step(1))
+
+    def _sethot(self, on):
+        self._hot = bool(on)
+        self._paint()
+
+    def set(self, first, last):
+        try:
+            self._first = min(1.0, max(0.0, float(first)))
+            self._last = min(1.0, max(0.0, float(last)))
+        except (TypeError, ValueError):
+            return
+        self._paint()
+
+    def _box(self):
+        h = self.winfo_height()
+        w = self.winfo_width()
+        if h < 3 or w < 3:
+            return None
+        span = self._last - self._first
+        if span <= 0.0005 or span >= 0.9995:
+            return None
+        th = max(30, int(round(span * h)))
+        travel = h - th
+        frac = self._first / (1.0 - span) if span < 1.0 else 0.0
+        ty = min(travel, max(0, int(round(frac * travel))))
+        return (0, ty, w, ty + th, th, h, travel, span)
+
+    def _paint(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        pal = self._kit.pal
+        self.configure(bg=pal["card"])
+        self.delete("all")
+        self._imgs = []
+        box = self._box()
+        h = self.winfo_height()
+        if h < 3:
+            return
+        try:
+            rail = self._kit.rounded(SLIM_SCB_W, h, pal["light_bg"], 5)
+            self.create_image(0, 0, anchor="nw", image=rail)
+            self._imgs.append(rail)
+        except Exception:
+            self.create_rectangle(0, 0, SLIM_SCB_W, h, fill=pal["light_bg"], outline="")
+        if box is None:
+            return
+        fill = _thumb_hex(self._kit, self._hot or self._drag is not None)
+        try:
+            img = self._kit.rounded(SLIM_SCB_W, box[4], fill, 5)
+            self.create_image(0, box[1], anchor="nw", image=img)
+            self._imgs.append(img)
+        except Exception:
+            self.create_rectangle(0, box[1], SLIM_SCB_W - 1, box[3],
+                                  fill=fill, outline="")
+
+    def _to(self, frac):
+        try:
+            self._cvs.yview_moveto(min(1.0, max(0.0, frac)))
+        except tk.TclError:
+            pass
+
+    def _step(self, n):
+        if self._wheel_cb is not None:
+            try:
+                self._wheel_cb(n)
+            except Exception:
+                pass
+        return "break"
+
+    def _press(self, event):
+        box = self._box()
+        if box is None:
+            return
+        ty = box[1]
+        by = box[3]
+        travel = box[5]
+        content_span = box[6]
+        if event.y < ty:
+            try:
+                self._cvs.yview_scroll(-1, "pages")
+            except tk.TclError:
+                pass
+            return
+        if event.y > by:
+            try:
+                self._cvs.yview_scroll(1, "pages")
+            except tk.TclError:
+                pass
+            return
+        self._drag = (event.y, ty, travel, self._last - self._first)
+
+    def _drag_to(self, event):
+        if self._drag is None:
+            return
+        y0, ty0, travel, content_span = self._drag
+        if travel <= 0 or content_span >= 1.0:
+            return
+        dy = event.y - ty0
+        new_ty = max(0, min(travel, ty0 + dy))
+        frac = new_ty / float(travel)
+        self._to(frac * (1.0 - content_span))
+
+    def _drop(self, _event):
+        self._drag = None
+        self._paint()
+
+
+class _ChoiceDropdown(tk.Canvas):
+
+    def __init__(self, master, kit, var=None, width=DD_H + 150,
+                 on_select=None):
+        super().__init__(master, width=width, height=DD_H,
+                         highlightthickness=0, takefocus=1, bd=0,
+                         cursor="hand2", bg=kit.pal["card"])
+        self._kit = kit
+        self._var = var
+        self._on_select = on_select
+        self._pairs = []
+        self._pop = None
+        self._imgs = []
+        kit.reg(self, "canvas_card")
+        kit.repaint(self._paint)
+        self.bind("<Button-1>", lambda _e: self.toggle())
+        self.bind("<Return>", lambda _e: self.toggle())
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<Button-2>", lambda e: "break")
+        self.bind("<Configure>", lambda _e: self._paint())
+        self._owns_wheel = True
+
+    def set_pairs(self, pairs):
+        try:
+            self._pairs = [(str(d), v) for d, v in list(pairs or [])]
+        except (TypeError, ValueError):
+            self._pairs = []
+        self._paint()
+
+    def _text(self):
+        try:
+            want = str(self._var.get())
+        except (tk.TclError, ValueError):
+            want = ""
+        for d, _v in self._pairs:
+            if d == want:
+                return d
+        try:
+            nums = [abs(float(v) - float(want)) for _d, v in self._pairs]
+            return self._pairs[nums.index(min(nums))][0]
+        except (TypeError, ValueError):
+            pass
+        return want
+
+    def _paint(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        pal = self._kit.pal
+        self.configure(bg=pal["card"])
+        w = self.winfo_width()
+        h = DD_H
+        self.delete("all")
+        self._imgs = []
+        if w < 10:
+            return
+        try:
+            img = self._kit.rounded(w, h, pal["entry"], 6)
+            self.create_image(0, 0, anchor="nw", image=img)
+            self._imgs.append(img)
+            rim = self._kit.rounded(w, h, pal["entry_bd"], 6)
+            self.create_image(0, 0, anchor="nw", image=rim)
+            self._imgs.append(rim)
+            img2 = self._kit.rounded(w - 2, h - 2, pal["entry"], 6)
+            self.create_image(1, 1, anchor="nw", image=img2)
+            self._imgs.append(img2)
+        except Exception:
+            self.create_rectangle(0, 0, w, h, fill=pal["entry"],
+                                  outline=pal["entry_bd"])
+        f = tkfont.Font(font=F_BASE)
+        txt = self._text()
+        ellipsis = "…"
+        limit = max(max(10, w - 30), f.measure(ellipsis) + 4)
+        iter_cap = 50
+        while txt and f.measure(txt) > limit and iter_cap:
+            iter_cap -= 1
+            if txt == ellipsis:
+                txt = ""
+                break
+            txt = txt[:-2]
+            if not txt.endswith(ellipsis):
+                txt = txt + ellipsis
+            elif len(txt) > 1:
+                txt = txt[:-1]
+            else:
+                txt = ""
+                break
+        self.create_text(10, h // 2, anchor="w", text=txt, font=F_BASE,
+                         fill=pal["text"])
+        cx = w - 9
+        cy = h // 2
+        hover = pal["muted"] if self._pop is None else pal["accent"]
+        self.create_polygon(cx - 5, cy - 2, cx + 5, cy - 2, cx, cy + 4,
+                            fill=hover, outline="")
+
+    def toggle(self):
+        try:
+            self.focus_set()
+        except tk.TclError:
+            pass
+        if self._pop is not None:
+            self.close()
+            return
+        self._open_popup()
+
+    def close(self):
+        if self._pop is None:
+            return
+        pop = self._pop
+        self._pop = None
+        self._paint()
+        if pop is None:
+            return
+        try:
+            pop.withdraw()
+        except Exception:
+            pass
+        try:
+            pop.after(1, lambda p=pop: self._destroy_popup(p))
+        except Exception:
+            self._destroy_popup(pop)
+
+    def _destroy_popup(self, pop):
+        try:
+            pop.grab_release()
+        except Exception:
+            pass
+        try:
+            pop.destroy()
+        except Exception:
+            pass
+
+    def _open_popup(self):
+        pairs = list(self._pairs)
+        if not pairs:
+            return
+        pal = self._kit.pal
+        pop = tk.Toplevel(self.winfo_toplevel())
+        self._pop = pop
+        pop.wm_overrideredirect(True)
+        try:
+            pop.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        pop.configure(background=pal["card"], takefocus=1)
+
+        # Match the dropdown's own width (with a 176 px floor) so the popup
+        # never overflows into neighbouring widgets like the scrollbar.
+        pop_w = max(self.winfo_width(), 176)
+        row_h = DD_ROW_H
+        ph = len(pairs) * DD_ROW_H + 2
+
+        pop_cvs = tk.Canvas(pop, highlightthickness=0, bg=pal["card"],
+                            width=pop_w, height=ph)
+        pop_cvs.pack(fill="both", expand=True)
+        self._pop_cvs = pop_cvs
+
+        ff = tkfont.Font(font=F_BASE)
+        cur = self._text()
+        text_limit = max(10, pop_w - 20)
+
+        def _trunc(s):
+            if not s or ff.measure(s) <= text_limit:
+                return s
+            ell = "…"
+            t = s
+            while t and ff.measure(t + ell) > text_limit:
+                t = t[:-1]
+            return (t + ell) if t else ell
+
+        row_h = DD_ROW_H
+        for i, (disp, val) in enumerate(pairs):
+            y = i * row_h
+            bg = pal["light_bg"] if disp == cur else pal["card"]
+            fg = pal["accent"] if disp == cur else pal["text"]
+            pop_cvs.create_rectangle(0, y, pop_w, y + row_h, fill=bg, outline="",
+                                      tags=("bg%d" % i, "row%d" % i))
+            pop_cvs.create_text(10, y + row_h // 2, anchor="w",
+                                text=_trunc(str(disp)),
+                                font=F_BASE, fill=fg,
+                                tags=("tx%d" % i, "row%d" % i))
+            pop_cvs.tag_bind("row%d" % i, "<Enter>",
+                             lambda e, i=i: self._pop_hover(i, True))
+            pop_cvs.tag_bind("row%d" % i, "<Leave>",
+                             lambda e, i=i: self._pop_hover(i, False))
+            pop_cvs.tag_bind("row%d" % i, "<Button-1>",
+                             lambda e, i=i: self._pop_pick(i))
+
+        pop.bind("<Escape>", lambda _e: self.close())
+        pop.bind("<Button-1>", lambda _e: self.close())
+        # NO <FocusOut> binding
+
+        pop.update_idletasks()
+        pop_cvs.configure(width=pop_w, height=ph)
+        sx = self.winfo_rootx()
+        sy = self.winfo_rooty() + DD_H + 3
+        sh = pop.winfo_screenheight()
+        if sy + ph > sh - 6:
+            sy = max(6, self.winfo_rooty() - ph - 4)
+        pop.geometry("%dx%d+%d+%d" % (pop_w, ph, sx, sy))
+        pop.deiconify()
+        try:
+            pop.grab_set()
+        except tk.TclError:
+            pass
+        pop.bind("<Destroy>", lambda _e: self._popped(pop), add="+")
+        self._paint()
+
+    def _pop_hover(self, idx, on):
+        if self._pop is None:
+            return
+        pal = self._kit.pal
+        try:
+            cur = self._text()
+            for i, (disp, _v) in enumerate(self._pairs):
+                if on and i == idx:
+                    bg = pal["light_bg"]
+                elif disp == cur:
+                    bg = pal["light_bg"]
+                else:
+                    bg = pal["card"]
+                self._pop_cvs.itemconfigure("bg%d" % i, fill=bg)
+        except tk.TclError:
+            pass
+
+    def _pop_pick(self, idx):
+        if idx >= len(self._pairs):
+            return
+        disp, val = self._pairs[idx]
+        try:
+            self._var.set(disp)
+        except (tk.TclError, ValueError):
+            pass
+        if self._on_select is not None:
+            try:
+                self._on_select()
+            except Exception:
+                pass
+        self.close()
+
+    def _popped(self, pop):
+        if self._pop is pop:
+            self._pop = None
+            self._paint()
+
+
+class _RangeSlider(tk.Canvas):
+
+    def __init__(self, master, kit, var=None, lo=0.0, hi=1.0,
+                 integer=True, width=SLIDE_W, height=SLIDE_H,
+                 wheel_step=None):
+        super().__init__(master, width=width, height=height,
+                         highlightthickness=0, takefocus=0, bd=0,
+                         cursor="hand2", bg=kit.pal["card"])
+        self._kit = kit
+        self._var = var
+        self._lo = float(lo)
+        self._hi = float(hi)
+        self._integer = bool(integer)
+        self._step = wheel_step
+        self._drag = False
+        self._hover = False
+        self._imgs = []
+        kit.reg(self, "canvas_card")
+        kit.repaint(self._paint)
+        self._owns_wheel = True
+        self.bind("<Button-1>", self._press)
+        self.bind("<B1-Motion>", self._move)
+        self.bind("<ButtonRelease-1>", self._drop)
+        self.bind("<MouseWheel>", self._wheel_abs)
+        self.bind("<Button-4>", self._wheel_step)
+        self.bind("<Button-5>", self._wheel_step)
+        self.bind("<Configure>", lambda _e: self._paint())
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        if var is not None:
+            var.trace_add("write", lambda *_a: self._paint())
+
+    def _num(self):
+        raw = ""
+        if self._var is not None:
+            try:
+                raw = str(self._var.get())
+            except (tk.TclError, ValueError):
+                raw = ""
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = (self._lo + self._hi) / 2.0
+        return self._clamp(val)
+
+    def _clamp(self, val):
+        if self._integer:
+            val = int(round(val))
+            val = int(max(self._lo, min(self._hi, val)))
+            return float(val)
+        val = max(self._lo, min(self._hi, val))
+        return round(val, 2) + 0.0
+
+    def _fmt(self, val):
+        if self._integer:
+            return "%d" % int(round(val))
+        s = "%.2f" % val
+        if s.endswith("00"):
+            s = s[:-3]
+        else:
+            s = s.rstrip("0").rstrip(".")
+        return s or "0"
+
+    def _snap_step(self):
+        if not self._integer:
+            return 0
+        span = self._hi - self._lo
+        if span <= 20:
+            return 1
+        if span <= 100:
+            return 1
+        if span <= 500:
+            return 5
+        if span <= 2000:
+            return 10
+        if span <= 10000:
+            return 100
+        if span <= 50000:
+            return 500
+        return 1000
+
+    def _set(self, val):
+        val = self._clamp(val)
+        step = self._snap_step()
+        if step > 0 and val % step:
+            val = round(val / step) * step
+            val = self._clamp(val)
+        text = self._fmt(val)
+        if self._var is not None:
+            try:
+                if str(self._var.get()) != text:
+                    self._var.set(text)
+            except (tk.TclError, ValueError):
+                pass
+        self._paint()
+
+    def _paint(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        pal = self._kit.pal
+        self.configure(bg=pal["card"])
+        w = self.winfo_width()
+        h = SLIDE_H
+        self.delete("all")
+        self._imgs = []
+        if w < 20:
+            return
+        cy = h // 2
+        kw = 16
+        span = max(1.0, self._hi - self._lo)
+        frac = (self._num() - self._lo) / span
+        frac = min(1.0, max(0.0, frac))
+        x0 = kw // 2
+        x1 = w - kw // 2
+        pos = int(round(x0 + frac * (x1 - x0)))
+        try:
+            track = self._kit.rounded(w, 6, pal["light_bg"], 3)
+            self.create_image(0, cy - 3, anchor="nw", image=track)
+            self._imgs.append(track)
+        except Exception:
+            self.create_rectangle(0, cy - 3, w, cy + 3, fill=pal["light_bg"],
+                                  outline="")
+        fw = max(6, pos)
+        try:
+            fill_img = self._kit.rounded(max(fw, 4), 6, pal["accent"], 3)
+            self.create_image(0, cy - 3, anchor="nw", image=fill_img)
+            self._imgs.append(fill_img)
+        except Exception:
+            self.create_rectangle(0, cy - 3, max(4, pos), cy + 3,
+                                  fill=pal["accent"], outline="")
+        knob_fill = pal["accent"] if self._hover or self._drag else pal["accent"]
+        self.create_oval(pos - kw // 2, cy - kw // 2, pos + kw // 2,
+                         cy + kw // 2, fill=knob_fill,
+                         outline=pal["entry_bd"])
+        self._pos = pos
+
+    def _val_at(self, x):
+        w = self.winfo_width()
+        kw = 16
+        x0 = kw / 2.0
+        x1 = max(x0 + 1, w - kw / 2.0)
+        frac = (x - x0) / (x1 - x0)
+        frac = min(1.0, max(0.0, frac))
+        return self._lo + frac * (self._hi - self._lo)
+
+    def _press(self, event):
+        self._drag = True
+        self._set(self._val_at(event.x))
+        return "break"
+
+    def _move(self, event):
+        if not self._drag:
+            return
+        self._set(self._val_at(event.x))
+        return "break"
+
+    def _drop(self, _event):
+        self._drag = False
+        self._paint()
+
+    def _wheel_abs(self, event):
+        return self._wheel_step(event)
+
+    def _set_hover(self, on):
+        self._hover = bool(on)
+        self._paint()
+
+    def _wheel_step(self, event):
+        if self._integer:
+            step = self._snap_step() or 1
+        else:
+            step = (self._hi - self._lo) / 80.0
+        delta = -1 if (getattr(event, "delta", 0) > 0
+                       or getattr(event, "num", 0) == 4) else 1
+        self._set(self._num() + delta * step)
+        return "break"
+
+
+def _scrollable(page, kit, pal, bar=True):
     host = tk.Frame(page, bg=pal["card"])
     kit.reg(host, "card")
     host.pack(fill="both", expand=True)
@@ -1665,11 +2072,6 @@ def _scrollable(page, kit, pal, bar=False):
     cvs = tk.Canvas(host, highlightthickness=0, takefocus=0, bd=0,
                     bg=pal["card"])
     kit.reg(cvs, "canvas_card")
-    if bar:
-        scroll = ttk.Scrollbar(host, orient="vertical", command=cvs.yview)
-        cvs.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-    cvs.pack(side="left", fill="both", expand=True)
 
     inner = tk.Frame(cvs, bg=pal["card"])
     kit.reg(inner, "card")
@@ -1679,6 +2081,7 @@ def _scrollable(page, kit, pal, bar=False):
         try:
             cvs.itemconfigure(win, width=max(120, cvs.winfo_width()))
             cvs.configure(scrollregion=cvs.bbox("all"))
+            bind_wheel(inner)
         except tk.TclError:
             pass
 
@@ -1694,13 +2097,45 @@ def _scrollable(page, kit, pal, bar=False):
         except tk.TclError:
             pass
 
+    if bar:
+        sb = _SlimScrollbar(host, kit, cvs, wheel=_wheel)
+        sb.pack(side="right", fill="y")
+        cvs.configure(yscrollcommand=sb.set)
+        sb.set(0.0, 1.0)
+    cvs.pack(side="left", fill="both", expand=True)
+
     def bind_wheel(widget):
-        widget.bind("<MouseWheel>", lambda e: _wheel(-int(e.delta) // 120))
-        widget.bind("<Button-4>", lambda e: _wheel(-1))
-        widget.bind("<Button-5>", lambda e: _wheel(1))
+        seen = set()
+
+        def _tree(w):
+            if id(w) in seen:
+                return
+            seen.add(id(w))
+            try:
+                if getattr(w, "_owns_wheel", False):
+                    pass
+                elif w.winfo_class() not in ("TCombobox", "TSpinbox",
+                                             "Spinbox", "TScrollbar",
+                                             "Listbox"):
+                    w.bind("<MouseWheel>",
+                           lambda e: _wheel(-int(e.delta) // 120))
+                    w.bind("<Button-4>", lambda e: _wheel(-1))
+                    w.bind("<Button-5>", lambda e: _wheel(1))
+                for c in w.winfo_children():
+                    _tree(c)
+            except tk.TclError:
+                pass
+
+        _tree(widget)
 
     bind_wheel(cvs)
     return inner, bind_wheel
+
+
+
+
+
+
 
 
 def _fill_help(page, kit, pal):
@@ -1785,12 +2220,6 @@ _TK_MODS = {
 
 
 def keysym_to_spec(keysym):
-    """A Tk keysym -> this project's hotkey spelling, or None if unbindable.
-
-    Kept beside the dialog rather than in hotkeys.py because it is a Tk
-    concern: hotkeys.py owns the grammar ("ctrl+alt+r"), this owns the
-    translation from whatever the windowing system called the key.
-    """
     ks = str(keysym or "").strip()
     low = ks.lower()
     if low in _KEYSYM_TO_SPEC:
@@ -1807,29 +2236,10 @@ def keysym_to_spec(keysym):
 
 
 def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
-                        allow_modifier=False):
-    """Ask for a key or combination and return its spec, or None on cancel.
-
-    Modifiers are tracked from the dialog's own KeyPress/KeyRelease events
-    rather than read out of event.state, whose modifier bits mean different
-    things on X11 and on Windows and would silently produce the wrong spec on
-    one of them.
-
-    `allow_pad` also listens for a controller combination and answers
-    "pad:<spec>", which is how a controller macro's OUTPUT can be either a key
-    combo or a controller combo from the same button.
-
-    `allow_modifier` accepts a modifier on its own, committed when it is
-    released. A shortcut needs a non-modifier key ("shift" alone is nothing to
-    register), but the assistance bypass is a HOLD, and "while Shift is down"
-    is the one spec people expect to be able to keep. Pressing a second key
-    still builds the combination, so the same dialog serves both.
-
-    Escape cancels rather than binding: a global Escape hotkey would break
-    every dialog in the program, including this one.
-    """
+                        allow_modifier=False, multi=False):
     import input_utils as gamepad
     import input_utils as hotkeys
+    max_tokens = 5
     win = tk.Toplevel(parent)
     kit.attach(win)
     kit.reg(win, "card")
@@ -1846,9 +2256,10 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
     box = tk.Frame(win, bg=pal["card"])
     kit.reg(box, "card")
     box.pack(fill="both", expand=True, padx=18, pady=16)
-    head = tk.Label(box, text=i18n.L("key.cap_head"), font=F_BOLD,
-                    bg=pal["card"], fg=pal["text"], wraplength=380,
-                    justify="left", anchor="w")
+    head = tk.Label(box, text=i18n.L(
+        "key.cap_head_multi" if multi else "key.cap_head"), font=F_BOLD,
+        bg=pal["card"], fg=pal["text"], wraplength=380,
+        justify="left", anchor="w")
     kit.reg(head, "card_bold")
     head.pack(fill="x", pady=(0, 8))
     hint = tk.Label(box, text=i18n.L("key.cap_waiting"), font=F_DESC,
@@ -1868,17 +2279,45 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
     done = {"v": False}
     held = set()
     track = {"peak": 0, "seen": False, "index": None, "rescan": 0.0,
-             "sawkey": False}
+             "sawkey": False, "keys": [], "mods": [], "down": set(),
+             "expire": None}
     aid = []
 
+    def _hint_hold():
+        names = "+".join(m for m in _MOD_ORDER if m in held)
+        if multi:
+            if track["mods"] or track["keys"]:
+                combo = "+".join(track["mods"] + track["keys"])
+                hint.configure(text=i18n.L("key.cap_holding_multi", combo))
+            elif names:
+                hint.configure(text=i18n.L("key.cap_holding", names))
+            else:
+                hint.configure(text=i18n.L("key.cap_waiting"))
+            return
+        if names:
+            hint.configure(text=i18n.L("key.cap_holding", names))
+
+    def _rearm():
+        if track["expire"] is not None:
+            try:
+                win.after_cancel(track["expire"])
+            except (tk.TclError, ValueError):
+                pass
+        track["expire"] = win.after(
+            int(KEY_CAPTURE_SECONDS * 1000), expire)
+
     def finish(spec):
-        # Once, or not at all. Every sequence here is bound twice - on the
-        # window and app-wide, so that a dialog without the keyboard focus can
-        # still be driven - so one press reaches finish twice. Without this
-        # guard the second run recomputes from an already-emptied `held` and
-        # overwrites the answer: releasing ctrl+alt answered "ctrl".
         if done["v"] or not _live(win):
             return
+        if multi and spec is not None:
+            if len(track["mods"]) + len(track["keys"]) > max_tokens:
+                return
+            canon = "+".join([m for m in _MOD_ORDER
+                              if m in track["mods"]] + list(track["keys"]))
+            if hotkeys._parse_macro_spec(canon) is None:
+                hint.configure(text=i18n.L("key.cap_invalid", canon))
+                return
+            spec = canon
         done["v"] = True
         result["spec"] = spec
         for handle in aid:
@@ -1897,15 +2336,16 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
             pass
 
     def on_press(event):
-        if not _live(win):
+        if not _live(win) or done["v"]:
             return
         low = str(getattr(event, "keysym", "") or "").lower()
         mod = _TK_MODS.get(low)
         if mod is not None:
             held.add(mod)
-            hint.configure(text=i18n.L(
-                "key.cap_holding",
-                "+".join(m for m in _MOD_ORDER if m in held)))
+            if multi and mod not in track["mods"]:
+                track["mods"].append(mod)
+            _hint_hold()
+            _rearm()
             return
         token = keysym_to_spec(getattr(event, "keysym", ""))
         if token is not None:
@@ -1914,6 +2354,21 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
             hint.configure(text=i18n.L("key.cap_unbound",
                                        str(getattr(event, "keysym", "?"))))
             return
+        if multi:
+            total = len(track["mods"]) + len(track["keys"])
+            if token in track["keys"]:
+                track["down"].add(token)
+                _hint_hold()
+                _rearm()
+                return
+            if total >= max_tokens:
+                hint.configure(text=i18n.L("key.cap_max", max_tokens))
+                return
+            track["keys"].append(token)
+            track["down"].add(token)
+            _hint_hold()
+            _rearm()
+            return
         spec = "+".join([m for m in _MOD_ORDER if m in held] + [token])
         if hotkeys._parse_hotkey(spec) is None:
             hint.configure(text=i18n.L("key.cap_invalid", spec))
@@ -1921,12 +2376,23 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
         finish(spec)
 
     def on_release(event):
-        mod = _TK_MODS.get(str(getattr(event, "keysym", "") or "").lower())
+        low = str(getattr(event, "keysym", "") or "").lower()
+        mod = _TK_MODS.get(low)
         if mod is None:
+            token = keysym_to_spec(getattr(event, "keysym", ""))
+            if multi and token in track["down"]:
+                track["down"].discard(token)
+                if track["keys"] and not track["down"]:
+                    finish("+".join([m for m in _MOD_ORDER
+                                     if m in track["mods"]]
+                                    + list(track["keys"])))
             return
-        # Releasing a modifier with no key ever pressed commits the modifiers
-        # that were down - that is how "shift" alone becomes a bypass spec.
-        # Anything that reached on_press with a real key already finished.
+        held.discard(mod)
+        if multi:
+            if (allow_modifier or not track["keys"]) and track["mods"] \
+                    and not held and not track["keys"]:
+                finish("+".join(m for m in _MOD_ORDER if m in track["mods"]))
+            return
         if allow_modifier and not track["sawkey"] and held:
             spec = "+".join(m for m in _MOD_ORDER if m in held)
             held.discard(mod)
@@ -1968,10 +2434,6 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
 
     cancel = kit.button(box, i18n.L("cap.cancel"), lambda: finish(None))
     cancel.pack(anchor="e")
-    # bind_all, not just win.bind: a capture dialog that depends on really
-    # holding the keyboard focus fails silently on window managers that hand
-    # focus elsewhere, and the user sees a countdown that ignores their keys.
-    # The dialog is modal (grab_set) and short-lived, and finish() unbinds.
     win.bind("<KeyPress>", on_press)
     win.bind("<KeyRelease>", on_release)
     win.bind("<Escape>", lambda _e: finish(None))
@@ -1979,7 +2441,10 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
     win.bind_all("<KeyRelease>", on_release, add="+")
     win.bind_all("<Escape>", lambda _e: finish(None), add="+")
     win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
-    aid.append(win.after(int(KEY_CAPTURE_SECONDS * 1000), expire))
+    try:
+        _rearm()
+    except Exception:
+        aid.append(win.after(int(KEY_CAPTURE_SECONDS * 1000), expire))
     try:
         win.update_idletasks()
         win.deiconify()
@@ -1997,20 +2462,6 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
 
 
 def _pad_capture_dialog(parent, kit, app, initial="", single=False):
-    """Ask for a controller button and return its spec, or None on cancel.
-
-    Polls XInput directly instead of going through the engine, so a binding
-    can be captured before controller input is switched on, and while the
-    engine is paused. A combination is captured at its WIDEST - every button
-    that was down at any point in the press - and returned on release, so
-    "rb+a" needs no timing and cannot come back as just "a".
-
-    `single` captures exactly one button and answers on the press instead of
-    the release, for the two roles that must not be a combination: the
-    controller's click button and its extra-options button. Both are held and
-    released by the drive path, so a two-button spec there could never be
-    honoured and would leave the user steering with no way to click.
-    """
     import input_utils as gamepad
     win = tk.Toplevel(parent)
     kit.attach(win)
@@ -2073,7 +2524,6 @@ def _pad_capture_dialog(parent, kit, app, initial="", single=False):
             pass
 
     def on_key(event):
-        # See _mouse_capture_dialog: Escape has to survive a focus-less event.
         if str(getattr(event, "keysym", "") or "").lower() in ("escape", "esc"):
             finish(None)
 
@@ -2104,8 +2554,6 @@ def _pad_capture_dialog(parent, kit, app, initial="", single=False):
             return
         buttons = int(state.buttons)
         if single:
-            # The lowest button that is down, answered on the press: a single
-            # role has no combination to wait for.
             if buttons:
                 finish(gamepad.PAD_BUTTONS[
                     (buttons & -buttons).bit_length() - 1])
@@ -2140,9 +2588,6 @@ def _pad_capture_dialog(parent, kit, app, initial="", single=False):
     return result["spec"]
 
 
-# Tk numbers mouse buttons 1=left, 2=middle, 3=right on every platform, while
-# Windows (and this program's config) numbers them mouse1=left, mouse2=right,
-# mouse3=middle. 4 and 5 are the two side buttons. One table, one translation.
 _TK_MOUSE_BUTTONS = {1: "mouse1", 2: "mouse3", 3: "mouse2",
                      4: "mouse4", 5: "mouse5"}
 
@@ -2151,13 +2596,6 @@ MOUSE_BUTTON_NAMES = tuple(_TK_MOUSE_BUTTONS[n]
 
 
 def _mouse_capture_dialog(parent, kit, initial=""):
-    """Ask which mouse button a role uses; return its name or None on cancel.
-
-    A real press rather than a dropdown, so the two mouse roles read exactly
-    like every other binding on the tab and cannot be set to a name the hook
-    does not understand. Escape cancels; the dialog cannot unbind, because a
-    role with no button would leave the program with no way to click.
-    """
     win = tk.Toplevel(parent)
     kit.attach(win)
     kit.reg(win, "card")
@@ -2222,10 +2660,6 @@ def _mouse_capture_dialog(parent, kit, initial=""):
         seqs.append(seq)
         win.bind(seq, lambda e, n=_TK_MOUSE_BUTTONS[num]: (e.widget.winfo_class() != "Button" and finish(n)))
     def on_key(event):
-        # Escape cancels, from a KeyPress handler as well as the keysym-specific
-        # <Escape> pattern: an event that arrives without the window really
-        # holding the keyboard focus does not always reach a keysym pattern, and
-        # a dialog the user cannot cancel is a dialog they have to kill.
         if str(getattr(event, "keysym", "") or "").lower() in ("escape", "esc"):
             finish(None)
 
@@ -2233,16 +2667,10 @@ def _mouse_capture_dialog(parent, kit, initial=""):
         seqs.append(seq)
         win.bind(seq, on_key if seq == "<KeyPress>"
                  else (lambda _e: finish(None)))
-        # bind_all too, for the reason the key dialog gives: a dialog that
-        # depends on really holding the keyboard focus cannot be cancelled at
-        # all on window managers that hand focus elsewhere.
         win.bind_all(seq, on_key if seq == "<KeyPress>"
                      else (lambda _e: finish(None)), add="+")
 
     def expire():
-        # Same escape hatch the other two dialogs have: a dialog that only a
-        # mouse press can close is a trap for anyone who opened it by accident
-        # or whose button is stuck.
         if done["v"] or not _live(win):
             return
         hint.configure(text=i18n.L("mouse.cap_timeout"))
@@ -2259,24 +2687,11 @@ def _mouse_capture_dialog(parent, kit, initial=""):
     return result["spec"]
 
 
-CAPTURE_KINDS = ("key", "keymod", "pad", "padsingle", "padkey", "mouse")
+CAPTURE_KINDS = ("key", "keymod", "pad", "padsingle", "padkey", "mouse",
+                 "combo")
 
 
 def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
-    """The "Press" button beside a binding field.
-
-    The kind decides what is listened to: "key" the keyboard, "keymod" the
-    keyboard including a lone modifier, "pad" a controller combination,
-    "padsingle" exactly one controller button, "padkey" both devices - the
-    last is how a controller macro's OUTPUT can be either a key combo or a
-    controller combo - and "mouse" one of the five mouse buttons. One
-    implementation, so keyboard shortcuts, macros, controller bindings, the
-    mouse roles and the bypass all capture the same way and report the same
-    status lines.
-
-    Returns the button; the caller places it (gridded in a settings row,
-    packed in a macro row).
-    """
     def _capture(k=key, v=var, kd=kind):
         if kd == "pad":
             spec = _pad_capture_dialog(root, kit, app, v.get())
@@ -2284,6 +2699,9 @@ def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
             spec = _pad_capture_dialog(root, kit, app, v.get(), single=True)
         elif kd == "mouse":
             spec = _mouse_capture_dialog(root, kit, v.get())
+        elif kd == "combo":
+            spec = _key_capture_dialog(root, kit, app, v.get(),
+                                       allow_modifier=True, multi=True)
         else:
             spec = _key_capture_dialog(root, kit, app, v.get(),
                                        allow_pad=(kd == "padkey"),
@@ -2313,14 +2731,6 @@ def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
 
 
 def _widget_class(root, widget):
-    """Tk class of an event's widget, whether Tkinter knows it or not.
-
-    `event.widget` is a WIDGET for anything Tkinter created, but a bare PATH
-    STRING for the internals Tk builds itself - a ttk.Combobox popdown, its
-    listbox, scrollbar arrows. Those have no Python proxy, so calling
-    `.winfo_class()` on them raised AttributeError on every focus change
-    inside a dropdown, once per event, straight into the console.
-    """
     try:
         if isinstance(widget, str):
             return str(root.tk.call("winfo", "class", widget))
@@ -2974,7 +3384,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     suppress = [False]
 
     root = tk.Tk()
-    root.withdraw()  # hide until fully built
+    root.withdraw()
     kit.attach(root)
     kit.reg(root, "bg")
     root.title(APP_NAME)
@@ -3138,7 +3548,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 root.after_cancel(aid)
             except (tk.TclError, ValueError):
                 pass
-        root.destroy()
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
 
     def do_logout():
         app.request_quit()
@@ -3455,11 +3868,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         apply_btn.pack_forget()
         theme = str(cfg.get("theme", "light"))
         if theme != kit.current():
-            # switch_to() -> apply() synchronously repaints every
-            # registered surface, and refresh_fields is registered at
-            # build time - fields are reloaded there. A second explicit
-            # pass would be redundant and re-toggles suppress mid-frame.
             kit.switch_to(theme)
+            refresh_fields()
+            dispatch_ret()
         else:
             refresh_fields()
         if snapshot:
@@ -3490,6 +3901,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def do_export():
         path = filedialog.asksaveasfilename(
+            parent=root,
             title=i18n.L("st.export_title"),
             initialfile="snappyai-settings.json",
             defaultextension=".json",
@@ -3506,6 +3918,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def do_import():
         path = filedialog.askopenfilename(
+            parent=root,
             title=i18n.L("st.import_title"),
             filetypes=[(i18n.L("st.file_settings"), "*.json"),
                        (i18n.L("st.all_files"), "*.*")])
@@ -3621,6 +4034,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     status_row.bind("<Configure>", _status_fit)
     _status_fit()
 
+    ranges = type(cfg)._RANGES
 
     def make_row(parent, key, row):
         label, desc, kind, choices = META[key]
@@ -3653,25 +4067,16 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
         if kind == "bool":
 
-
-
-
             w = kit.bool_switch(cell, var)
         elif kind == "map":
 
-
-
-
-            w = ttk.Combobox(cell, textvariable=var,
-                             values=[d for d, _v in map_pairs_live(key)],
-                             state="readonly", width=CHOICE_WIDTH,
-                             font=F_BASE)
+            w = _ChoiceDropdown(cell, kit, var=var)
+            w.set_pairs(map_pairs_live(key))
 
             def _revals(w=w, k=key):
                 if not _live(w):
                     return False
-                w.configure(values=[d for d, _v in map_pairs_live(k)],
-                            width=CHOICE_WIDTH)
+                w.set_pairs(map_pairs_live(k))
                 return True
 
             R(_revals)
@@ -3693,36 +4098,20 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
                 def _avail_probe(txt=note):
                     try:
-                        from input_backend import (InterceptionBackend,
-                                                   RebindBackend,
-                                                   DEFAULT_SERVER_URL)
-                        try:
-                            _url = str(cfg.get("server_url")
-                                       or DEFAULT_SERVER_URL)
-                        except Exception:
-                            _url = DEFAULT_SERVER_URL
+                        from input_backend import InterceptionBackend
                         driver_ok = InterceptionBackend.available()
-                        server_ok = RebindBackend.available(_url)
                     except Exception:
-                        driver_ok, server_ok = (False, False)
-                    def _paint(driver_ok=driver_ok, server_ok=server_ok, txt=txt):
+                        driver_ok = False
+
+                    def _paint(driver_ok=driver_ok, txt=txt):
                         if not _live(txt):
                             return False
-                        bits = []
-                        if driver_ok:
-                            bits.append("Driver ready")
-                        if server_ok:
-                            bits.append("Server answering")
                         txt.configure(text=(
-                            "; ".join(bits) + "."
-                            if bits else
-                            "Neither driver nor server found "
-                            "here: those choices keep the standard "
-                            "Windows method."))
+                            "Driver ready."
+                            if driver_ok else
+                            "No driver found here: that choice keeps "
+                            "the standard Windows method."))
                         return True
-                    # (the old outer try/except R(_paint) fallback was
-                    #  unreachable: the inner try already swallows every
-                    #  failure the outer one claimed to catch)
                     try:
                         root.after(0, _paint)
                     except Exception:
@@ -3756,13 +4145,45 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                            status_msg, R).grid(row=0, column=2, sticky="ns",
                                                padx=(6, 0))
         else:
-            w = tk.Entry(cell, textvariable=var, width=16, font=F_ENTRY,
-                         relief="solid", borderwidth=1, bg=pal["entry"],
-                         fg=pal["text"], insertbackground=pal["text"],
-                         highlightbackground=pal["entry_bd"],
-                         highlightthickness=1)
-            kit.reg(w, "entry")
+            rng = ranges.get(key)
+            dflt = DEFAULT_CONFIG.get(key)
+            if rng is not None and isinstance(dflt, (int, float)):
+                w = _range_widget(cell, key, var, rng, dflt)
+            else:
+                w = tk.Entry(cell, textvariable=var, width=16, font=F_ENTRY,
+                             relief="solid", borderwidth=1, bg=pal["entry"],
+                             fg=pal["text"], insertbackground=pal["text"],
+                             highlightbackground=pal["entry_bd"],
+                             highlightthickness=1)
+                kit.reg(w, "entry")
         w.grid(row=0, column=1, sticky="e")
+
+    def _range_widget(cell, key, var, rng, dflt):
+        lo, hi = rng
+        integer = not isinstance(dflt, float)
+        host = tk.Frame(cell, bg=pal["card"])
+        kit.reg(host, "card")
+        sl = _RangeSlider(host, kit, var=var, lo=lo, hi=hi, integer=integer)
+        sl.pack(side="right")
+        sl.bind("<Enter>", lambda e, k=key: set_desc(lambda: tr_desc(k)))
+        sl.bind("<Leave>", lambda e: set_desc(None))
+        val = tk.Label(host, width=VAL_W, font=F_BASE, anchor="e",
+                       bg=pal["card"], fg=pal["text"])
+        kit.reg(val, "card_text")
+        val.pack(side="right", padx=(0, 10))
+        val.bind("<Enter>", lambda e, k=key: set_desc(lambda: tr_desc(k)))
+        val.bind("<Leave>", lambda e: set_desc(None))
+
+        def _valtext(_a=None, _b=None, _c=None):
+            try:
+                if _live(val):
+                    val.configure(text=str(var.get()))
+            except tk.TclError:
+                pass
+
+        var.trace_add("write", _valtext)
+        _valtext()
+        return host
 
 
 
@@ -3871,12 +4292,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     R(_reword_chips)
 
-    # The scrollable inner frame of every SETTINGS page, so _fit_window can
-    # measure real content height - a canvas only ever reports its viewport.
     _FIT = []
-    # Long-form pages (Help) contribute their WIDTH only: a document is meant
-    # to scroll, and sizing the window to it left ~200 px of dead space beside
-    # every settings tab.
     _FIT_DOC = []
 
     def fill_list(page, keys, scroll=True):
@@ -3934,8 +4350,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             _ch_pv.configure(bg=pal["entry"],
                              highlightbackground=pal["entry_bd"])
             _ch_pv.delete("all")
-            w = _ch_pv.winfo_width() or 240
-            h = _ch_pv.winfo_height() or 140
+            w = _ch_pv.winfo_width()
+            h = _ch_pv.winfo_height()
+            if w < 40 or h < 40:
+                return True
             try:
                 size = max(1.0, float(_ch_val("reticle_size", 24) or 24))
             except (TypeError, ValueError):
@@ -3947,14 +4365,15 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             sc = min(1.0, (min(w, h) - 16) / max(1.0, size + gap * 2 + 16))
             reticle.render(
                 _ch_pv, w / 2, h / 2, _ch_val("reticle_shape", "cross"),
-                size * sc, gap * sc, _ch_val("reticle_thickness", 2),
-                _ch_val("reticle_rotation", 0),
+                size * sc, gap * sc,
+                int(float(_ch_val("reticle_thickness", 2) or 2)),
+                float(_ch_val("reticle_rotation", 0) or 0),
                 reticle.to_hex(reticle.parse_color(
                     _ch_val("reticle_color", "0,255,0"))))
         except Exception:
             pass
         return True
-    R(ch_preview)
+    kit.repaint(ch_preview)
 
     for _i, _key in enumerate(TAB_RETICLE):
         make_row(ch_grid, _key, _i + 1)
@@ -4016,8 +4435,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         except (KeyError, tk.TclError, ValueError):
             pass
 
-    _b_cur = kit.button(_ch_pos, i18n.L("xh.set_cursor"), _ch_to_cursor,
-                        fixed_w=16)
+    _b_cur = kit.button(_ch_pos, i18n.L("xh.set_cursor"), _ch_to_cursor)
     _b_cur.pack(side="left", padx=(0, 6))
     R(lambda: kit.set_text(_b_cur, i18n.L("xh.set_cursor"))
       if _live(_b_cur) else False)
@@ -4029,8 +4447,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda l=_ch_pre_lab: l.configure(text=i18n.L("xh.preset"))
       if _live(l) else False)
     _ch_pre_var = tk.StringVar(value="")
-    _ch_pre_box = ttk.Combobox(_ch_pos, textvariable=_ch_pre_var,
-                               state="readonly", width=18, font=F_BASE)
+    _ch_pre_box = _ChoiceDropdown(_ch_pos, kit, var=_ch_pre_var,
+                                  width=176,
+                                  on_select=lambda: _ch_pre_load())
     _ch_pre_box.pack(side="left")
 
     def _ch_pre_names():
@@ -4042,7 +4461,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     def _ch_pre_sync():
         if not _live(_ch_pre_box):
             return False
-        _ch_pre_box.configure(values=_ch_pre_names())
+        _ch_pre_box.set_pairs([(n, n) for n in _ch_pre_names()])
         return True
     R(_ch_pre_sync)
 
@@ -4067,8 +4486,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                     var.set(str(v))
             except (tk.TclError, ValueError):
                 pass
-
-    _ch_pre_box.bind("<<ComboboxSelected>>", _ch_pre_load)
+        _ch_name_var.set(name)
 
     _ch_name_var = tk.StringVar(value="")
     _ch_name = tk.Entry(_ch_pos, textvariable=_ch_name_var, width=14,
@@ -4108,6 +4526,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         name = _ch_pre_var.get().strip() or _ch_name_var.get().strip()
         if not name:
             return
+        if not messagebox.askyesno(
+                APP_NAME, i18n.L("st.delete_confirm", name), parent=root):
+            return
         try:
             if reticle.delete_preset(name):
                 _ch_pre_var.set("")
@@ -4115,13 +4536,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         except OSError:
             pass
 
-    _b_save = kit.button(_ch_pos, i18n.L("xh.save"), _ch_pre_save,
-                         fixed_w=12)
+    _b_save = kit.button(_ch_pos, i18n.L("xh.save"), _ch_pre_save)
     _b_save.pack(side="left", padx=(0, 6))
     R(lambda: kit.set_text(_b_save, i18n.L("xh.save"))
       if _live(_b_save) else False)
-    _b_del = kit.button(_ch_pos, i18n.L("xh.delete"), _ch_pre_delete,
-                        fixed_w=12)
+    _b_del = kit.button(_ch_pos, i18n.L("xh.delete"), _ch_pre_delete)
     _b_del.pack(side="left")
     R(lambda: kit.set_text(_b_del, i18n.L("xh.delete"))
       if _live(_b_del) else False)
@@ -4130,8 +4549,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
 
 
-    # ---- Detection tab: colour lists and picker on top, thresholds below, in
-    #      ONE scroll region (the separate Colours tab is gone) ----
     chp = pages["handler"]
     chinner, chbind = _scrollable(chp, kit, pal)
     _FIT.append(chinner)
@@ -4183,7 +4600,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     rgb_cell = tk.Frame(cgrid, bg=pal["card"])
     kit.reg(rgb_cell, "card")
-    rgb_cell.grid(row=2, column=0, sticky="we", padx=10, pady=4)
+    rgb_cell.grid(row=len(TAB_DETECT), column=0, sticky="we", padx=10, pady=4)
     rgb_cell.columnconfigure(0, weight=1)
     rgb_lbl = tk.Label(rgb_cell, text=i18n.L("col.rgb.name"),
                        font=F_BOLD, bg=pal["card"], fg=pal["text"],
@@ -4742,9 +5159,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         return h
 
     def macro_entry(parent, key, width, desc_key, kind=None):
-        """One macro field. With a capture `kind` it comes back wrapped in a
-        frame holding the entry AND its "Press" button, so the caller's
-        .pack(side="left") places the pair without knowing about it."""
         if key not in vars_:
             var = tk.StringVar(value=str(cfg.get(key)))
             vars_[key] = ("str", var)
@@ -4783,7 +5197,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         w.bind("<Leave>", lambda e: set_desc(None))
         return w
 
-    # ---- Keyboard & Mouse tab and Controller tab: flat rows, no titles ----
     kbp = pages["keyboard"]
     kinner, kbind = _scrollable(kbp, kit, pal)
     _FIT.append(kinner)
@@ -4794,7 +5207,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     for _ki, _kkey in enumerate(TAB_KEYBOARD):
         make_row(kgrid, _kkey, _ki)
 
-    # ---- Controller tab ----
     ctrlp = pages["controller"]
     cinner, cbind = _scrollable(ctrlp, kit, pal)
     _FIT.append(cinner)
@@ -4805,10 +5217,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     for _pi, _pkey in enumerate(TAB_CONTROLLER):
         make_row(cgrid, _pkey, _pi)
 
-    # ---- Macros tab: two rows, each pairing one macro family (left) with
-    #      its own independent recording library (right), top-aligned -
-    #      keyboard macros + Recordings on top, controller macros +
-    #      Controller Recordings below ----
     macp = pages["macros"]
     macinner, macbind = _scrollable(macp, kit, pal)
     _FIT.append(macinner)
@@ -4849,10 +5257,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             lambda: tr_desc(k)))
         lb.bind("<Leave>", lambda e: set_desc(None))
 
-        macro_entry(row, mkey, 10, mkey, "key").pack(side="left",
-                                                     padx=(0, 8))
+        macro_entry(row, mkey, 10, mkey, "combo").pack(side="left",
+                                                       padx=(0, 8))
         macro_word(row, "mac.sends", mact)
-        macro_entry(row, mact, 13, mact, "key").pack(side="left")
+        macro_entry(row, mact, 13, mact, "combo").pack(side="left")
 
     cleft = tk.Frame(mbot, bg=pal["card"])
     kit.reg(cleft, "card")
@@ -5087,12 +5495,74 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rebuild_recs()
         status_msg(text)
 
+    rec_watch = {}
 
+    def _store_mtime(store):
+        try:
+            return os.path.getmtime(store.path)
+        except OSError:
+            return None
 
+    def _watch_rec_file(store, rebuild, live_widget=None):
+        anchor = live_widget if live_widget is not None else rec_rows
+        if not _live(anchor):
+            return
+        key = id(store)
+        rec_watch[key] = {"mtime": _store_mtime(store), "reload": None}
+
+        def _flush():
+            st = rec_watch.get(key)
+            if st is None or not _live(anchor):
+                rec_watch.pop(key, None)
+                return
+            ok = store.reload_from_disk()
+            rebuild()
+            status_msg(i18n.L("st.rec_reloaded" if ok else "st.rec_bad"))
+
+        def _check():
+            st = rec_watch.get(key)
+            if st is None or not _live(anchor):
+                rec_watch.pop(key, None)
+                return
+            cur = _store_mtime(store)
+            if cur != st["mtime"]:
+                st["mtime"] = cur
+                if st["reload"] is not None:
+                    try:
+                        anchor.after_cancel(st["reload"])
+                    except (tk.TclError, ValueError):
+                        pass
+                st["reload"] = anchor.after(900, _flush)
+            try:
+                anchor.after(1200, _check)
+            except (tk.TclError, ValueError):
+                rec_watch.pop(key, None)
+
+        anchor.after(1200, _check)
+
+    def do_edit_rec():
+        rid = selected_rid()
+        rec = app.rec_store.get(rid) if rid is not None else None
+        if rec is None:
+            status_msg(i18n.L("st.select_rec") if rec_ids
+                       else i18n.L("st.lib_empty"))
+            return
+        path = getattr(app.rec_store, "path", None)
+        if not path or not os.path.isfile(path):
+            status_msg(i18n.L("st.rec_edit_none"))
+            return
+        try:
+            os.startfile(path)
+        except Exception as exc:
+            status_msg(i18n.L("st.rec_edit_fail", exc))
+            return
+        log("Opened the recording library for editing: %r" % (path,))
+        _watch_rec_file(app.rec_store, rebuild_recs, rec_rows)
 
     for _rk, _rf, _kd in (("mac.delete", do_delete_rec, "amber"),
                           ("mac.import", do_import_rec, "plain"),
                           ("mac.export", do_export_rec, "plain"),
+                          ("mac.edit", do_edit_rec, "plain"),
                           ("mac.rename", do_rename_rec, "plain")):
         _b = kit.button(btn_row, i18n.L(_rk), _rf, kind=_kd)
         _b.pack(side="right", padx=(6, 0))
@@ -5338,9 +5808,30 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rebuild_precs()
         status_msg(text)
 
+    def pdo_edit_rec():
+        rid = pselected_rid()
+        rec = app.rec_store_pad.get(rid) if rid is not None else None
+        if rec is None:
+            status_msg(i18n.L("st.select_rec") if prec_ids
+                       else i18n.L("st.lib_empty"))
+            return
+        path = getattr(app.rec_store_pad, "path", None)
+        if not path or not os.path.isfile(path):
+            status_msg(i18n.L("st.rec_edit_none"))
+            return
+        try:
+            os.startfile(path)
+        except Exception as exc:
+            status_msg(i18n.L("st.rec_edit_fail", exc))
+            return
+        log("Opened the controller recording library for editing: %r"
+            % (path,))
+        _watch_rec_file(app.rec_store_pad, rebuild_precs, prec_rows)
+
     for _rk, _rf, _kd in (("mac.delete", pdo_delete_rec, "amber"),
                           ("mac.import", pdo_import_rec, "plain"),
                           ("mac.export", pdo_export_rec, "plain"),
+                          ("mac.edit", pdo_edit_rec, "plain"),
                           ("mac.rename", pdo_rename_rec, "plain")):
         _b = kit.button(pbtn_row, i18n.L(_rk), _rf, kind=_kd)
         _b.pack(side="right", padx=(6, 0))
@@ -5429,8 +5920,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     )
     root.after(latency_tabs.POLL_MS,
                lambda: latency_tabs.pump(root, lat_handle))
-    root.bind("<Destroy>", lambda _e: latency_tabs.shutdown(lat_handle),
-              add="+")
+    def _on_root_destroy(e):
+        if e.widget is root:
+            latency_tabs.shutdown(lat_handle)
+    root.bind("<Destroy>", _on_root_destroy, add="+")
 
 
     _FIT_DOC.append(_fill_help(pages["help"], kit, pal))
@@ -5438,6 +5931,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     poll_tick = [0]
     rec_ui = [None]
+    rec_ui[0] = (app.rec_store.revision,
+                 getattr(app.rec_store_pad, "revision", 0),
+                 app.is_recording(), app.rec_source(),
+                 app._play_busy, app._play_looping, app._play_rid,
+                 app._play_source)
 
     def poll_status():
         try:
@@ -5640,10 +6138,19 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             return
         if app.stop.is_set():
             try:
-                if root.winfo_exists():
+                ov = _ch_overlay.get("obj")
+            except (NameError, AttributeError):
+                ov = None
+            if ov is not None:
+                try:
+                    ov.stop()
+                except Exception:
+                    pass
+            if root.winfo_exists():
+                try:
                     root.destroy()
-            except tk.TclError:
-                pass
+                except tk.TclError:
+                    pass
             return
         after_ms(250, watchdog)
 
@@ -5707,15 +6214,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                   lambda: (app.request_quit(), close_all("quit")))
 
     def _fit_window():
-        """Size the window to the widest and tallest SETTINGS tab, clamped to
-        the screen, so no setting needs scrolling at the default size.
-
-        Measured rather than hardcoded: the tabs move as settings are added,
-        and a fixed number either wastes space or cuts content off. Help is
-        excluded from the height - it is prose that is meant to scroll. Called
-        twice because the tab bar's own height depends on the width it is
-        given, so the first pass can change how many rows it wraps into.
-        """
         try:
             sw = root.winfo_screenwidth()
             sh = root.winfo_screenheight()
@@ -5764,11 +6262,15 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         log("Reticle overlay unavailable (%r)." % (exc,))
     _fit_window()
     _fit_window()
+    try:
+        kit.apply()
+    except Exception:
+        pass
     poll_status()
     watchdog()
     log("GUI ready - signed in as %s."
         % online.identity_label(identity))
-    root.deiconify()  # show fully built window
+    root.deiconify()
     root.mainloop()
 
     return action["now"]

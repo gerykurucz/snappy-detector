@@ -547,10 +547,6 @@ class GuiController:
                 if len(self._monitor_samples) > 5000:
                     del self._monitor_samples[:2500]
             if window:
-                # Arrival order, NOT sorted: Distribution.jitter_mad is a
-                # mean-absolute-SUCCESSIVE-difference statistic; sorting
-                # first would report order-statistic spacing instead of
-                # jitter. Percentiles sort internally.
                 d = Distribution(samples=list(window), lost=lost, sent=sent)
                 payload = {
                     "current": window[-1], "p50": d.p50, "p95": d.p95,
@@ -572,17 +568,9 @@ class GuiController:
             stop.set()
         thread, self._monitor_thread = self._monitor_thread, None
         if thread is not None and thread.is_alive():
-            # Best-effort: the loop wakes promptly on the event; a probe
-            # already in flight (<= its timeout) may still overlap the
-            # next watch, and the stale-thread guard silences it.
             thread.join(timeout=0.5)
 
     def monitor_samples(self, target: str) -> dict[str, Any] | None:
-        """Snapshot of the live watch's session for `target`: every RTT it
-        collected plus sent/lost counts, or None when the watch is not (or was
-        not) measuring that target. Lets the chain report the SAME network
-        measurement the graph is drawing instead of pinging in parallel -
-        one measurement, two views."""
         with self._monitor_lock:
             if self._monitor_target != target:
                 return None
@@ -604,9 +592,6 @@ class GuiController:
             res = self.backend().powershell(_MEMORY_CLEAN_SCRIPT, timeout=180.0)
             ok, out, err = res.ok, res.stdout, res.stderr
         else:
-            # The standby/working-set purges need admin rights, so this
-            # elevates like the tweak scripts do (UAC prompt, no console
-            # window) instead of failing per-area with NTSTATUS errors.
             import tempfile
             script = Path(tempfile.gettempdir()) / "snappyai-memory-clean.ps1"
             try:
@@ -922,11 +907,6 @@ class GuiController:
         deadline = started + max(1.0, float(budget_s))
         try:
             if self.monitoring and self.monitor_samples(target) is not None:
-                # ONE network measurement: the live watch is already pinging
-                # this target, so its samples ARE the network leg. Running a
-                # second prober in parallel would double the ICMP load (some
-                # routers rate-limit it, inflating both readings) and produce
-                # two disagreeing numbers for the same thing.
                 next_report = time.monotonic() + 2.0
                 while time.monotonic() < deadline:
                     time.sleep(0.1)
@@ -963,10 +943,6 @@ class GuiController:
                     if remaining <= 0.05:
                         break
                     est = 0.05 if last_rtt is None else max(0.005, last_rtt / 1000.0) + 0.011
-                    # Chunk cost is bounded (count cap x per-ping timeout) so a
-                    # dead target overshoots the budget by at most one chunk,
-                    # while a live target converges on the deadline: the last
-                    # chunks are sized to exactly fill the remaining time.
                     count = max(1, min(20, int(remaining / est)))
                     timeout = min(2.0, max(0.25, 4.0 * est + 0.1))
                     res = probe(

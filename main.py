@@ -86,9 +86,6 @@ def apply_cli_overrides(cfg, argv):
     if "--follow" in argv:
         cfg.set("follow_enabled", True, save=False)
 
-    if "--auto-click" in argv:
-        cfg.set("auto_click", True, save=False)
-
     if "--motion-3d" in argv:
         cfg.set("motion_3d", True, save=False)
 
@@ -190,7 +187,7 @@ def apply_cli_overrides(cfg, argv):
 
 
 _KNOWN_FLAGS = ("--mode1", "--mode2", "--accent-only",
-                "--follow", "--auto-click", "--motion-3d", "--no-adaptive",
+                "--follow", "--motion-3d", "--no-adaptive",
                 "--no-lumnorm", "--console", "--reset-config", "--help",
                 "-h", "--repo", "--radius", "--capture", "--merge", "--accent",
                 "--glide", "--controller", "--no-controller-drive")
@@ -270,7 +267,6 @@ def print_usage():
     print("  --glide MS         animate cursor moves over MS milliseconds")
     print("  --accent-only      assist only items carrying the accent colour")
     print("  --follow           remember and prefer the last snapped item")
-    print("  --auto-click       click items without a gesture (the switch is the request)")
     print("  --motion-3d        lead moving targets with the position+scale tracker")
     print("  --controller       enable controller (XInput) input")
     print("  --no-controller-drive  controller binds actions only; the mouse stays the pointer")
@@ -314,7 +310,7 @@ def _run():
             from config import Config as _C
             cfg = _C.__new__(_C)
             import threading as _th
-            cfg.lock = _th.RLock()  # must match Config.__init__ (save re-enters)
+            cfg.lock = _th.RLock()
             from config import config_dir as _cd
             cfg.dir = _cd()
             import os as _os
@@ -398,9 +394,6 @@ def _run():
     use_gui = "--console" not in sys.argv
     if use_gui:
         try:
-            # Availability probe: importing the full tkinter stack proves the
-            # GUI can actually run on this machine; gui.py does the real
-            # imports, so nothing is bound here.
             import importlib
             for _probe in ("tkinter", "tkinter.font", "tkinter.ttk",
                            "tkinter.filedialog", "tkinter.messagebox",

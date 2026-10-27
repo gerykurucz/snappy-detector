@@ -1,17 +1,3 @@
-"""Motion: where a target is and where it is going.
-
-Two things live here.
-
-:class:`KalmanBox` is a small constant-velocity filter over a target's
-box.  It smooths the jitter that comes with a detector and gives a
-velocity that is worth acting on, rather than the difference between
-two noisy boxes.
-
-:class:`MotionModel` turns that history into the answers a caller
-actually wants: how fast the target is moving, whether it is moving at
-all, and where it will be after a given delay - which is what makes a
-lead aim land on a moving target instead of where it used to be.
-"""
 
 from __future__ import annotations
 
@@ -19,23 +5,15 @@ import math
 
 import numpy as np
 
-#: Motion states a target can be in.
 STATIC = "static"
 SLOW = "slow"
 FAST = "fast"
 
-#: Pixel per second above which a target counts as moving fast.
 FAST_SPEED = 260.0
 SLOW_SPEED = 60.0
 
 
 class KalmanBox(object):
-    """Constant-velocity filter over ``(cx, cy, w, h)``.
-
-    The state is ``[cx, cy, log w, log h, vx, vy]``: the centre and
-    the size of the box, plus how fast both are moving.  The size is
-    kept as a logarithm so that a box can never turn inside out.
-    """
 
     __slots__ = ("x", "p", "last_t", "accel")
 
@@ -63,12 +41,6 @@ class KalmanBox(object):
         return self.x.copy()
 
     def update(self, box, t: float = None) -> None:
-        """Correct the state with a measurement.
-
-        When time has moved on since the last call the state is
-        carried forward first, so the filter can be used on its own as
-        well as under the tracker.
-        """
         if t is not None and float(t) > self.last_t + 1e-9:
             self.predict(float(t))
         cx = (box[0] + box[2]) * 0.5
@@ -92,10 +64,8 @@ class KalmanBox(object):
         eye = np.eye(6)
         self.p = (eye - k @ hmat) @ self.p
 
-    # -- accessors ----------------------------------------------------
     @property
     def velocity(self):
-        """Velocity of the box centre in pixels per second."""
         return float(self.x[4]), float(self.x[5])
 
     @property
@@ -115,21 +85,27 @@ class KalmanBox(object):
 
 
 class MotionModel(object):
-    """Velocity, acceleration and lead prediction for one target."""
 
     def __init__(self, smoothing: float = 0.45, max_history: int = 90):
         self.smoothing = float(smoothing)
         self.max_history = int(max_history)
-        self.samples = []          # (t, x, y)
+        self.samples = []
         self.vel = (0.0, 0.0)
         self.accel = (0.0, 0.0)
+        self.vel_raw = (0.0, 0.0)
 
     def reset(self) -> None:
         self.samples = []
         self.vel = (0.0, 0.0)
         self.accel = (0.0, 0.0)
+        self.vel_raw = (0.0, 0.0)
 
     def add(self, t: float, x: float, y: float) -> None:
+        if self.samples:
+            t_prev, x_prev, y_prev = self.samples[-1]
+            dt = float(t) - t_prev
+            if dt > 1e-6:
+                self.vel_raw = ((x - x_prev) / dt, (y - y_prev) / dt)
         self.samples.append((float(t), float(x), float(y)))
         if len(self.samples) > self.max_history:
             del self.samples[0]
@@ -148,8 +124,6 @@ class MotionModel(object):
             return
         vx = (x1 - x0) / dt
         vy = (y1 - y0) / dt
-        # blend with the previous estimate so a single bad frame does
-        # not swing the aim
         a = self.smoothing
         self.vel = (a * vx + (1.0 - a) * self.vel[0],
                     a * vy + (1.0 - a) * self.vel[1])
@@ -164,13 +138,11 @@ class MotionModel(object):
                 self.accel = (0.6 * ax + 0.4 * self.accel[0],
                               0.6 * ay + 0.4 * self.accel[1])
 
-    # -- queries -------------------------------------------------------
     @property
     def speed(self) -> float:
         return math.hypot(self.vel[0], self.vel[1])
 
     def state(self) -> str:
-        """``static``, ``slow`` or ``fast``."""
         s = self.speed
         if s >= FAST_SPEED:
             return FAST
@@ -179,18 +151,12 @@ class MotionModel(object):
         return STATIC
 
     def direction(self):
-        """Unit vector along the motion, or ``None`` when still."""
         s = self.speed
         if s < 1e-6:
             return None
         return (self.vel[0] / s, self.vel[1] / s)
 
     def predict(self, seconds: float, use_acceleration: bool = True):
-        """Where the target will be after ``seconds``.
-
-        Returns ``(x, y, offset_x, offset_y)`` where the offset is
-        relative to where the target is now.
-        """
         t = max(0.0, float(seconds))
         ox = self.vel[0] * t
         oy = self.vel[1] * t

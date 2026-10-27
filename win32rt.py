@@ -236,21 +236,49 @@ if IS_WINDOWS:
 
     def inject_combo(mods, vk):
         seq = [mv for mask, mv in _MACRO_MOD_VKS if mods & mask]
-        seq.append(vk)
+        if isinstance(vk, (tuple, list)):
+            keys = [int(k) for k in vk]
+        elif vk is None:
+            keys = []
+        else:
+            keys = [int(vk)]
+
+        def kinput(key, up):
+            inp = INPUT()
+            inp.type = INPUT_KEYBOARD
+            inp.u.ki.wVk = key
+            inp.u.ki.dwFlags = KEYEVENTF_KEYUP if up else 0
+            return inp
+
+        if len(keys) <= 1:
+            inputs = []
+            for key in seq + keys:
+                inputs.append(kinput(key, False))
+            for key in reversed(seq + keys):
+                inputs.append(kinput(key, True))
+            if not inputs:
+                return False
+            arr = (INPUT * len(inputs))(*inputs)
+            try:
+                sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+            except Exception:
+                return False
+            return sent == len(inputs)
 
         inputs = []
-        for key in seq:
-            inp = INPUT()
-            inp.type = INPUT_KEYBOARD
-            inp.u.ki.wVk = key
-            inputs.append(inp)
+        for key in seq + keys:
+            inputs.append(kinput(key, False))
+        arr = (INPUT * len(inputs))(*inputs)
+        try:
+            user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+        except Exception:
+            return False
+        time.sleep(0.05)
+        inputs = []
+        for key in reversed(keys):
+            inputs.append(kinput(key, True))
         for key in reversed(seq):
-            inp = INPUT()
-            inp.type = INPUT_KEYBOARD
-            inp.u.ki.wVk = key
-            inp.u.ki.dwFlags = KEYEVENTF_KEYUP
-            inputs.append(inp)
-
+            inputs.append(kinput(key, True))
         arr = (INPUT * len(inputs))(*inputs)
         try:
             sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
@@ -272,12 +300,6 @@ if IS_WINDOWS:
         return inp
 
     def inject_key(mods, vk, down):
-        """A modifier+key transition that can be HELD, unlike inject_combo.
-
-        Down presses the modifiers then the key; up releases the key then the
-        modifiers in reverse, so a held controller button behaves exactly like
-        a held key on the keyboard and nothing is ever left stuck.
-        """
         held = [mv for mask, mv in _MACRO_MOD_VKS if mods & mask]
         if down:
             order = [(k, False) for k in held] + [(vk, False)]
@@ -310,11 +332,6 @@ if IS_WINDOWS:
             return False
 
     def inject_mouse(button, down):
-        """One button transition. 0=left 1=right 2=middle 3=XBUTTON1 4=XBUTTON2.
-
-        The two side buttons need mouseData as well as the XDOWN/XUP flags,
-        which is why the table carries a third column.
-        """
         button = int(button)
         if not 0 <= button < len(_MOUSE_BTN_FLAGS):
             return False
@@ -330,7 +347,6 @@ if IS_WINDOWS:
             return False
 
     def inject_wheel(clicks, horizontal=False):
-        """Scroll wheel notches (negative = down/left). Never raises."""
         try:
             steps = int(clicks)
         except (TypeError, ValueError):
@@ -355,8 +371,6 @@ if IS_WINDOWS:
                 return (b << 16) | (g << 8) | r
 
             flag = ctypes.c_int(1 if dark else 0)
-            # DWMWA_USE_IMMERSIVE_DARK_MODE is 20 on Win10 20H1+/Win11 and
-            # 19 on Win10 1809-2004; try the documented value, fall back.
             if dwm.DwmSetWindowAttribute(
                     ctypes.c_void_p(hwnd), 20,
                     ctypes.byref(flag), ctypes.sizeof(flag)) != 0:
@@ -416,14 +430,6 @@ if IS_WINDOWS:
     MONITOR_DEFAULTTONEAREST = 2
 
     def get_dpi_scale(x=None, y=None):
-        """Effective DPI scale of the monitor the point sits on (cursor when
-        no point is given).
-
-        The process asks for PER_MONITOR_AWARE_V2, so the SYSTEM dpi is the
-        wrong answer on a mixed-DPI setup: it scaled every radius, centre box
-        and step cap by the primary monitor's factor while the cursor was on
-        the other one. Per-monitor first, system dpi next, 1.0 last.
-        """
         try:
             if x is None or y is None:
                 x, y = get_cursor_pos()
@@ -599,12 +605,6 @@ if IS_WINDOWS:
                     return self._dx_cam
                 self._dx_tried = True
 
-                # dxcam is strictly opt-in. "auto" deliberately means mss
-                # (the compatible path that always works - Desktop
-                # Duplication can silently deliver black/frozen frames on
-                # remote/DRM/hybrid-GPU setups), and "mss" never uses this
-                # either. Only an explicit "dxcam" choice, or "wgc" (where
-                # dxcam is the fallback behind WGC), reaches the driver.
                 if self.prefer not in ("dxcam", "wgc"):
                     return None
 
@@ -815,13 +815,6 @@ if IS_WINDOWS:
             if frame is None:
                 return None
             fh, fw = frame.shape[:2]
-            # The frame covers the PRIMARY monitor, whose top-left is by
-            # definition the virtual-screen origin (0, 0): absolute
-            # virtual coordinates map into the frame UNCHANGED. (Shifting
-            # by SM_X/YVIRTUALSCREEN here would map secondary-monitor
-            # regions ONTO primary-monitor pixels whenever a monitor sits
-            # left of or above the primary.) Off-primary regions fail the
-            # bounds check and fall back to dxcam/mss.
             l, t, r, b = region
             if l < 0 or t < 0 or r > fw or b > fh or r <= l or b <= t:
                 return None

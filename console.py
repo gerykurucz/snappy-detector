@@ -104,7 +104,7 @@ def print_banner(app):
     print("     %-14s mode 2 guide" % effective_mode_key(cfg, 2).split()[0])
     print("")
     print("   Console commands")
-    print("     s=status t=toggle h=help q=quit a=accent f=follow g=gamepad c=autoclick v=calibrate p=capture")
+    print("     s=status t=toggle h=help q=quit a=accent f=follow g=gamepad v=calibrate p=capture")
     print("=" * 70)
     print("")
 
@@ -171,16 +171,10 @@ def print_help(app):
     print("    for a few seconds, similar-looking or same-place items win")
     print("    ties - handy for scrollbars and repeated clicks on one")
     print("    control. It learns only from your own successful clicks.")
-    print("  - auto-click (console 'c') clicks by itself:")
-    print("    the screen is scanned on its own and the best item is")
-    print("    clicked, without you clicking anything. With an accent")
-    print("    colour set only matching items qualify, otherwise the")
-    print("    highest-contrast item qualifies. Never clicks while")
-    print("    paused, and keeps clicking while a target stays visible.")
     print("  - calibrate (console 'v') measures your colour on THIS screen:")
     print("    point at the app you work in, press v, and it suggests the")
     print("    accent_soft value tuned to your display and lighting.")
-    print("    Set it on the Handler tab ('Accept near-miss shades').")
+    print("    Set it on the Detection tab ('Accept near-miss shades').")
     print("  - capture report (console 'p'): if assistance works in normal")
     print("    windows but fails in a hardware-accelerated app, run")
     print("    it there. BLACK/FROZEN frames mean the capture engine cannot")
@@ -224,7 +218,7 @@ def print_help(app):
     print("    Left stick steers the cursor, right trigger is the press that")
     print("    assistance snaps from, left trigger is a right click, and the")
     print("    right stick steers the view while that press is held - so the")
-    print("    snap, guide, follow and auto-click behaviour is the SAME code")
+    print("    snap, guide and follow behaviour is the SAME code")
     print("    a mouse user gets. Start launches, Back pauses; every action")
     print("    can be re-bound on the Controller tab, including to a")
     print("    combination ('rb+a'), which always wins over the shorter")
@@ -486,22 +480,6 @@ def windows_main(cfg, identity=None):
                     _fs = 20
                 log("FOLLOW MEMORY: %s (%.1fx boost for %ds after each snap)"
                     % ("ON" if new_state else "OFF", _fb, _fs))
-
-            elif line in ("c", "autoclick"):
-                new_state = not bool(cfg.get("auto_click"))
-                cfg.set("auto_click", new_state)
-                if new_state:
-                    app._auto_reset_session()
-                what = cfg.get("accent_color") or "high-contrast items"
-                log("AUTO-CLICK: %s (clicks %s by itself every 0.050s, "
-                    "keeps clicking while a target stays visible)"
-                    % ("ON" if new_state else "OFF", what))
-                if new_state and not _parse_accents(cfg.get("accent_color")):
-                    print("No accent colour set: auto-click will take "
-                          "the highest-CONTRAST item in the centre "
-                          "square instead, or set a colour (GUI Colors "
-                          "tab / config.ini: accent_color = blue) to "
-                          "direct it.")
 
             elif line in ("g", "gamepad", "controller", "pad"):
                 try:

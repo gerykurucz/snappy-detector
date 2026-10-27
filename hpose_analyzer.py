@@ -1,20 +1,3 @@
-"""The high level API: give it a frame, get back everything you know.
-
-    from hpose_analyzer import Analyzer
-
-    a = Analyzer()
-    faces = a._face_boxes(frame)
-    for pose in a.pose_detector.detect(frame):
-        det = a.explain(pose, focal_px=frame.shape[1] * 0.9, faces=faces,
-                        img=frame)
-        print(det["view"], det["stance"], det["box"])
-
-One object holds the whole pipeline: people are detected, faces are
-looked for, the body is fitted to recover how far it is turned, and the
-view and the stance are classified.  Frame-to-frame tracking lives in
-the caller (hpose_bridge tracks in screen coordinates, because the
-captured window moves with the cursor).
-"""
 
 from __future__ import annotations
 
@@ -28,7 +11,6 @@ from hpose_view import ViewClassifier
 
 
 class Analyzer(object):
-    """Detects people and explains what they are doing."""
 
     def __init__(self, bundle_path: str = None, pose_model: str = None,
                  face_model: str = None, conf: float = 0.25,
@@ -48,8 +30,6 @@ class Analyzer(object):
         self.stance_clf = StanceClassifier(self.bundle)
         self.face_region = float(face_region)
 
-    # -- helpers -------------------------------------------------------
-
     def _face_boxes(self, img):
         if self.face_detector is None:
             return []
@@ -60,7 +40,6 @@ class Analyzer(object):
 
     @staticmethod
     def _head_region(box, frac: float):
-        """The part of the box where a face would be."""
         x1, y1, x2, y2 = box
         w = x2 - x1
         h = y2 - y1
@@ -68,14 +47,6 @@ class Analyzer(object):
                 y1 + h * frac)
 
     def _head_crop(self, img, pose):
-        """A square crop around the head, large enough to show a face.
-
-        A face in a wide shot is a handful of pixels across, and a
-        face detector that cannot see it will say "no face" for a
-        person who is looking straight at the camera.  Cutting the head
-        out and making it big again is the difference between knowing
-        which way somebody is facing and guessing.
-        """
         import cv2
         h_img, w_img = img.shape[:2]
         kps = pose.kps
@@ -117,14 +88,6 @@ class Analyzer(object):
         return False
 
     def _face_at(self, img, pose, faces) -> bool:
-        """Is there a face on this person?
-
-        The whole picture is searched first, because a face detector
-        is good at small faces it can see.  When it finds nothing, the
-        head is cut out and enlarged and looked at again, which is
-        what makes the difference between a person six metres away and
-        a person three metres away.
-        """
         if self._has_face(faces, pose.box):
             return True
         if self.face_detector is None:
@@ -138,11 +101,8 @@ class Analyzer(object):
             return False
         return bool(found)
 
-    # -- the main entry point ------------------------------------------
-
     def explain(self, pose: Pose, focal_px: float, faces=None,
                 img=None) -> dict:
-        """Classify a single pose without touching the tracker."""
         has_face = False
         if img is not None:
             has_face = self._face_at(img, pose, faces or [])
@@ -165,7 +125,5 @@ class Analyzer(object):
             "has_face": has_face,
             "yaw": view.yaw,
         }
-
-    # -- convenience ----------------------------------------------------
 
 

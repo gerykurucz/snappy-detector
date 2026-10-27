@@ -1,7 +1,3 @@
-"""Shared core: app constants, logging, i18n, the latency-budget enums,
-error types, Ed25519 verification, the colour-spec vocabulary, the system
-inventory model, and the safety policy. Leaf module: stdlib only, imported
-by everything, imports nothing from the project."""
 
 from __future__ import annotations
 
@@ -13,8 +9,6 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-# ================== budget (latency enums) ==================
-
 """The latency budget.
 
 Total input-to-photon latency for an online game is a sum of four largely independent
@@ -23,7 +17,6 @@ declaration is what makes the catalog auditable.
 """
 
 class BudgetComponent(str, Enum):
-    """Which term of the latency budget a tweak addresses."""
     NETWORK_PATH = "network_path"
     LOCAL_QUEUE = "local_queue"
     HOST_PROCESSING = "host_processing"
@@ -59,7 +52,6 @@ _FLOOR_NOTES: dict[BudgetComponent, str] = {
 
 
 class Verdict(str, Enum):
-    """Outcome of a tweak's probe against a specific machine."""
     PROBLEM = "problem"
     NO_PROBLEM = "no_problem"
     NOT_APPLICABLE = "not_applicable"
@@ -71,7 +63,6 @@ class Verdict(str, Enum):
 
 
 class Risk(str, Enum):
-    """How bad the worst plausible outcome is."""
     NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
@@ -79,7 +70,6 @@ class Risk(str, Enum):
 
 
 class Confidence(str, Enum):
-    """Strength of evidence that the mechanism produces the claimed effect."""
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
@@ -87,7 +77,6 @@ class Confidence(str, Enum):
 
 
 class Vendor(str, Enum):
-    """GPU / NIC vendor, for driver-specific gating."""
     NVIDIA = "nvidia"
     AMD = "amd"
     INTEL = "intel"
@@ -105,27 +94,18 @@ class OSFamily(str, Enum):
     MACOS = "macos"
     OTHER = "other"
 
-
-# ================== errors ==================
-
 class LattoolError(Exception):
-    """Base lattool error."""
     pass
 
 
 class RefusedTweakError(LattoolError):
-    """A tweak was refused by policy or catalog rules."""
     pass
 
 
 class TweakValidationError(LattoolError):
-    """A tweak plan could not be validated."""
     pass
 
 SnappyAIError = LattoolError
-
-
-# ================== edsig (Ed25519, stdlib only) ==================
 
 
 _P = 2 ** 255 - 19
@@ -245,9 +225,6 @@ def verify(pub, message, sig):
     except Exception:
         return False
 
-
-# ================== colorspec ==================
-
 """Colour specs: the one vocabulary for "which colour does the user mean".
 
 Shared leaf module, no dependencies beyond the standard library.
@@ -255,8 +232,8 @@ Shared leaf module, no dependencies beyond the standard library.
 WHY IT IS SEPARATE
 ------------------
 `config.py` needs to answer one question - "does this accent spec name a
-real colour?" - so that accent_only / auto_click can warn when they are
-switched on with nothing to aim at. That question used to be answered by
+real colour?" - so that accent_only can warn when it is switched on
+with nothing to aim at. That question used to be answered by
 importing `vision`, which pulled numpy and the whole analysis engine into
 the settings layer: config.py stopped being pure-Python and independently
 testable, and `hotkeys.py`'s "cross-platform and unit-testable" claim was
@@ -299,7 +276,6 @@ def parse_accent(spec):
     if spec is None:
         return None
 
-    # Handle numpy arrays and other sequence types
     if hasattr(spec, '__iter__') and not isinstance(spec, (str, bytes)):
         try:
             spec = list(spec)
@@ -310,7 +286,6 @@ def parse_accent(spec):
         preset = ACCENT_PRESETS.get(spec.strip().lower())
         if preset is not None:
             return preset
-        # Parse "r,g,b" format
         try:
             parts = [int(p.strip()) for p in spec.split(",")]
         except (ValueError, OverflowError):
@@ -367,7 +342,6 @@ def parse_accents(spec):
 
     items = spec
 
-    # Handle numpy arrays and other sequence types (but not strings)
     if hasattr(items, '__iter__') and not isinstance(items, (str, bytes)):
         try:
             items = list(items)
@@ -443,9 +417,6 @@ def _parse_accents(spec):
 
 
 _ACCENT_PRESETS = ACCENT_PRESETS
-
-
-# ================== app core: constants / logging / i18n / inventory ==================
 
 APP_NAME = "SnappyAI"
 APP_VERSION = "9.0"
@@ -613,11 +584,6 @@ class Display:
 
 _WIFI_MARKERS = ("wi-fi", "wifi", "wireless", "wlan", "802.11")
 
-# Discrete-GPU naming markers, for hybrid-graphics machines where the game
-# renders on the dGPU while the iGPU often drives the panel (and is what WMI
-# lists first). Vendor covers NVIDIA (only discrete in practice); AMD/Intel
-# integrated parts keep their generic names ("Radeon(TM) Graphics",
-# "UHD/Iris Graphics") while discrete families carry these markers.
 _DISCRETE_GPU_MARKERS = (
     "geforce", "quadro", "tesla", "rtx", "gtx",
     "radeon rx", "rx vega", "radeon pro", "firepro", "vega 56", "vega 64",
@@ -626,7 +592,6 @@ _DISCRETE_GPU_MARKERS = (
 
 
 def _gpu_discrete_score(gpu: "GPU") -> int:
-    # WMI names carry "(R)"/"(TM)" noise ("Radeon (TM) RX 480", "Arc(TM) A770")
     name = (gpu.name or "").lower().replace("(r)", " ").replace("(tm)", " ")
     if gpu.vendor is Vendor.NVIDIA:
         return 2
@@ -671,10 +636,6 @@ class Inventory:
 
     @property
     def primary_gpu(self) -> GPU | None:
-        # On hybrid-graphics machines the game renders on the discrete GPU
-        # even when the integrated one is listed first (and often drives the
-        # panel), so "primary" for latency purposes means "the discrete one
-        # when there is one". max() keeps the first among equals.
         if not self.gpus:
             return None
         return max(self.gpus, key=_gpu_discrete_score)
@@ -701,9 +662,6 @@ class Inventory:
         data["primary_nic"] = (
             asdict(pn) if (pn := self.primary_nic) is not None else None)
         return data
-
-
-# ================== safety policy ==================
 
 
 _CONFIDENCE_RANK = {
@@ -825,9 +783,6 @@ class AntiCheatPolicy:
                 seen.append(n)
         return tuple(seen)
 
-
-# ================== timer resolution runtime ==================
-
 """Raising the system clock interrupt frequency from this process.
 
 WHY A RESIDENT HOLDER EXISTS
@@ -884,13 +839,6 @@ def _ntdll():
 
 
 def _clear_timer_power_throttling() -> dict[str, Any]:
-    """Ask Windows to always honour this process's timer request.
-
-    ControlMask selects the mechanism, StateMask=0 turns it off, which is the
-    "always honour" direction documented for SetProcessInformation. Resolved
-    through kernel32 by name so an older Windows degrades to a reported no-op
-    instead of an AttributeError.
-    """
     import ctypes
 
     out: dict[str, Any] = {"attempted": False, "ok": False, "error": ""}
@@ -930,7 +878,6 @@ def _clear_timer_power_throttling() -> dict[str, Any]:
 
 
 def query_timer_resolution() -> TimerResolution:
-    """Finest, coarsest and current system tick, in microseconds."""
     if not IS_WINDOWS:
         return TimerResolution()
     import ctypes
@@ -956,12 +903,6 @@ def query_timer_resolution() -> TimerResolution:
 
 
 def clamp_timer_target(want_us: float, res: TimerResolution) -> int:
-    """The 100 ns unit count to actually ask for, clamped to the platform.
-
-    NtSetTimerResolution rejects or ignores a request finer than the reported
-    minimum, so asking for 500 us on a machine whose floor is 1 ms would fail
-    where 1 ms would have succeeded.
-    """
     want = int(round(float(want_us) * 10.0))
     if want <= 0:
         want = int(round(TIMER_TARGET_US * 10.0))
@@ -975,7 +916,6 @@ def clamp_timer_target(want_us: float, res: TimerResolution) -> int:
 def request_timer_resolution(
     target_us: float = TIMER_TARGET_US, *, power_throttling_optout: bool = True,
 ) -> dict[str, Any]:
-    """Hold a finer system tick for as long as this process lives."""
     global _TIMER_STOP, _TIMER_THREAD, _TIMER_STATE
     if not IS_WINDOWS:
         return {"ok": False, "supported": False,
@@ -1036,14 +976,6 @@ def request_timer_resolution(
 
 
 def stop_timer_request() -> dict[str, Any]:
-    """Release the request.
-
-    The request is owned by the PROCESS, not by the holder thread: ending
-    the thread alone leaves the fine tick in force until the app exits.
-    Releasing therefore replaces this process's request with the coarsest
-    period the platform reports (the last request per process wins), then
-    stops the holder.
-    """
     global _TIMER_STOP, _TIMER_THREAD, _TIMER_STATE
     with _TIMER_LOCK:
         stop, thread = _TIMER_STOP, _TIMER_THREAD
@@ -1063,9 +995,6 @@ def stop_timer_request() -> dict[str, Any]:
             import ctypes
             ntdll = _ntdll()
             with _TIMER_LOCK:
-                # A request that raced in between this stop and its own
-                # fine NtSetTimerResolution now owns the tick - do not
-                # stomp it back to coarse.
                 if _TIMER_THREAD is not None and _TIMER_THREAD.is_alive():
                     superseded = True
                 else:

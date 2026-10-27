@@ -1,25 +1,3 @@
-"""Turning a :class:`~hpose.keypoints.Pose` into a feature vector.
-
-Two independent views of the same body are encoded:
-
-* **shape** - where the joints are relative to the pelvis, in units of
-  body height.  Shoulder width, hip width, limb angles and the
-  horizontal offset of the nose are all recoverable from this.
-* **evidence** - how confidently each joint was seen.  A face that is
-  turned away produces weak nose/eye/ear confidences, which is the
-  strongest single cue for telling a person seen from behind from one
-  seen from the front.
-
-Joints the detector was unsure about are *repaired* before the geometry
-is measured.  A canonical body template is fitted to the confident
-joints with a similarity transform and the missing joints are taken
-from the template, so a half-seen body still produces a usable vector
-instead of a smear of garbage coordinates.
-
-The feature layout is fixed and versioned so that trained weights keep
-working; :func:`feature_names` returns the names in order and
-:func:`FEATURE_VERSION` changes whenever the layout does.
-"""
 
 from __future__ import annotations
 
@@ -32,13 +10,10 @@ import hpose_posefit as posefit
 
 FEATURE_VERSION = 5
 
-#: Joints that carry the most information about which way a body
-#: faces, used to fit the template when the rest is unreliable.
 ANCHOR_IDX = (5, 6, 11, 12)
 
 
 def _angle_at(a, b, c) -> float:
-    """Angle ``abc`` in degrees, 180 when a point is missing."""
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
     c = np.asarray(c, dtype=np.float64)
@@ -54,13 +29,6 @@ def _angle_at(a, b, c) -> float:
 
 
 def fit_similarity(template: np.ndarray, observed: np.ndarray):
-    """Best similarity transform mapping ``template`` onto ``observed``.
-
-    Returns ``(scale, rotation_2x2, translation)`` so that
-    ``observed ~= scale * (rotation @ template.T).T + translation``.
-    This is the two-dimensional Umeyama method: a least-squares fit of
-    an isotropic scale, a rotation and a shift.
-    """
     template = np.asarray(template, dtype=np.float64)
     observed = np.asarray(observed, dtype=np.float64)
     n = template.shape[0]
@@ -96,13 +64,6 @@ def apply_similarity(template: np.ndarray, scale: float, rot: np.ndarray,
 
 def impute_missing(kps: np.ndarray, template: np.ndarray = None,
                    threshold: float = 0.2) -> np.ndarray:
-    """Repair joints the detector was not sure about.
-
-    Returns a copy of ``kps`` where unreliable joints have been given
-    plausible positions taken from the canonical template.  The
-    confidence column is left untouched: the evidence of a bad
-    detection must survive into the features.
-    """
     kps = np.array(kps, dtype=np.float32, copy=True)
     if kps.ndim != 2 or kps.shape[0] < N_KP:
         return kps
@@ -114,9 +75,6 @@ def impute_missing(kps: np.ndarray, template: np.ndarray = None,
     if tpl.shape != (N_KP, 2):
         return kps
 
-    # Fit the template on the confident joints.  Prefer the anchors
-    # (shoulders and hips) because they define the body axis, and fall
-    # back to every confident joint when the anchors are missing.
     idx = np.array([i for i in ANCHOR_IDX if good[i]], dtype=np.int64)
     if len(idx) < 2:
         idx = np.array([i for i in range(N_KP) if good[i]], dtype=np.int64)
@@ -132,7 +90,6 @@ def impute_missing(kps: np.ndarray, template: np.ndarray = None,
 
 
 class _Builder(object):
-    """Appends named numbers to a vector, keeping the names aligned."""
 
     def __init__(self):
         self.names = []
@@ -158,14 +115,6 @@ class _Builder(object):
 
 
 def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.ndarray:
-    """Feature vector for one pose.
-
-    ``fit`` is the result of :func:`hpose.posefit.fit`.  When it is
-    given, the joints the detector was unsure about are repaired from
-    the fitted body and the fit's own measurements (yaw, how well a
-    rigid body explained the pose, which way the face was pointing)
-    join the feature vector.
-    """
     b = _Builder()
     raw = np.asarray(pose.kps, dtype=np.float64)
     conf = raw[:N_KP, 2]
@@ -183,14 +132,8 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     bw = max(1e-3, x2 - x1)
     bh = max(1e-3, y2 - y1)
 
-    # The box height is the normaliser.  It is the one measurement that
-    # a real detector and a generator both have, it never disappears
-    # when a limb is not found, and it is exactly what makes a crouch
-    # or a prone body look different: the same person in a smaller
-    # box.
     scale = bh
 
-    # how much of the body is actually in the picture
     leg_ok = [conf[15] > conf_threshold, conf[16] > conf_threshold]
     span = 0.0
     if any(leg_ok):
@@ -200,14 +143,12 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("visible_span", span / bh)
     b.add("legs_seen", 1.0 if all(leg_ok) else 0.0)
 
-    # ---- shape: joints relative to the pelvis, in body heights -----
     rel = (xy - pelvis[None, :2]) / scale
     b.add_many("rel", rel.reshape(-1))
     b.add_many("conf", conf)
     rel_d = (d[:, :2] - pelvis[None, :2]) / scale
     b.add_many("reld", rel_d[17:].reshape(-1))
 
-    # ---- geometry ---------------------------------------------------
     sh_w = abs(xy[6][0] - xy[5][0])
     hip_w = abs(xy[12][0] - xy[11][0])
     sh_mid = (xy[5] + xy[6]) * 0.5
@@ -226,7 +167,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
           math.degrees(math.atan2(float(sh_mid[0] - hip_mid[0]),
                                   max(1e-3, abs(float(neck[1] - pelvis[1]))))))
 
-    # ---- evidence ----------------------------------------------------
     face_conf = conf[list(FACE_IDX)]
     body_conf = np.concatenate([conf[5:7], conf[11:13]])
     fc = float(np.mean(face_conf))
@@ -242,9 +182,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("vis_count", float(np.sum(conf > conf_threshold)))
     b.add("face_vis_count", float(np.sum(face_conf > conf_threshold)))
 
-    # side confidence balance: the limb on the far side of a turned
-    # body is the one the detector struggles with, which is what tells
-    # a person turned to the right from one turned to the left.
     left_idx = (5, 7, 9, 11, 13, 15)
     right_idx = (6, 8, 10, 12, 14, 16)
     lc = float(np.mean(conf[list(left_idx)]))
@@ -253,7 +190,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("limb_conf_right", rc)
     b.add("limb_conf_balance", lc - rc)
 
-    # ---- asymmetry ----------------------------------------------------
     def pair_off(i_l, i_r):
         mid = (xy[i_l] + xy[i_r]) * 0.5
         return (abs(float(xy[i_l][0] - mid[0])),
@@ -275,7 +211,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("sh_hip_mid_dx", float(sh_mid[0] - hip_mid[0]) / scale)
     b.add("sh_hip_mid_dy", float(sh_mid[1] - hip_mid[1]) / scale)
 
-    # ---- limb angles ---------------------------------------------------
     b.add("knee_angle_l", _angle_at(xy[11], xy[13], xy[15]) / 180.0)
     b.add("knee_angle_r", _angle_at(xy[12], xy[14], xy[16]) / 180.0)
     b.add("elbow_angle_l", _angle_at(xy[5], xy[7], xy[9]) / 180.0)
@@ -283,7 +218,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("hip_angle_l", _angle_at(xy[5], xy[11], xy[13]) / 180.0)
     b.add("hip_angle_r", _angle_at(xy[6], xy[12], xy[14]) / 180.0)
 
-    # ---- stance cues ----------------------------------------------------
     leg_len = 0.0
     if conf[15] > conf_threshold and conf[16] > conf_threshold:
         leg_len = (abs(float(xy[15][1] - pelvis[1]))
@@ -305,12 +239,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
           math.degrees(math.atan2(abs(float(hip_mid[1] - sh_mid[1])),
                                   max(1e-3, abs(float(hip_mid[0] - sh_mid[0]))))))
 
-    # ---- the body axis ------------------------------------------------
-    # The angle of the spine and of the whole body against the
-    # vertical is the one stance cue that does not depend on the box at
-    # all.  A person lying down has a horizontal spine; a person
-    # standing has a vertical one; a box that is a bit wrong cannot
-    # change that.
     spine_dx = float(neck[0] - pelvis[0])
     spine_dy = float(neck[1] - pelvis[1])
     b.add("spine_angle", math.degrees(math.atan2(abs(spine_dx),
@@ -344,16 +272,11 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
     b.add("hip_frac", float(pelvis[1] - y1) / bh)
     b.add("shoulder_frac", float(sh_mid[1] - y1) / bh)
     b.add("neck_frac", float(neck[1] - y1) / bh)
-    # Sitting and lying down both tilt the spine, but only lying down
-    # lays the whole body down.  The difference between the two angles
-    # is what tells them apart, so it is given to the classifier
-    # directly rather than left for it to work out.
     axis = b.values[b.names.index("body_axis_angle")]
     b.add("spine_x_axis", b.values[b.names.index("spine_angle")] * axis)
     b.add("spine_minus_axis",
           b.values[b.names.index("spine_angle")] - axis)
 
-    # ---- the geometric body fit --------------------------------------
     if fit is not None:
         yaw = float(fit.get("yaw", 0.0))
         b.add("fit_yaw_sin", math.sin(math.radians(yaw)))
@@ -375,7 +298,6 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
 
 
 def feature_names() -> list:
-    """Names of the feature vector, in order."""
     b = _Builder()
     b.add("visible_span", 0)
     b.add("legs_seen", 0)
