@@ -11,27 +11,17 @@ from system_core import (ACCENT_PRESETS,
                         parse_accent as _parse_accent,
                         parse_accents as _parse_accents)
 
-
-
-
-
-
-
 _LOG_SINK = None
 
 try:
-
-
 
     from win32rt import get_dpi_scale as _get_dpi_scale
 except Exception:
     _get_dpi_scale = None
 
-
 def set_log_sink(fn):
     global _LOG_SINK
     _LOG_SINK = fn if callable(fn) else None
-
 
 def _log(text):
     fn = _LOG_SINK
@@ -51,55 +41,22 @@ CELL_WEAK = 0.18
 BLUR_WIN = 9
 MIN_FILL = 0.45
 
-
-
-
-
-
-
-
-
-
 NORM_C = 24.0
 NORM_K = 152.0
 NORM_MIN = 0.5
 NORM_MAX = 3.0
-
-
-
-
-
-
-
-
 
 ADAPTIVE_PERCENTILE = 98.0
 ADAPTIVE_K = 0.5
 ADAPTIVE_FLOOR = 14.0
 ADAPTIVE_BASE = 38.0
 
-
-
 MIN_CONTRAST_FLOOR = 28.0
-
-
-
-
-
-
 
 MIN_CONTRAST_BASE = 48.0
 
-
-
-
-
-
-
-
 CONTRAST_CORE_FRAC = 0.35
 CONTRAST_METRIC_SCALE = 0.83
-
 
 class SnapTarget(object):
     __slots__ = ("dx", "dy", "dist", "area", "contrast", "bw", "bh", "sig",
@@ -128,7 +85,6 @@ class SnapTarget(object):
         self.speed = 0.0
         self.track_id = 0
 
-
 class ScanResult(object):
     __slots__ = ("kind", "target", "ms")
 
@@ -136,7 +92,6 @@ class ScanResult(object):
         self.kind = kind
         self.target = target
         self.ms = ms
-
 
 def _box_blur(a, win):
     try:
@@ -158,7 +113,6 @@ def _box_blur(a, win):
     )
     return total / float(win * win)
 
-
 def _dilate(m, n=1):
     for _ in range(n):
         o = m.copy()
@@ -169,13 +123,7 @@ def _dilate(m, n=1):
         m = o
     return m
 
-
 def _erode(m, n=1):
-
-
-
-
-
 
     for _ in range(n):
         o = m.copy()
@@ -190,7 +138,6 @@ def _erode(m, n=1):
         m = o
     return m
 
-
 def _dilate8(m):
     o = m.copy()
     o[1:, :] |= m[:-1, :]
@@ -202,7 +149,6 @@ def _dilate8(m):
     o[:-1, 1:] |= m[1:, :-1]
     o[:-1, :-1] |= m[1:, 1:]
     return o
-
 
 def _close_gaps(m, gap):
     try:
@@ -221,18 +167,13 @@ def _close_gaps(m, gap):
                              cv2.MORPH_CLOSE, se).astype(bool)
     except Exception:
 
-
-
         return m
-
-
 
     e[:g, :] = False
     e[-g:, :] = False
     e[:, :g] = False
     e[:, -g:] = False
     return e
-
 
 def _meanshift(xs, ys, sx, sy, sigma=25.0, iters=8):
     px, py = float(sx), float(sy)
@@ -254,19 +195,18 @@ def _meanshift(xs, ys, sx, sy, sigma=25.0, iters=8):
 
     return px, py
 
-
-def _grow_cells(strong, weak):
+def _grow_cells(strong, weak, max_iter: int = 256):
     keep = strong.copy()
-    for i in range(256):
+    for i in range(max_iter):
         grown = _dilate8(keep) & weak
         grown |= keep
         if np.array_equal(grown, keep):
             return keep
         keep = grown
-        if (i & 31) == 31 and time.perf_counter() > getattr(_SCAN_DEADLINE, 'deadline', float('inf')):
+        if (i & 31) == 31 and time.perf_counter() > getattr(
+                _SCAN_DEADLINE, "deadline", float("inf")):
             return keep
     return keep
-
 
 def _flood_bg(solids, mask):
     gh, gw = solids.shape
@@ -298,7 +238,6 @@ def _flood_bg(solids, mask):
         if (i & 31) == 31 and time.perf_counter() > getattr(_SCAN_DEADLINE, 'deadline', float('inf')):
             return bg
     return bg
-
 
 def _label_cells(cells):
     gh, gw = cells.shape
@@ -382,59 +321,18 @@ def _label_cells(cells):
              int(x1[i]) + 1) for i in range(1, ncomp + 1)]
     return labels, info
 
-
 MIN_FRAG_AREA = 64
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 AREA_SCORE_CAP = 6000.0
 DIST_FALLOFF = 2.0
 
-
-
-
-
-
-
 PROX_CORE_PX = 24.0
 PROX_CORE_BONUS = 0.5
-
 
 def _prox_mult(dist):
     if dist >= PROX_CORE_PX:
         return 1.0
     return 1.0 + PROX_CORE_BONUS * (1.0 - dist / PROX_CORE_PX)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 SHAPE_LO = 1.2
 SHAPE_PLATEAU_LO = 1.6
@@ -447,10 +345,7 @@ SHAPE_SQ_BONUS = 0.3
 SHAPE_MIN_H = 24
 SHAPE_MIN_AREA = 200
 
-
-
 SHAPE_TIER_MIN_F = 0.25
-
 
 FIGURE_TIER2_THRESH = 0.50
 FIGURE_TIER1_THRESH = 0.30
@@ -473,7 +368,6 @@ FIGURE_STEP_MIN = 0.10
 FIGURE_DIP_MIN = 0.07
 FIGURE_RESCUE_RS = 0.55
 
-
 def _ratio_score(r):
     try:
         r = float(r)
@@ -492,7 +386,6 @@ def _ratio_score(r):
             return 0.35 * (r - 0.85) / 0.15
         return 0.35 * (1.2 - r) / 0.2
     return 0.0
-
 
 def _figure_features(mask):
     try:
@@ -624,7 +517,6 @@ def _figure_features(mask):
             "neck_pinch": float(cues["pinch"]) if cues else 0.0,
             "prone_head_s": float(prone_hs), "prone_cues": prone_cues}
 
-
 def _figure_score(bw, bh, area, mask=None):
     try:
         bw = int(bw)
@@ -658,7 +550,6 @@ def _trap(x, a, b, c, d):
     if x <= c:
         return 1.0
     return (d - x) / max(1e-9, float(d - c))
-
 
 def _profile_cues(m):
     out = {"rw": 0.0, "rh": 0.0, "ha": 0.0, "pinch": 0.0, "step": 0.0,
@@ -791,7 +682,6 @@ def _profile_cues(m):
         pass
     return out
 
-
 def _head_cue(c):
     rw_s = _trap(c.get("rw", 0.0), 0.20, 0.30, 0.95, 1.10)
     rh_s = _trap(c.get("rh", 0.0), 0.045, 0.08, 0.24, 0.32)
@@ -809,13 +699,11 @@ def _head_cue(c):
         s = min(s, 0.35)
     return s
 
-
 def _body_combine(head_s, taper_s, sym_s, cov_s, fill_s):
     return max(0.0, min(1.0,
                         FIGURE_W_HEAD * head_s + FIGURE_W_TAPER * taper_s
                         + FIGURE_W_SYM * sym_s + FIGURE_W_COV * cov_s
                         + FIGURE_W_FILL * fill_s))
-
 
 def _figure_body_score(feats):
     sym = feats["sym"]
@@ -848,7 +736,6 @@ def _figure_body_score(feats):
     return (_body_combine(head_s, taper_s, sym_s, cov_s, fill_s),
             sym_s, cov_s, fill_s, taper_s)
 
-
 def _figure_prone_detail(feats, bw, bh):
     try:
         c = feats.get("prone_cues")
@@ -876,7 +763,6 @@ def _figure_prone_detail(feats, bw, bh):
         return min(score, 0.45), 0
     except Exception:
         return 0.0, 0
-
 
 def _figure_detail(bw, bh, area, mask):
     try:
@@ -983,7 +869,6 @@ def _figure_detail(bw, bh, area, mask):
         return score, 2
     return score, 0
 
-
 def _figure_tier(bw, bh, area, mask=None):
     if mask is not None:
         try:
@@ -1009,7 +894,6 @@ def _figure_tier(bw, bh, area, mask=None):
     if s >= FIGURE_TIER1_THRESH:
         return 1
     return 0
-
 
 def _shape_mult(bw, bh, area, mask=None):
     if mask is not None:
@@ -1053,7 +937,6 @@ def _shape_mult(bw, bh, area, mask=None):
         best = max(best, 1.0 + SHAPE_SQ_BONUS * f)
     return best
 
-
 def _shape_tier(bw, bh, area, mask=None):
     if mask is not None:
         return _figure_tier(bw, bh, area, mask)
@@ -1068,8 +951,6 @@ def _shape_tier(bw, bh, area, mask=None):
         else:
             f = (SHAPE_HI - r) / (SHAPE_HI - SHAPE_PLATEAU_HI)
 
-
-
         if f >= SHAPE_TIER_MIN_F:
             return 2
     if SHAPE_SQ_LO < r < SHAPE_SQ_HI:
@@ -1081,54 +962,26 @@ def _shape_tier(bw, bh, area, mask=None):
             return 1
     return 0
 
-
-
-
-
-
 EXCLUDE_ERODE_PX = 5
 EXCLUDE_CORE_MIN = 8
 
-
-
-
-
-
-
-
 ACCENT_RANK_CAP = 1.2
-
 
 def _base_score(contrast, area, fill, dist, shape=1.0):
     return (contrast * math.sqrt(min(area, AREA_SCORE_CAP))
             * (0.4 + 0.6 * fill) * _prox_mult(dist) * shape
             / (12.0 + dist) ** DIST_FALLOFF)
 
-
-
-
 ACCENT_MIN_FRACTION = 0.05
-
-
-
-
-
-
-
-
-
-
 
 ACCENT_STRONG_SIM = 0.55
 ACCENT_TONE_BONUS = 0.25
-
 
 FOLLOW_COLOR_TOL = 18
 FOLLOW_COLOR_FRAC = 0.25
 FOLLOW_POS_SIM = 0.8
 
 FOLLOW_POS_PAD = 48
-
 
 class FollowMemory(object):
 
@@ -1145,9 +998,6 @@ class FollowMemory(object):
         self.hits = 0
 
     def store(self, x, y, target):
-
-
-
 
         with self._lock:
             self.when = time.perf_counter()
@@ -1187,14 +1037,12 @@ class FollowMemory(object):
             self.bh = 0
             self.hits = 0
 
-
 FIGURE_STICKY_S = 0.9
 FIGURE_POS_PAD = 96
 FIGURE_STICKY_BOOST = 0.85
 FIGURE_SWITCH_MARGIN = 1.0
 FIGURE_KEEP_MIN = 0.38
 FIGURE_SOLID_MIN = 0.55
-
 
 class FigureMemory(object):
 
@@ -1248,12 +1096,10 @@ class FigureMemory(object):
         return (x - int(origin_x), y - int(origin_y), int(bw), int(bh),
                 float(hs), float(decay))
 
-
 def _merge_nearby(candidates, fragments, merge_distance,
                   min_area, max_area, max_dim, max_aspect, scale=1.0,
                   cx=None, cy=None, w=None, h=None, edge_flags=None,
                   deadline=None, subject_mode=False):
-
 
     pool = list(candidates) + list(fragments)
     n_full = len(candidates)
@@ -1264,9 +1110,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
     if n == 1:
 
         return candidates
-
-
-
 
     boxes = [(c[2], c[1], c[2] + c[7], c[1] + c[8]) for c in pool]
 
@@ -1285,8 +1128,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
 
     for i in range(n):
 
-
-
         if deadline is not None and i > 0 \
                 and time.perf_counter() > deadline:
             break
@@ -1295,7 +1136,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
             bx0, by0, bx1, by1 = boxes[j]
             gap_x = max(ax0 - bx1, bx0 - ax1, 0)
             gap_y = max(ay0 - by1, by0 - ay1, 0)
-
 
             if subject_mode:
                 try:
@@ -1326,9 +1166,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
                 out.append(pool[members[0]])
             continue
 
-
-
-
         if all(m < n_full for m in members):
             out.extend(full_members)
             continue
@@ -1338,9 +1175,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
         X1 = max(boxes[m][2] for m in members)
         Y1 = max(boxes[m][3] for m in members)
         bw, bh = X1 - X0, Y1 - Y0
-
-
-
 
         if w is not None and h is not None \
                 and _touches_screen_edge(Y0, X0, Y1, X1, w, h,
@@ -1377,16 +1211,11 @@ def _merge_nearby(candidates, fragments, merge_distance,
 
         fill = area / float(bw * bh)
 
-
-
-
         if fill < MIN_FILL:
             out.extend(full_members)
             continue
 
         if cx is not None and cy is not None:
-
-
 
             dist = math.hypot(max(X0 - cx, 0, cx - (X1 - 1)),
                               max(Y0 - cy, 0, cy - (Y1 - 1)))
@@ -1397,15 +1226,6 @@ def _merge_nearby(candidates, fragments, merge_distance,
         out.append((score, Y0, X0, canvas, dist, area, contrast, bw, bh))
 
     return out
-
-
-
-
-
-
-
-
-
 
 __all__ = [
     "ACCENT_PRESETS", "AREA_SCORE_CAP", "CONTRAST_METRIC_SCALE",
@@ -1420,12 +1240,10 @@ __all__ = [
     "suggest_accents",
 ]
 
-
 def _soft_band(d, half, falloff):
     if falloff <= 0:
         return np.where(d <= half, 1.0, 0.0)
     return np.clip(1.0 - (d - half) / falloff, 0.0, 1.0)
-
 
 def _accent_similarity(h, s, v, ah, asat, av, tol, soft=0.0):
     dh = np.abs(h - ah)
@@ -1435,7 +1253,6 @@ def _accent_similarity(h, s, v, ah, asat, av, tol, soft=0.0):
     h_sim = _soft_band(dh, tol, tol * 2.0 * soft)
     s_sim = _soft_band(np.abs(s - asat), sv_band, sv_band * 2.0 * soft)
     v_sim = _soft_band(np.abs(v - av), sv_band, sv_band * 2.0 * soft)
-
 
     rel = min(1.0, float(asat) / 50.0)
     h_sim = h_sim * rel + (1.0 - rel)
@@ -1448,20 +1265,8 @@ def _accent_similarity(h, s, v, ah, asat, av, tol, soft=0.0):
 
     return np.minimum(sim, 1.0)
 
-
-
-
-
-
-
-
-
-
-
-
 OKLAB_BLEND_MIN_A = 0.25
 OKLAB_BLEND_EPS = 0.05
-
 
 def _rgb01_to_oklab(px):
     def lin(c):
@@ -1478,7 +1283,6 @@ def _rgb01_to_oklab(px):
     B = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
     return np.stack([L, A, B], axis=-1)
 
-
 def blend_similarity(px_bgr01, acc_rgb01, bg_bgr01):
     acc = np.asarray(acc_rgb01, dtype=np.float32)[::-1]
     bg = np.asarray(bg_bgr01, dtype=np.float32)
@@ -1490,90 +1294,27 @@ def blend_similarity(px_bgr01, acc_rgb01, bg_bgr01):
     proj = bg + t[..., None] * d
     res = np.sqrt(np.sum((px_bgr01 - proj) ** 2, axis=-1))
 
-
     return np.where((t >= OKLAB_BLEND_MIN_A) & (res <= OKLAB_BLEND_EPS),
                     np.minimum(t, 1.0), 0.0).astype(np.float32)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 DE_TOL_BASE = 4.0
 DE_TOL_SOFT = 32.0
 
-
-
-
-
-
-
-
-
-
 ACCENT_L_VARIANTS = (0.0, 7.0, -7.0, 14.0, -14.0)
 HSV_V_VARIANTS = (0.0, 18.0, -18.0, 36.0, -36.0)
-
-
-
-
-
-
-
 
 ADAPT_MAX_AB = 10.0
 ADAPT_STRENGTH = 0.6
 
-
-
-
-
-
 ACCENT_COHERENT_FRAC = 0.5
 ACCENT_COHERENT_MIN = 8
-
-
-
-
-
 
 ACCENT_MAX_PIXELS = 3000
 
 _lab_cache = {}
 
-
-
-
-
 _accent_parse_cache = {}
 _exclude_parse_cache = {}
-
 
 def _cached_parse_accents(raw):
     key = ("s", raw) if isinstance(raw, str) else ("r", repr(raw))
@@ -1584,7 +1325,6 @@ def _cached_parse_accents(raw):
         hit = _parse_accents(raw)
         _accent_parse_cache[key] = hit
     return hit
-
 
 def _rgb01_to_lab(px):
     def lin(c):
@@ -1606,7 +1346,6 @@ def _rgb01_to_lab(px):
     B = 200.0 * (fy - fz)
     return np.stack([L, A, B], axis=-1)
 
-
 @functools.lru_cache(maxsize=128)
 def _accent_lab_quantised(ah, asat, av):
     rgb = np.array(hsv_to_rgb(ah, asat, av), dtype=np.float32) / 255.0
@@ -1614,11 +1353,9 @@ def _accent_lab_quantised(ah, asat, av):
     hit = (lab, float(np.hypot(lab[1], lab[2])), rgb)
     return hit
 
-
 def _accent_lab(ah, asat, av):
     return _accent_lab_quantised(round(float(ah), 2), round(float(asat), 2),
                                  round(float(av), 2))
-
 
 def ciede2000(lab1, lab2, kL=1.0, kC=1.0, kH=1.0):
     L1, a1, b1 = lab1[..., 0], lab1[..., 1], lab1[..., 2]
@@ -1640,9 +1377,6 @@ def ciede2000(lab1, lab2, kL=1.0, kC=1.0, kH=1.0):
 
     dLp = L2 - L1
     dCp = C2p - C1p
-
-
-
 
     h_diff = h2p - h1p
     dhp = np.where(h_diff > np.pi, h_diff - 2.0 * np.pi, h_diff)
@@ -1680,7 +1414,6 @@ def ciede2000(lab1, lab2, kL=1.0, kC=1.0, kH=1.0):
            + RT * (dCp / (kC * SC)) * (dHp / (kH * SH)))
     return np.sqrt(np.maximum(dE2, 0.0)).astype(np.float32)
 
-
 def _de_terms(p_lab, acc_lab, neutral_chroma=None):
     d = ciede2000(p_lab, acc_lab)
     if neutral_chroma is not None and neutral_chroma < 8.0:
@@ -1688,7 +1421,6 @@ def _de_terms(p_lab, acc_lab, neutral_chroma=None):
         extra = 2.0 * np.clip(cpx - (neutral_chroma + 1.5), 0.0, None)
         d = np.sqrt(d * d + extra * extra)
     return d
-
 
 def _coherent_enough(mask, min_n=ACCENT_COHERENT_MIN):
     n = int(mask.sum())
@@ -1699,7 +1431,6 @@ def _coherent_enough(mask, min_n=ACCENT_COHERENT_MIN):
         return False
     biggest = max(entry[1] for entry in info)
     return biggest >= ACCENT_COHERENT_FRAC * n
-
 
 def _subsample_patch(sub_f32, mask):
     while int(mask.sum()) > ACCENT_MAX_PIXELS:
@@ -1723,7 +1454,6 @@ def accent_soft_of(cfgv):
     except (TypeError, ValueError):
         return 0.6
 
-
 def accent_matcher_of(cfgv):
     try:
         m = str(cfgv.get("accent_matcher", "oklab") or "oklab")
@@ -1731,7 +1461,6 @@ def accent_matcher_of(cfgv):
         return "oklab"
     m = m.strip().lower()
     return m if m in ("hsv", "oklab") else "oklab"
-
 
 def _bool_of(cfgv, key, default):
     try:
@@ -1742,18 +1471,14 @@ def _bool_of(cfgv, key, default):
         return v.strip().lower() in ("1", "true", "yes", "on")
     return bool(v)
 
-
 def color_adapt_of(cfgv):
     return _bool_of(cfgv, "color_adapt", True)
-
 
 def accent_variants_of(cfgv):
     return _bool_of(cfgv, "accent_variants", True)
 
-
 def accent_coherent_of(cfgv):
     return _bool_of(cfgv, "accent_coherent", True)
-
 
 def suggest_accents(img, max_suggestions=6):
     a = np.asarray(img)
@@ -1784,9 +1509,6 @@ def suggest_accents(img, max_suggestions=6):
     rank = (counts / total) * (0.25 + np.minimum(chroma, 0.25) * 3.0)
     order = np.argsort(-rank)
 
-
-
-
     out = []
     fallback = []
     for idx in order:
@@ -1802,7 +1524,6 @@ def suggest_accents(img, max_suggestions=6):
         out.append(fallback.pop(0))
     return out[:max(1, int(max_suggestions))]
 
-
 def _sig_matches_accents(sig, accents, tol, soft=0.0, matcher="hsv",
                          variants=True):
     if sig is None or not accents:
@@ -1810,7 +1531,7 @@ def _sig_matches_accents(sig, accents, tol, soft=0.0, matcher="hsv",
 
     sh, ss, sv = float(sig[0]), float(sig[1]), float(sig[2])
 
-    if matcher == "oklab" and soft > 0:
+    if matcher == "oklab":
         rgb01 = (np.array(hsv_to_rgb(sh, ss, sv), dtype=np.float32)
                  / 255.0)
         sig_lab = _rgb01_to_lab(rgb01)
@@ -1827,17 +1548,9 @@ def _sig_matches_accents(sig, accents, tol, soft=0.0, matcher="hsv",
                                     chroma))
                 best = d if best is None else min(best, d)
 
-
-
             if best <= (1.0 - ACCENT_STRONG_SIM) * tol_e:
                 return True
         return False
-
-
-
-
-
-
 
     for (ah, asat, av) in accents:
         for dV in (HSV_V_VARIANTS if variants else (0.0,)):
@@ -1848,7 +1561,6 @@ def _sig_matches_accents(sig, accents, tol, soft=0.0, matcher="hsv",
                 return True
 
     return False
-
 
 def _bgr01_to_hsv(px):
     b, g, r = px[:, 0], px[:, 1], px[:, 2]
@@ -1866,7 +1578,6 @@ def _bgr01_to_hsv(px):
     v = mx * 255.0
     return h, s, v
 
-
 def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
                   matcher="hsv", coherent=False, adapt=False,
                   variants=False, bg_from=None):
@@ -1879,21 +1590,12 @@ def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
     if px.shape[0] == 0 or not accents:
         return 0.0, 0.0
 
-
-
-
-
     inner = np.zeros_like(m)
     if m.shape[0] > 2 and m.shape[1] > 2:
         inner[1:-1, 1:-1] = (m[1:-1, 1:-1] & m[:-2, 1:-1] & m[2:, 1:-1]
                               & m[1:-1, :-2] & m[1:-1, 2:])
     edge = (m & ~inner)[m]
     use_edge = bool(edge.any() and int(edge.sum()) >= 4)
-
-
-
-
-
 
     if bg_from is not None and bg_from.shape == cl_px.shape:
         _sub_bg, m_bg = _subsample_patch(sub0, bg_from)
@@ -1904,21 +1606,12 @@ def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
     if bgm.shape[0] >= 8:
         bg = np.median(bgm.reshape(-1, 3), axis=0)
 
-
-
-
     coh_min = ACCENT_COHERENT_MIN if m.shape == cl_px.shape \
         else max(2, ACCENT_COHERENT_MIN // 4)
 
-
-
-
     tol_scale = max(0.15, min(3.5, float(tol) / 26.0))
 
-    if matcher == "oklab" and soft > 0:
-
-
-
+    if matcher == "oklab":
 
         p_lab = _rgb01_to_lab(px[:, ::-1])
         adapt_ab = None
@@ -1958,24 +1651,11 @@ def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
                 if not _coherent_enough(grid, coh_min):
                     continue
 
-
-
-
-
-
-
-
             if mean > best_mean:
                 best_mean = mean
             if strong > best_strong:
                 best_strong = strong
         return best_mean, best_strong
-
-
-
-
-
-
 
     pxc = px
     if adapt and bg is not None:
@@ -2015,16 +1695,9 @@ def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
 
     return best_mean, best_strong
 
-
-
-
-
-
-
 MOTION_MIN_SPEED = 20.0
 MOTION_MAX_DEVIATION = 12.0
 MOTION_MIN_SPAN = 0.03
-
 
 def predict_motion(obs, lead_ms, max_offset):
     if lead_ms <= 0 or len(obs) < 2 or max_offset <= 0:
@@ -2054,61 +1727,19 @@ def predict_motion(obs, lead_ms, max_offset):
         ox, oy = ox * k, oy * k
     return ox, oy
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class MotionTracker(object):
-
-
 
     POS_R = 9.0
     SCALE_R = 0.0025
-
 
     POS_Q = 2500.0
     SCALE_Q = 0.02
 
     MISS_RESET = 3
 
-
     STALE_S = 0.6
 
-
     SCALE_JUMP = 0.69
-
 
     POS_GATE_FLOOR = 4.0
     SCALE_GATE_FLOOR = 0.10
@@ -2118,12 +1749,6 @@ class MotionTracker(object):
             raise ValueError("MotionTracker dim is 2 or 3")
         self.dim = dim
         self.n = 2 * dim
-
-
-
-
-
-
 
         self._prev_obs = None
         self.reset()
@@ -2140,7 +1765,6 @@ class MotionTracker(object):
         n = self.dim
         self.x = np.zeros(2 * n, dtype=np.float64)
         self.x[:n] = z
-
 
         self.P = np.diag(np.concatenate(
             [self._r_vec(), np.full(n, 40000.0)]))
@@ -2187,9 +1811,6 @@ class MotionTracker(object):
         if z is None or not math.isfinite(t) or not np.all(np.isfinite(z)):
             return False
 
-
-
-
         prev = self._prev_obs
         if prev is None or t > prev[0]:
             self._prev_obs = (t, z.copy())
@@ -2207,14 +1828,8 @@ class MotionTracker(object):
         n = self.dim
         if n == 3 and abs(z[2] - self.x[2]) > self.SCALE_JUMP:
 
-
-
-
-
             self.reset()
             return self.update(t, pos)
-
-
 
         F = np.eye(2 * n, dtype=np.float64)
         F[:n, n:] = np.eye(n, dtype=np.float64) * dt
@@ -2226,8 +1841,6 @@ class MotionTracker(object):
         Q[n:, n:] = np.diag(qb * dt)
         xp = F.dot(self.x)
         Pp = F.dot(self.P).dot(F.T) + Q
-
-
 
         R = self._r_vec()
         S_diag = np.diag(Pp)[:n] + R
@@ -2242,21 +1855,11 @@ class MotionTracker(object):
             self.misses += 1
             if self.misses >= self.MISS_RESET:
 
-
-
-
-
-
-
-
-
                 self.reset()
                 if prev is not None:
                     self._prev_obs = prev
                 return self._init(t, z)
             return False
-
-
 
         H = np.zeros((n, 2 * n), dtype=np.float64)
         H[:, :n] = np.eye(n, dtype=np.float64)
@@ -2317,21 +1920,9 @@ class MotionTracker(object):
             return ox, oy, ratio
         return ox, oy
 
-
-
-
-
-
-
-
-
-
-
-
 MOTION_DIFF_LO = 18.0
 MOTION_DIFF_HI = 90.0
 MOTION_WHITE_CUT = 210.0
-
 
 def _frame_movers(prev_gray, curr_gray):
     try:
@@ -2354,7 +1945,6 @@ def _frame_movers(prev_gray, curr_gray):
         except Exception:
             return np.zeros((0, 0), dtype=bool)
 
-
 def _estimate_cam_shift(prev_gray, curr_gray):
     try:
         import cv2
@@ -2374,13 +1964,11 @@ def _estimate_cam_shift(prev_gray, curr_gray):
     except Exception:
         return 0.0, 0.0
 
-
 def motion_sense_of(cfgv):
     try:
         return min(1.0, max(0.0, float(cfgv.get("motion_sense", 0)) / 100.0))
     except (TypeError, ValueError):
         return 0.0
-
 
 def _accent_fraction(img, cl_px, X0, Y0, accents, tol, soft=0.0,
                       matcher="hsv", coherent=False, adapt=False,
@@ -2388,20 +1976,14 @@ def _accent_fraction(img, cl_px, X0, Y0, accents, tol, soft=0.0,
     return _accent_stats(img, cl_px, X0, Y0, accents, tol, soft, matcher,
                          coherent, adapt, variants)[0]
 
-
-
-
-
 CALIB_HALF_WEIGHT_PX = 60.0
 CALIB_MIN_WEIGHT = 0.02
-
 
 def _weighted_mean(values, weights):
     w = float(np.sum(weights))
     if w <= 0.0:
         return float(np.mean(values)) if len(values) else 0.0
     return float(np.sum(values * weights) / w)
-
 
 def _weighted_percentile(values, weights, pct):
     values = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -2418,7 +2000,6 @@ def _weighted_percentile(values, weights, pct):
     idx = int(np.searchsorted(cum, target))
     return float(v[min(idx, v.size - 1)])
 
-
 def calibrate_accent(img, cx, cy, accents, tol, soft, matcher="hsv"):
     if not accents or img is None:
         return None
@@ -2426,25 +2007,11 @@ def calibrate_accent(img, cx, cy, accents, tol, soft, matcher="hsv"):
     if a.ndim != 3 or a.shape[2] < 3 or a.size == 0:
         return None
 
-
-
-
-
-
-
-
-
-
-
-
-
     h, w = a.shape[:2]
     cx = min(max(int(cx), 0), max(0, w - 1))
     cy = min(max(int(cy), 0), max(0, h - 1))
     yy, xx = np.mgrid[0:h, 0:w]
     spatial = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2).astype(np.float32)
-
-
 
     weight = 1.0 / (1.0 + (spatial / CALIB_HALF_WEIGHT_PX) ** 2)
 
@@ -2455,18 +2022,10 @@ def calibrate_accent(img, cx, cy, accents, tol, soft, matcher="hsv"):
         px, wt = px[keep], wt[keep]
     if px.shape[0] > 20000:
 
-
         step = px.shape[0] // 20000 + 1
         px, wt = px[::step], wt[::step]
 
-    if matcher == "oklab" and soft > 0:
-
-
-
-
-
-
-
+    if matcher == "oklab":
 
         p_lab = _rgb01_to_lab(px[:, ::-1])
         best = None
@@ -2505,21 +2064,12 @@ def calibrate_accent(img, cx, cy, accents, tol, soft, matcher="hsv"):
     p50 = float(_weighted_percentile(color_d, wt, 50.0))
     p95 = float(_weighted_percentile(color_d, wt, 95.0))
 
-
     if unit == "dE":
-
-
 
         scale = max(0.15, min(3.5, float(tol) / 26.0))
         suggested = int(round(min(1.0, max(0.0, (p95 / scale - DE_TOL_BASE)
                                              / DE_TOL_SOFT)) * 100.0))
     else:
-
-
-
-
-
-
 
         gate = 1.0 - ACCENT_STRONG_SIM
         cur = min(1.0, max(0.0, float(soft))) * 100.0
@@ -2532,19 +2082,7 @@ def calibrate_accent(img, cx, cy, accents, tol, soft, matcher="hsv"):
             "strong_frac": strong, "suggested_soft": suggested,
             "unit": unit, "cursor": (cx, cy)}
 
-
-
-
-
-
-
-
-
-
-
-
 EDGE_TOUCH_PX = 12
-
 
 def _touches_screen_edge(Y0, X0, Y1, X1, w, h, edge_flags):
     if not edge_flags:
@@ -2554,12 +2092,10 @@ def _touches_screen_edge(Y0, X0, Y1, X1, w, h, edge_flags):
     except (TypeError, ValueError):
         return False
 
-
     return ((el and X0 <= EDGE_TOUCH_PX)
             or (et and Y0 <= EDGE_TOUCH_PX)
             or (er and X1 - 1 >= w - EDGE_TOUCH_PX)
             or (eb and Y1 - 1 >= h - EDGE_TOUCH_PX))
-
 
 def _is_clipped(Y0, X0, bw, bh, w, h, edge_flags):
     el = et = er = eb = False
@@ -2579,8 +2115,6 @@ def _is_clipped(Y0, X0, bw, bh, w, h, edge_flags):
         return True
     return False
 
-
-
 def _hpose_enabled(cfgv) -> bool:
     try:
         import hpose_bridge
@@ -2590,7 +2124,6 @@ def _hpose_enabled(cfgv) -> bool:
         return bool(hpose_bridge.wanted(cfgv))
     except Exception:
         return False
-
 
 def _hpose_box_stats(img, box):
     area = 0.0
@@ -2626,10 +2159,111 @@ def _hpose_box_stats(img, box):
         pass
     return area, contrast, sig
 
+def _subject_silhouette(subject, lb, img_shape, pad=2):
+    """Thin 17-kp silhouette: a filled hull of the visible keypoints.
+
+    Returns (x1, y1, x2, y2, mask) or None. Uses only kp confidence >= 0.30
+    and marks, per scan-row, the pixels between the leftmost and rightmost
+    keypoint on that row.
+    """
+    kps = getattr(subject, "kps", None)
+    if kps is None:
+        return None
+    try:
+        pts = []
+        for i in range(17):
+            x = float(kps[i][0]) - lb[0]
+            y = float(kps[i][1]) - lb[1]
+            conf = float(kps[i][2]) if len(kps[i]) > 2 else 1.0
+            if conf >= 0.30 and math.isfinite(x) and math.isfinite(y):
+                pts.append((int(round(x)), int(round(y))))
+        if len(pts) < 5:
+            return None
+        x_lo = max(0, min(p[0] for p in pts) - pad)
+        y_lo = max(0, min(p[1] for p in pts) - pad)
+        x_hi = min(img_shape[1] - lb[0], max(p[0] for p in pts) + pad)
+        y_hi = min(img_shape[0] - lb[1], max(p[1] for p in pts) + pad)
+        if x_hi <= x_lo or y_hi <= y_lo:
+            return None
+        mask = np.zeros((y_hi - y_lo, x_hi - x_lo), dtype=bool)
+        rows = {}
+        for px, py in pts:
+            rows.setdefault(py - y_lo, []).append(px - x_lo)
+        for r, xs in rows.items():
+            if 0 <= r < mask.shape[0]:
+                lo = max(0, min(xs) - 1)
+                hi = min(mask.shape[1], max(xs) + 2)
+                mask[r, lo:hi] = True
+        if int(mask.sum()) < 12:
+            return None
+        return (x_lo, y_lo, x_hi, y_hi, mask)
+    except Exception:
+        return None
+
+
+def _fast_classical_boxes(img, cx, cy, radius, deadline=None, cfgv=None):
+    """Fast classical pre-scan: returns list of candidate boxes (x1, y1, x2, y2)
+    for 20-160px person-like objects. Lightweight version of the classical
+    pipeline that stops at connected-component bounding boxes."""
+    if deadline is not None and time.perf_counter() > deadline:
+        return []
+    try:
+        a = img.astype(np.float32)
+        if a.ndim == 3 and a.shape[2] > 3:
+            a = a[..., :3]
+        h, w = a.shape[:2]
+        bg = _box_blur(a, BLUR_WIN)
+        diff = np.sqrt(((a - bg) ** 2 * _CH_WEIGHTS).sum(axis=2))
+        if _bool_of(cfgv or {}, "luminance_norm", True):
+            lum = (bg * _CH_WEIGHTS).sum(axis=2)
+            diff = diff * np.clip(NORM_K / (lum + NORM_C), NORM_MIN, NORM_MAX)
+        flat = diff.ravel()
+        if flat.size > 20000:
+            flat = flat[::flat.size // 20000 + 1]
+        energy = float(np.percentile(flat, ADAPTIVE_PERCENTILE))
+        thr = max(38.0, min(38.0, energy * 0.4))
+        ink = diff > thr
+        ink_w = diff > thr * 0.55
+        for m in (ink, ink_w):
+            m[:2, :] = False; m[-2:, :] = False; m[:, :2] = False; m[:, -2:] = False
+        ink = _erode(_dilate(ink, 1), 1)
+        ink_w = _erode(_dilate(ink_w, 1), 1)
+        strong = ink
+        weak = ink_w
+        cs = 4
+        gh, gw = a.shape[0] // cs, a.shape[1] // cs
+        block = lambda m: m[:gh * cs, :gw * cs].reshape(gh, cs, gw, cs).mean(axis=(1, 3))
+        grown = _grow_cells(block(strong) > 0.25, block(weak) > 0.25)
+        try:
+            import cv2
+            n, lbl, stats, _ = cv2.connectedComponentsWithStats(grown.astype(np.uint8), connectivity=8)
+            boxes = []
+            for i in range(1, n):
+                x, y, bw_c, bh_c, _ = stats[i]
+                if bh_c < 4 or bw_c < 2:
+                    continue
+                bx0, by0 = x * cs, y * cs
+                bx1, by1 = (x + bw_c) * cs, (y + bh_c) * cs
+                bw, bh = bx1 - bx0, by1 - by0
+                if not (14 <= bh <= 180):
+                    continue
+                asp = bw / bh if bh > 0 else 0
+                if not (0.3 <= asp <= 0.85):
+                    continue
+                bxc = (bx0 + bx1) * 0.5
+                byc = (by0 + by1) * 0.5
+                if radius and math.hypot(bxc - cx, byc - cy) > radius + 20:
+                    continue
+                boxes.append((bx0, by0, bx1, by1))
+            return boxes[:6]
+        except Exception:
+            return []
+    except Exception:
+        return []
+
 
 HINT_SIZE_LO = 0.30
 HINT_SIZE_HI = 3.40
-
 
 def _hpose_hint_match(img, subject, ox, oy, hint, cfgv):
     if hint is None:
@@ -2667,7 +2301,6 @@ def _hpose_hint_match(img, subject, ox, oy, hint, cfgv):
             return False
     return True
 
-
 def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
                 collect=None, hint=None):
     try:
@@ -2683,16 +2316,27 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     if time.perf_counter() > deadline:
         return None
     ox, oy = (int(origin[0]), int(origin[1])) if origin else (0, 0)
+
+    # Fast classical pre-scan to get candidate boxes for tiled inference.
+    # Only needed when the ROI-first pass might miss: for small radii the
+    # ROI crop (expected_h = radius * 0.6) already covers every pixel that
+    # could contain the target, so tile hints are pure overhead.
+    if radius > 80.0:
+        tile_hints = _fast_classical_boxes(img, cx, cy, radius, deadline, cfgv)
+    else:
+        tile_hints = []
+
     try:
         try:
-            budget_s = min(max(float(cfgv.get("scan_budget_ms", 100)),
+            budget_s = min(max(float(cfgv.get("scan_budget_ms", 350)),
                                60.0), 2000.0) / 1000.0
         except (TypeError, ValueError):
             budget_s = 0.1
         subjects = engine.scan(img, (ox, oy), deadline=deadline,
                                zoom_deadline=deadline + 3.0 * budget_s,
                                aim=(int(cx), int(cy)),
-                               aim_radius=float(radius or 0.0))
+                               aim_radius=float(radius or 0.0),
+                               tile_hints=tile_hints)
     except Exception as exc:
         _log("hpose scan failed: %r" % (exc,))
         return None
@@ -2724,10 +2368,10 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
         return None
     aim = str(cfgv.get("hpose_aim", "center") or "center").lower()
     if aim == "head":
-        kps = getattr(subject, "kps", None)
-        if kps and len(kps) > 0:
-            tx = float(kps[0])
-            ty = float(kps[1])
+        head_kp = getattr(subject, "head_kp", None)
+        if head_kp is not None:
+            tx = float(head_kp[0])
+            ty = float(head_kp[1])
         else:
             tx = subject.center[0]
             ty = subject.box[1] + subject.height * 0.15
@@ -2749,11 +2393,30 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     move = math.hypot(ddx, ddy)
     lb = (subject.box[0] - ox, subject.box[1] - oy,
           subject.box[2] - ox, subject.box[3] - oy)
-    area, contrast, sig = _hpose_box_stats(img, lb)
+    area = float((subject.box[2] - subject.box[0])
+                 * (subject.box[3] - subject.box[1]))
+    contrast = 0.0
+    sig = None
     bw = int(round(subject.width))
     bh = int(round(subject.height))
+    try:
+        area, contrast, sig = engine._get_box_stats(img, lb, subject.track_id, cfgv)
+    except Exception:
+        pass
+    fig_score = 0.0
+    try:
+        sil = _subject_silhouette(subject, lb, img.shape, pad=2)
+        if sil is not None:
+            sx1, sy1, sx2, sy2, smask = sil
+            fig_score = _figure_score(sx2 - sx1, sy2 - sy1,
+                                      float(smask.sum()), smask)
+        elif bw > 0 and bh > 0:
+            tier = _shape_tier(bw, bh, float(bw * bh))
+            fig_score = 0.55 if tier == 2 else (0.32 if tier == 1 else 0.0)
+    except Exception:
+        pass
     target = SnapTarget(ddx, ddy, move, area, contrast, bw, bh, sig,
-                         float(subject.score))
+                         max(float(subject.score), fig_score))
     target.view = subject.view
     target.stance = subject.stance
     target.motion = subject.motion
@@ -2782,12 +2445,14 @@ and only inside the configured search radius.
 """
 
 BLOB_MIN_H = 14.0
-BLOB_MAX_H = 64.0
+BLOB_MAX_H = 180.0
 BLOB_ASPECT_LO = 0.30
 BLOB_ASPECT_HI = 0.85
+BLOB_STICK_LO = 0.15
+BLOB_STICK_HI = 0.30
 BLOB_FILL_MIN = 0.30
+BLOB_STICK_FILL_MIN = 0.20
 BLOB_CONTRAST_MIN = 26.0
-
 
 def _blob_components_cells(cells):
     gh, gw = cells.shape
@@ -2829,8 +2494,9 @@ def _blob_components_cells(cells):
         b[4] += 1
     return [(b[0], b[1], b[2] + 1, b[3] + 1, b[4]) for b in out.values()]
 
-
-def _blob_watch(img, cx, cy, radius):
+def _blob_watch(img, cx, cy, radius, deadline=None):
+    if deadline is not None and time.perf_counter() > deadline:
+        return None
     a = img.astype(np.float32)
     if a.ndim == 3 and a.shape[2] > 3:
         a = a[..., :3]
@@ -2856,24 +2522,46 @@ def _blob_watch(img, cx, cy, radius):
     gh, gw = a.shape[0] // cs, a.shape[1] // cs
     block = lambda m: m[:gh * cs, :gw * cs].reshape(gh, cs, gw, cs).mean(
         axis=(1, 3))
-    grown = _grow_cells(block(strong) > 0.25, block(weak) > 0.25)
+    max_iter = 8 if radius and radius <= 60 else 32
+    grown = _grow_cells(block(strong) > 0.25, block(weak) > 0.25,
+                        max_iter=max_iter)
+    components = None
+    try:
+        import cv2
+        n, lbl, stats, _ = cv2.connectedComponentsWithStats(
+            grown.astype(np.uint8), connectivity=8)
+        components = []
+        for i in range(1, n):
+            x, y, w, h, area = stats[i]
+            components.append((int(x), int(y),
+                               int(x + w), int(y + h), int(area)))
+    except Exception:
+        components = None
+    if components is None:
+        components = _blob_components_cells(grown)
     best = None
     best_key = None
-    for bx0, by0, bx1, by1, ncell in _blob_components_cells(grown):
+    for bx0, by0, bx1, by1, ncell in components:
+        if deadline is not None and time.perf_counter() > deadline:
+            return None
         bw = (bx1 - bx0) * cs / float(zoom)
         bh = (by1 - by0) * cs / float(zoom)
         if not (BLOB_MIN_H <= bh <= BLOB_MAX_H):
             continue
         asp = bw / bh if bh > 0 else 0.0
-        if not (BLOB_ASPECT_LO <= asp <= BLOB_ASPECT_HI):
+        is_normal = BLOB_ASPECT_LO <= asp <= BLOB_ASPECT_HI
+        is_stick = BLOB_STICK_LO <= asp <= BLOB_STICK_HI and bh >= BLOB_MIN_H
+        if not (is_normal or is_stick):
             continue
         fill = ncell / float((bx1 - bx0) * (by1 - by0))
-        if fill < BLOB_FILL_MIN:
+        fill_min = BLOB_FILL_MIN if is_normal else BLOB_STICK_FILL_MIN
+        if fill < fill_min:
             continue
         y0, y1 = by0 * cs, by1 * cs
         x0, x1 = bx0 * cs, bx1 * cs
         m = grown[by0:by1, bx0:bx1]
-        mean_c = float(c[y0:y1, x0:x1][m].mean()) if m.any() else 0.0
+        m_px = np.repeat(np.repeat(m, cs, axis=0), cs, axis=1)
+        mean_c = float(c[y0:y1, x0:x1][m_px].mean()) if m.any() else 0.0
         if mean_c < thr * 0.8:
             continue
         bxc = (x0 + x1) / (2.0 * zoom)
@@ -2882,6 +2570,8 @@ def _blob_watch(img, cx, cy, radius):
         if radius and dist > radius + 10.0:
             continue
         score = mean_c * fill * (1.0 - abs(asp - 0.5) / 0.5)
+        if is_stick:
+            score *= 0.50
         key = (round(dist, 1), -score)
         if best_key is None or key < best_key:
             best_key = key
@@ -2894,7 +2584,6 @@ def _blob_watch(img, cx, cy, radius):
                       math.hypot(bxc - cx, byc - cy), float(area),
                       mean_c, int(round(bw)), int(round(bh)))
 
-
 def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 deadline_ms=None, collect=None, anchor_blind_area=0,
                 motion_ctx=None, focus_bias=0.0, require_tier=0,
@@ -2904,7 +2593,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             deadline_ms = float(cfgv.get("scan_budget_ms", 350))
         except Exception:
             deadline_ms = 350.0
-
 
         deadline_ms = min(max(deadline_ms, 60.0), 2000.0)
     t0 = time.perf_counter()
@@ -2924,6 +2612,30 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         if follow_hint is not None:
             return ScanResult("none", None,
                               (time.perf_counter() - t0) * 1000.0)
+    # Classical fallback is for UI elements (buttons, checkboxes, high-contrast
+    # rectangles), not people. When the caller has explicitly opted into
+    # subject/figure mode, they want the small-person path and the classical
+    # scanner is dead weight on the miss path (~50 ms per frame). Otherwise
+    # keep it — a desktop user with radius=40 for a checkbox still needs it.
+    if _hpose_enabled(cfgv):
+        _subject_mode = (bool(cfgv.get("subject_priority", False))
+                         or bool(cfgv.get("subject_only", False)))
+        if _subject_mode:
+            if bool(cfgv.get("blob_watch", True)) \
+                    and time.perf_counter() < deadline:
+                try:
+                    _bt = _blob_watch(img, cx, cy, radius,
+                                      deadline=deadline)
+                except Exception as exc:
+                    _log("blob watch failed: %r" % (exc,))
+                    _bt = None
+                if _bt is not None:
+                    return ScanResult("target", _bt,
+                                      (time.perf_counter() - t0) * 1000.0)
+            return ScanResult("none", None,
+                              (time.perf_counter() - t0) * 1000.0)
+    if time.perf_counter() > deadline:
+        return ScanResult("none", None, (time.perf_counter() - t0) * 1000.0)
 
     a = img.astype(np.float32)
     h, w = a.shape[:2]
@@ -2932,12 +2644,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     bg = _box_blur(a, BLUR_WIN)
 
-
     diff = np.sqrt(((a - bg) ** 2 * _CH_WEIGHTS).sum(axis=2))
-
-
-
-
 
     if bool(cfgv.get("luminance_norm", True)):
         lum = (bg * _CH_WEIGHTS).sum(axis=2)
@@ -2949,25 +2656,13 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         thr = 38.0
     adapt_scale = 1.0
 
-
-
-
-
-
-
-
-
     if bool(cfgv.get("adaptive_threshold", True)):
-
-
-
 
         flat = diff.ravel()
         if flat.size > 20000:
             flat = flat[::flat.size // 20000 + 1]
         energy = float(np.percentile(flat, ADAPTIVE_PERCENTILE))
         adapted = max(ADAPTIVE_FLOOR, min(thr, energy * ADAPTIVE_K))
-
 
         adapt_scale = min(1.0, adapted / thr) if thr > 0 else 1.0
         thr = adapted
@@ -2984,25 +2679,9 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     ink = _erode(_dilate(ink, 1), 1)
     ink_w = _erode(_dilate(ink_w, 1), 1)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     merge_distance = float(cfgv.get("merge_distance", 0) or 0)
     scale = 1.0
     if merge_distance > 0:
-
 
         if _get_dpi_scale is not None:
             try:
@@ -3010,12 +2689,9 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             except Exception:
                 scale = 1.0
 
-
-
         gap = int(min(3, max(1, round(0.5 * merge_distance * scale))))
         ink = _close_gaps(ink, gap)
         ink_w = _close_gaps(ink_w, gap)
-
 
     ph = (CS - h % CS) % CS
     pw = (CS - w % CS) % CS
@@ -3034,7 +2710,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     solids = _grow_cells(strong, weak)
     solids = _erode(_dilate(solids, 1), 1)
 
-
     full = np.ones((gh, gw), dtype=bool)
     obj_cells = ~_flood_bg(solids, full)
 
@@ -3051,14 +2726,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     except (TypeError, ValueError):
         max_dim = 300
 
-
-
-
-
-
-
-
-
     try:
         user_min_contrast = float(cfgv.get("min_contrast", 48))
     except (TypeError, ValueError):
@@ -3071,19 +2738,10 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             * CONTRAST_METRIC_SCALE
     max_aspect = 10.0
 
-
-
-
-
     frag_floor_split = 64
 
     finals = []
     labels, info = _label_cells(obj_cells)
-
-
-
-
-
 
     def _box_edge_dist(e):
         _cid, _count, _gy0, _gx0, _gy1, _gx1 = e
@@ -3096,20 +2754,10 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     pending = [(labels, info, 0)]
     guard = 0
 
-
-
-
-
-
     split_tries = 0
     SPLIT_TRY_CAP = 8
 
-
-
-
-
     detection_dropped = 0
-
 
     while pending and guard < 10:
         guard += 1
@@ -3127,12 +2775,10 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             if depth < 2 and (bw > 200 or bh > 200 or count * CS * CS > 25000):
                 if split_tries >= SPLIT_TRY_CAP:
 
-
                     finals.append((lab, cid, gy0, gx0, gy1, gx1))
                     continue
                 split_tries += 1
                 cmask = (lab == cid)
-
 
                 sub_obj = cmask & ~_flood_bg(solids, cmask)
                 slab, sinfo = _label_cells(sub_obj)
@@ -3140,8 +2786,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 if sinfo and not (len(sinfo) == 1 and sinfo[0][1] >= count * 0.9):
                     pending.append((slab, sinfo, depth + 1))
                     continue
-
-
 
                 free = cmask & ~solids
                 lf, lfi = _label_cells(free)
@@ -3159,18 +2803,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                     pending.append((lbb, ibi, depth + 1))
                     continue
 
-
-
-
-
-
-
-
-
-
-
-
-
                 if bool(cfgv.get("subject_priority", False)):
                     core = _dilate(strong, 1) & cmask
                     slab2, sinfo2 = _label_cells(core)
@@ -3181,10 +2813,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                         continue
 
             finals.append((lab, cid, gy0, gx0, gy1, gx1))
-
-
-
-
 
     try:
         finals.sort(key=lambda e: math.hypot(
@@ -3209,10 +2837,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         bw, bh = X1 - X0, Y1 - Y0
 
-
-
-
-
         at_edge = _touches_screen_edge(Y0, X0, Y1, X1, w, h, edge_flags)
 
         dim_cap = max_dim * 2 if at_edge else max_dim
@@ -3223,15 +2847,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         if max(bw, bh) > aspect_cap * max(1, min(bw, bh)):
             continue
-
-
-
-
-
-
-
-
-
 
         ddx = max(X0 - cx, 0, cx - (X1 - 1))
         ddy = max(Y0 - cy, 0, cy - (Y1 - 1))
@@ -3251,12 +2866,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         too_small = area < min_area
 
-
-
-
-
-
-
         frag_floor = min(MIN_FRAG_AREA, max(8, min_area * 3 // 4))
         if too_small and area < frag_floor:
             continue
@@ -3264,15 +2873,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         fill = area / float(bw * bh)
 
         if fill < MIN_FILL:
-
-
-
-
-
-
-
-
-
 
             if _touches_screen_edge(Y0, X0, Y1, X1, w, h, edge_flags):
                 cl_px = np.ones((Y1 - Y0, X1 - X0), dtype=bool)
@@ -3283,12 +2883,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             else:
                 continue
 
-
-
-
-
-
-
         sub_d = diff[Y0:Y1, X0:X1]
         d_vals = sub_d[cl_px]
 
@@ -3297,9 +2891,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         d_max = float(d_vals.max())
         core = d_vals >= (d_max * CONTRAST_CORE_FRAC)
-
-
-
 
         if d_vals.size > 4000:
             _dv = d_vals[::d_vals.size // 4000 + 1]
@@ -3323,12 +2914,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         else:
             candidates.append(entry)
 
-
-
-
-
-
-
     if merge_distance > 0 and (fragments or len(candidates) > 1):
         candidates = _merge_nearby(
             candidates, fragments, merge_distance,
@@ -3338,32 +2923,9 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             subject_mode=bool(cfgv.get("subject_priority", False)),
         )
 
-
-
-
-
-
-
-
-
-
-
-
     candidates.sort(key=lambda c: c[4])
 
-
-
-
-
-
-
-
-
-
-
-
     if anchor_blind_area and anchor_blind_area > 0:
-
 
         blind_idx = {i for i, c in enumerate(candidates)
                      if c[2] <= cx < c[2] + c[7]
@@ -3372,19 +2934,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         if blind_idx and len(blind_idx) < len(candidates):
             candidates = [c for i, c in enumerate(candidates)
                           if i not in blind_idx]
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     subj_active = (bool(cfgv.get("subject_priority", False))
                    or bool(cfgv.get("subject_only", False)))
@@ -3476,11 +3025,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             candidates = [c for c, tr in zip(candidates, tiers)
                           if tr == best_tier]
 
-
-
-
-
-
     try:
         _need = int(require_tier or 0)
     except (TypeError, ValueError):
@@ -3507,13 +3051,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 kept.append(c)
         candidates = kept
 
-
-
-
-
-
-
-
     unscored = 0
     follow_skipped = 0
 
@@ -3523,15 +3060,9 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     except (TypeError, ValueError):
         accent_boost = 0.0
 
-
-
-
-
     accent_only = bool(cfgv.get("accent_only", False))
     soft = accent_soft_of(cfgv)
     matcher = accent_matcher_of(cfgv)
-
-
 
     adapt = color_adapt_of(cfgv)
     variants = accent_variants_of(cfgv)
@@ -3555,12 +3086,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             else:
                 unscored += 1
 
-
-
-
-
-
-
             if accent_only and (not scored or strong < ACCENT_MIN_FRACTION):
                 continue
 
@@ -3573,19 +3098,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         candidates = accented
 
-
-
-
-
-
-
-
-
-
-
-
-
-
     excludes = _cached_parse_accents(cfgv.get("exclude_color", "off"))
     if excludes and candidates:
         kept = []
@@ -3594,9 +3106,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             strong = 0.0
             scored = time.perf_counter() <= deadline
             if scored:
-
-
-
 
                 if int(cand[3].sum()) < EXCLUDE_CORE_MIN:
                     core = cand[3]
@@ -3613,27 +3122,11 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             else:
                 unscored += 1
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             if not scored or strong >= ACCENT_MIN_FRACTION:
                 continue
             kept.append(cand)
 
         candidates = kept
-
-
 
     if follow_ctx is not None and candidates:
         f_boost = float(cfgv.get("follow_boost", 1.0) or 0.0)
@@ -3651,12 +3144,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 if sig is not None:
                     if time.perf_counter() <= deadline:
 
-
-
-
-
-
-
                         frac = _accent_fraction(img, cand[3], cand[2],
                                                 cand[1], [sig],
                                                 FOLLOW_COLOR_TOL,
@@ -3668,15 +3155,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                             sim = frac
                     else:
 
-
-
-
                         follow_skipped += 1
-
-
-
-
-
 
                 bx0, by0 = cand[2], cand[1]
                 bx1, by1 = bx0 + cand[7], by0 + cand[8]
@@ -3689,13 +3168,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 followed.append(cand)
 
             candidates = followed
-
-
-
-
-
-
-
 
     if motion_ctx is not None and candidates:
         try:
@@ -3725,16 +3197,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     def _report_drops():
 
-
-
-
-
-
-
-
-
-
-
         if not (unscored or detection_dropped or follow_skipped):
             return
         tail = ""
@@ -3759,11 +3221,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         _report_drops()
         return ScanResult("none", None, ms)
 
-
-
-
-
-
     region_area = float(h * w)
     boosted = []
 
@@ -3778,9 +3235,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     if collect is not None:
 
-
-
-
         for _s, _Y0, _X0, _cl, _d, _a, _ct, _bw, _bh in candidates:
             _ys, _xs = np.nonzero(_cl)
             if _xs.size == 0:
@@ -3793,13 +3247,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             else:
                 _ddx, _ddy = _pt[0] - cx, _pt[1] - cy
             collect.append((_s, _ddx, _ddy, _d, _a, _ct, _bw, _bh))
-
-
-
-
-
-
-
 
     for _s, Y0, X0, cl_px, dist, area, contrast, bw, bh in candidates:
         if time.perf_counter() > deadline:
@@ -3820,9 +3267,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
         if pt is None:
 
-
-
-
             tcx, tcy = X0 + bw / 2.0, Y0 + bh / 2.0
         else:
             tcx, tcy = pt
@@ -3831,10 +3275,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         except Exception:
             _tier_now = 0
         if focus_bias > 0.0 and _tier_now == 2:
-
-
-
-
 
             tcy -= max(0.0, tcy - Y0) * min(1.0, focus_bias)
         ddx = tcx - cx
@@ -3845,9 +3285,6 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             continue
 
         ms = (time.perf_counter() - t0) * 1000.0
-
-
-
 
         sig = None
         try:
@@ -3875,9 +3312,10 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     ms = (time.perf_counter() - t0) * 1000.0
     _report_drops()
-    if _hpose_enabled(cfgv) and bool(cfgv.get("blob_watch", True)):
+    if bool(cfgv.get("blob_watch", True)) \
+            and time.perf_counter() < deadline:
         try:
-            _bt = _blob_watch(img, cx, cy, radius)
+            _bt = _blob_watch(img, cx, cy, radius, deadline=deadline)
         except Exception as exc:
             _log("blob watch failed: %r" % (exc,))
             _bt = None
@@ -3885,9 +3323,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             return ScanResult("target", _bt,
                               (time.perf_counter() - t0) * 1000.0)
 
-
     return ScanResult("none", None, ms)
-
 
 def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
     vis = img.copy()
@@ -3931,5 +3367,3 @@ def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
         vis[max(0, int(cy)-ch):int(cy)+ch, max(0, int(cx)-1):int(cx)+2] = [255, 0, 255]
 
     return vis
-
-

@@ -28,18 +28,15 @@ FACE_OFFSETS = {
     "right_ear": (0.078, 0.015, 0.010),
 }
 
-
 def _rot_x(v: np.ndarray, ang: float) -> np.ndarray:
     c = math.cos(ang)
     s = math.sin(ang)
     return np.array([v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c])
 
-
 def _rot_z(v: np.ndarray, ang: float) -> np.ndarray:
     c = math.cos(ang)
     s = math.sin(ang)
     return np.array([v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]])
-
 
 def random_person(rng: np.random.Generator, scale: float = 1.0) -> dict:
     base = DEFAULT_PROPORTIONS
@@ -55,7 +52,6 @@ def random_person(rng: np.random.Generator, scale: float = 1.0) -> dict:
     p["shin"] = base["shin"] * scale * rng.uniform(0.9, 1.12)
     p["foot"] = base["foot"] * scale * rng.uniform(0.9, 1.1)
     return p
-
 
 def build_skeleton(p: dict, stance: str = "stand", amount: float = 0.0,
                     rng: np.random.Generator = None) -> np.ndarray:
@@ -123,7 +119,6 @@ def build_skeleton(p: dict, stance: str = "stand", amount: float = 0.0,
     neck_local = np.array([0.0, p["spine_len"], 0.0])
     neck = pelvis + _rot_x(neck_local, torso_pitch)
     head = neck + _rot_x(np.array([0.0, p["neck_len"], 0.0]), torso_pitch)
-    head_fwd = _rot_x(np.array([0.0, 0.0, 1.0]), torso_pitch)
 
     def place_face(idx, off):
         ox, oy, oz = off
@@ -177,7 +172,6 @@ def build_skeleton(p: dict, stance: str = "stand", amount: float = 0.0,
         j[:, 1] -= 0.02
     return j
 
-
 def body_to_camera(points: np.ndarray, yaw_deg: float) -> np.ndarray:
     t = math.radians(float(yaw_deg))
     c = math.cos(t)
@@ -190,7 +184,6 @@ def body_to_camera(points: np.ndarray, yaw_deg: float) -> np.ndarray:
     out[:, 1] = -py
     out[:, 2] = -px * s - pz * c
     return out
-
 
 def body_to_camera_batch(points: np.ndarray,
                          yaws: np.ndarray) -> np.ndarray:
@@ -207,7 +200,6 @@ def body_to_camera_batch(points: np.ndarray,
     out[:, :, 2] = -px * s - pz * c
     return out
 
-
 def project(points_cam: np.ndarray, focal: float, depth: float,
             cx: float, cy: float) -> np.ndarray:
     z = points_cam[:, 2] + depth
@@ -216,10 +208,8 @@ def project(points_cam: np.ndarray, focal: float, depth: float,
     v = cy + focal * points_cam[:, 1] / z
     return np.stack([u, v], axis=1)
 
-
 def _clamp01(v: float) -> float:
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
-
 
 def face_visibility(yaw_deg: float) -> dict:
     t = math.radians(float(yaw_deg))
@@ -248,7 +238,6 @@ def face_visibility(yaw_deg: float) -> dict:
         "right_ear": _clamp01(ear_r),
     }
 
-
 def _body_extremes(joints: np.ndarray) -> np.ndarray:
     neck = (joints[5] + joints[6]) * 0.5
     head_top = neck + np.array([0.0, 0.175, -0.005])
@@ -257,7 +246,6 @@ def _body_extremes(joints: np.ndarray) -> np.ndarray:
     hand_r = joints[10] + np.array([0.02, -0.05, 0.0])
     hand_l = joints[9] + np.array([-0.02, -0.05, 0.0])
     return np.stack([head_top, toe_r, toe_l, hand_r, hand_l])
-
 
 def make_sample(rng: np.random.Generator, stance: str = "stand",
                 amount: float = 0.0, image_size=(640, 640)):
@@ -311,7 +299,6 @@ def make_sample(rng: np.random.Generator, stance: str = "stand",
             "visible": conf, "props": p, "focal": focal, "depth": depth,
             "body_height": body_h}
 
-
 def yaw_to_class(yaw_deg: float) -> str:
     y = float(yaw_deg) % 360.0
     if y < 22.5 or y >= 337.5:
@@ -329,7 +316,6 @@ def yaw_to_class(yaw_deg: float) -> str:
     if y < 292.5:
         return "side_left"
     return "front_left_45"
-
 
 VIEW_CLASSES = (
     "front",
@@ -352,4 +338,3 @@ VIEW_CLASS_YAW = {
     "side_left": 270.0,
     "front_left_45": 315.0,
 }
-

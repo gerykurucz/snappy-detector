@@ -15,7 +15,6 @@ _RUNTIME_FILES = frozenset((
 _RUNTIME_DIRS = frozenset(("logs",))
 _RUNTIME_SUFFIXES = (".log", ".tmp", ".snapshot.json")
 
-
 def _sha256_file(path, chunk=1 << 20):
     h = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -25,7 +24,6 @@ def _sha256_file(path, chunk=1 << 20):
                 break
             h.update(block)
     return h.hexdigest()
-
 
 def read_secret_blob(project_dir):
     path = os.path.join(project_dir, BLOB_MODULE)
@@ -47,7 +45,6 @@ def read_secret_blob(project_dir):
         raise SystemExit("could not find _KEY in %s" % path)
     return key, blob
 
-
 def decode_blob(key, blob):
     import base64
     ks = hashlib.sha256(key).digest()
@@ -63,7 +60,6 @@ def decode_blob(key, blob):
             out[name] = "<undecodable: %r>" % (exc,)
     return out
 
-
 def read_env_map(project_dir):
     path = os.path.join(project_dir, BLOB_MODULE)
     with open(path, "r", encoding="utf-8") as handle:
@@ -76,7 +72,6 @@ def read_env_map(project_dir):
             return ast.literal_eval(node.value)
     raise SystemExit("could not find _ENV in %s" % path)
 
-
 def encode_value(key, value):
     import base64
     ks = hashlib.sha256(key).digest()
@@ -85,13 +80,11 @@ def encode_value(key, value):
         bytes(c ^ ks[i % len(ks)] for i, c in enumerate(data))
     ).decode("ascii")
 
-
 def _blocker_count(values):
     n = len(_blockers(values))
     if not values.get("ROW_PEPPER"):
         n += 1
     return n
-
 
 def encode_blob(project_dir, clear=(), write=False):
     path = os.path.join(project_dir, BLOB_MODULE)
@@ -184,7 +177,6 @@ def encode_blob(project_dir, clear=(), write=False):
         print("  No release blockers remain in the blob.")
     return 0
 
-
 def _needles(value, raw):
     found = []
     if value:
@@ -194,14 +186,12 @@ def _needles(value, raw):
         found.append(("base64", raw.encode("utf-8")))
     return found
 
-
 def _mask(value):
     if len(value) <= 4:
         return "*** (%d chars)" % len(value)
     if len(value) <= 10:
         return "%s*** (%d chars)" % (value[:2], len(value))
     return "%s*** (%d chars)" % (value[:6], len(value))
-
 
 def _blockers(decoded):
     out = []
@@ -222,7 +212,6 @@ def _blockers(decoded):
             out.append("%s is a Stripe TEST link - checkout completes but no "
                        "money moves and no subscription activates." % name)
     return out
-
 
 def scan_binary(target, project_dir, verbose=False, reveal=False):
     key, blob = read_secret_blob(project_dir)
@@ -276,7 +265,6 @@ def scan_binary(target, project_dir, verbose=False, reveal=False):
     print("")
     return len(problems)
 
-
 def write_manifest(dist_dir):
     entries = []
     for root, dirs, files in os.walk(dist_dir):
@@ -295,7 +283,6 @@ def write_manifest(dist_dir):
             handle.write("%s  %d  %s\n" % (digest, size, rel))
     print("Wrote %s (%d files)" % (out, len(entries)))
     return out
-
 
 def verify_manifest(dist_dir):
     path = os.path.join(dist_dir, MANIFEST_NAME)
@@ -340,7 +327,6 @@ def verify_manifest(dist_dir):
     print("Verified %d file(s), %d problem(s)." % (checked, bad))
     return 1 if bad else 0
 
-
 def pin_dll(dll_path):
     digest = _sha256_file(dll_path)
     out = dll_path + ".sha256"
@@ -348,7 +334,6 @@ def pin_dll(dll_path):
         handle.write("%s  %s\n" % (digest, os.path.basename(dll_path)))
     print("Pinned %s -> %s" % (os.path.basename(dll_path), digest))
     return out
-
 
 def sign(dist_dir, exe_name):
     subject = os.environ.get("SNAPPYAI_CERT_SUBJECT", "").strip()
@@ -388,7 +373,6 @@ def sign(dist_dir, exe_name):
         print("signtool exited %d - the build is UNSIGNED." % rc)
     return rc
 
-
 def hpose_bundle_args(project_dir):
     models = os.path.join(project_dir, "models")
     args = [
@@ -397,7 +381,6 @@ def hpose_bundle_args(project_dir):
         "--hidden-import", "onnxruntime",
     ]
     return args
-
 
 def check_hpose(project_dir):
     missing = []
@@ -414,7 +397,6 @@ def check_hpose(project_dir):
         if not os.path.isfile(path):
             missing.append(rel)
     return missing
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -493,7 +475,6 @@ def main(argv=None):
         print("  heads:   models/hpose_bundle.npz")
         return 0
     return 2
-
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -234,7 +234,6 @@ def print_help(app):
     print("  - Settings are stored in config.json and optional config.ini.")
     print("-" * 70)
 
-
 def _retry_prompt():
     try:
         ans = input("   Retry? [Y/n] ").strip().lower()
@@ -242,7 +241,6 @@ def _retry_prompt():
         print("")
         return False
     return ans not in ("n", "no", "q", "quit")
-
 
 def _console_login(cfg):
     while True:
@@ -262,7 +260,6 @@ def _console_login(cfg):
         if not _retry_prompt():
             return None
         time.sleep(1.0)
-
 
 def _console_subscribe_loop(cfg, identity):
     while True:
@@ -315,7 +312,6 @@ def _console_subscribe_loop(cfg, identity):
             return None
         online.nudge_publisher(cfg)
 
-
 def console_gate(cfg):
     print("")
     print("   %s - online sign-in" % APP_NAME)
@@ -346,7 +342,6 @@ def console_gate(cfg):
             return None
         return identity
 
-
 def windows_main(cfg, identity=None):
     app, hook_thread = start_app(cfg, identity)
     if app is None:
@@ -365,8 +360,8 @@ def windows_main(cfg, identity=None):
         try:
             for line in sys.stdin:
                 cmds.put(line)
-        except (OSError, ValueError):
-            pass
+        except Exception as exc:
+            log("console reader error: %r" % (exc,))
         cmds.put(None)
 
     threading.Thread(target=reader, daemon=True).start()
@@ -392,12 +387,14 @@ def windows_main(cfg, identity=None):
                 rows, gen = online.fetch_entitlements(cfg)
             except online.OnlineError:
                 continue
-            except Exception:
+            except Exception as exc:
+                log("console: fetch_entitlements error: %r" % (exc,))
                 continue
             try:
                 key = idh if idh in rows else legacy
                 shared = online.row_shared(rows, key, gen)
-            except Exception:
+            except Exception as exc:
+                log("console: row_shared error: %r" % (exc,))
                 continue
             if shared and app.running:
                 app.toggle_running()
@@ -420,6 +417,9 @@ def windows_main(cfg, identity=None):
                 line = cmds.get(timeout=0.25)
             except queue.Empty:
                 continue
+            except KeyboardInterrupt:
+                app.request_quit()
+                break
 
             if line is None:
                 break
@@ -440,10 +440,6 @@ def windows_main(cfg, identity=None):
                 print_status(app)
 
             elif line in ("p", "capture"):
-
-
-
-
 
                 try:
                     print(app._capture.capture_report())
@@ -550,8 +546,3 @@ def windows_main(cfg, identity=None):
     )
 
     return 0
-
-
-
-
-

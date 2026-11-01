@@ -44,7 +44,6 @@ __all__ = [
     "manual_instructions",
 ]
 
-
 class EventType(str, Enum):
     LOG = "log"
     PROGRESS = "progress"
@@ -61,7 +60,6 @@ class EventType(str, Enum):
     BUSY = "busy"
     IDLE = "idle"
 
-
 @dataclass(slots=True)
 class Event:
     kind: EventType
@@ -69,14 +67,11 @@ class Event:
     data: Any = None
     progress: float | None = None
 
-
 class TaskState(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
 
-
 CHAIN_BUDGET_SECONDS = 20.0
-
 
 @dataclass
 class ScanResult:
@@ -92,16 +87,13 @@ class ScanResult:
     out_dir: Path | None = None
     files: list[str] = field(default_factory=list)
 
-
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
-
 
 CONSENT_TEXT = (
     "Your PC informations remain private - none of your data will be sent anywhere. "
     "Do you want to continue?"
 )
-
 
 def issues_message(
     n_total: int, n_auto: int, n_manual: int, brand: str = "latency"
@@ -113,7 +105,6 @@ def issues_message(
         f"for the rest. Do you want to continue?"
     )
 
-
 def apply_confirm_text(brand: str = "latency") -> str:
     return (
         f"{brand} will now run the generated apply script SILENTLY with "
@@ -121,13 +112,11 @@ def apply_confirm_text(brand: str = "latency") -> str:
         f"recorded for undo. Do you want to continue?"
     )
 
-
 def undo_confirm_text(brand: str = "latency") -> str:
     return (
         f"{brand} will now run the undo script SILENTLY to restore the values "
         f"recorded before the changes were applied. Do you want to continue?"
     )
-
 
 def run_confirm_text(path: str, brand: str = "latency") -> str:
     return (
@@ -135,7 +124,6 @@ def run_confirm_text(path: str, brand: str = "latency") -> str:
         f"no terminal window opens. Irreversible steps still state their safeguard "
         f"in the log. Do you want to continue?\n\n{path}"
     )
-
 
 def chain_confirm_text(count: int, brand: str = "latency") -> str:
     return (
@@ -148,7 +136,6 @@ def chain_confirm_text(count: int, brand: str = "latency") -> str:
         f"Do you want to continue?"
     )
 
-
 @dataclass
 class PlainFinding:
     tweak_id: str
@@ -159,7 +146,6 @@ class PlainFinding:
     severity: str
     component: str
     expected: str
-
 
 _HEADLINES = {
     "net.wifi.prefer_wired": "You are gaming over Wi-Fi",
@@ -184,10 +170,8 @@ _HEADLINES = {
     "cpu.cpu_sets.delegate": "Your game jumps between CPU cache domains",
 }
 
-
 def _headline(tweak_id: str, title: str) -> str:
     return _HEADLINES.get(tweak_id, title)
-
 
 def classify_scan(scan: ScanResult, brand: str = "latency") -> dict[str, list[PlainFinding]]:
     auto: list[PlainFinding] = []
@@ -238,7 +222,6 @@ def classify_scan(scan: ScanResult, brand: str = "latency") -> dict[str, list[Pl
             )
     return {"auto": auto, "manual": manual, "fine": fine, "unsure": unsure}
 
-
 def manual_instructions(scan: ScanResult) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     if not scan.out_dir:
@@ -263,7 +246,6 @@ def manual_instructions(scan: ScanResult) -> list[dict[str, str]]:
                     }
                 )
     return out
-
 
 _MEMORY_CLEAN_SCRIPT = r"""
 $sig = @'
@@ -326,7 +308,6 @@ $after = Read-MemStats
 } | ConvertTo-Json -Depth 4 -Compress
 """
 
-
 class GuiController:
     def __init__(
         self, *, backend_name: str = "auto", out_root: str | Path | None = None,
@@ -343,6 +324,8 @@ class GuiController:
         self.last_scan: ScanResult | None = None
         self.last_script: dict[str, Any] | None = None
         self.state: TaskState = TaskState.IDLE
+        self.current_op: str = ""
+        self._state_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._monitor_stop: threading.Event | None = None
@@ -374,14 +357,17 @@ class GuiController:
         self._emit(EventType.LOG, message)
 
     def _run(self, name: str, fn: Callable[[], None]) -> bool:
-        if self.state is TaskState.RUNNING:
-            self._emit(
-                EventType.ERROR,
-                "another operation is still running; wait for it to finish",
-            )
-            return False
-        self._stop.clear()
-        self.state = TaskState.RUNNING
+        with self._state_lock:
+            if self.state is TaskState.RUNNING:
+                self._emit(
+                    EventType.ERROR,
+                    f"another operation is {self.current_op or 'still'} running; "
+                    "wait for it to finish",
+                )
+                return False
+            self._stop.clear()
+            self.state = TaskState.RUNNING
+            self.current_op = name
         self._emit(EventType.BUSY, name)
 
         def wrapper() -> None:
@@ -394,7 +380,9 @@ class GuiController:
                     data=traceback.format_exc(limit=12),
                 )
             finally:
-                self.state = TaskState.IDLE
+                with self._state_lock:
+                    self.state = TaskState.IDLE
+                    self.current_op = ""
                 self._emit(EventType.IDLE, name)
 
         t = threading.Thread(target=wrapper, name=f"latency-{name}", daemon=True)
@@ -1142,7 +1130,6 @@ class GuiController:
             data=dict(self.last_script),
             progress=1.0,
         )
-
 
 def _reconstruct_from_percentiles(d: dict[str, Any]) -> list[float]:
     p50, p95, p99 = d.get("p50"), d.get("p95"), d.get("p99")

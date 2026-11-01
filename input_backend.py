@@ -2,6 +2,8 @@
 import ctypes
 import threading
 import time
+from contextlib import contextmanager
+from weakref import WeakSet
 
 import input_utils as gamepad
 from system_core import IS_WINDOWS, log
@@ -9,43 +11,81 @@ from system_core import IS_WINDOWS, log
 class _Timeout(Exception):
     pass
 
+# Thread pool for timeout calls to avoid thread leaks
+_TIMEOUT_EXECUTOR = None
+_TIMEOUT_EXECUTOR_LOCK = threading.Lock()
+
+def _get_executor():
+    global _TIMEOUT_EXECUTOR
+    with _TIMEOUT_EXECUTOR_LOCK:
+        if _TIMEOUT_EXECUTOR is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _TIMEOUT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="timeout-")
+        return _TIMEOUT_EXECUTOR
 
 def _call_with_timeout(fn, timeout, *args):
-    box = {}
-
-    def run():
-        try:
-            box["result"] = fn(*args)
-        except Exception as exc:
-            box["error"] = exc
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
+    """Call fn(*args) with timeout, using a thread pool to avoid leaks."""
+    executor = _get_executor()
+    future = executor.submit(fn, *args)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        # Can't cancel running thread in Python, but future will be garbage collected
         raise _Timeout("did not return within %.0f s" % timeout)
-    if "error" in box:
-        raise box["error"]
-    return box.get("result")
 
+_ACCEL_SAVE = None
+_ACCEL_LOCK = threading.Lock()
 
 def _set_mouse_accel(enabled):
+    global _ACCEL_SAVE
+    with _ACCEL_LOCK:
+        try:
+            import ctypes as _c
+            prev = (_c.c_int * 3)()
+            if not _c.windll.user32.SystemParametersInfoA(0x3, 0, prev, 0):
+                return None
+            if enabled:
+                if _ACCEL_SAVE is not None:
+                    prev[0] = _ACCEL_SAVE[0]
+                    prev[1] = _ACCEL_SAVE[1]
+                    prev[2] = _ACCEL_SAVE[2]
+                    _ACCEL_SAVE = None
+                else:
+                    return bool(prev[0])
+            else:
+                _ACCEL_SAVE = (prev[0], prev[1], prev[2])
+                prev[0] = 0
+                prev[1] = 0
+                prev[2] = 0
+            if not _c.windll.user32.SystemParametersInfoA(0x4, 0, prev, 0x2):
+                return None
+            return True
+        except Exception:
+            return None
+
+
+# Nesting counter for per-thread mouse accel disable
+_accel_nesting = threading.local()
+
+@contextmanager
+def _disable_mouse_accel():
+    """Context manager to disable mouse acceleration for the duration of a move.
+    Supports nested calls - only re-enables when outermost exits.
+    """
+    if not hasattr(_accel_nesting, 'count'):
+        _accel_nesting.count = 0
+    if _accel_nesting.count == 0:
+        _set_mouse_accel(False)
+    _accel_nesting.count += 1
     try:
-        import ctypes as _c
-        prev = (_c.c_int * 3)()
-        if not _c.windll.user32.SystemParametersInfoA(0x3, 0, prev, 0):
-            return None
-        was = bool(prev[0])
-        prev[0] = int(bool(enabled))
-        if not _c.windll.user32.SystemParametersInfoA(0x4, 0, prev, 0x2):
-            return None
-        return was
-    except Exception:
-        return None
+        yield
+    finally:
+        _accel_nesting.count -= 1
+        if _accel_nesting.count == 0:
+            _set_mouse_accel(True)
 
 
-_ROLE_NOTED = set()
-
+_ROLE_NOTED = WeakSet()
 
 def note_mouse_role(backend, index):
     key = (backend, int(index))
@@ -54,7 +94,6 @@ def note_mouse_role(backend, index):
     _ROLE_NOTED.add(key)
     log("%s: mouse%d cannot be sent through this backend; that role's clicks "
         "go through the standard Windows method." % (backend, int(index) + 1))
-
 
 class Win32Backend(object):
 
@@ -92,12 +131,9 @@ class Win32Backend(object):
     def note_failure(self, where):
         pass
 
-
 class InterceptionBackend(object):
 
     name = "interception"
-
-
 
     _IOCTL_WRITE = 0x222080
     _IOCTL_GET_HWID = 0x222200
@@ -111,6 +147,8 @@ class InterceptionBackend(object):
     _MOUSE_LEFT_UP = 0x002
     _MOUSE_FIRST = 10
     _MOUSE_SLOTS = 20
+    # Matches interception-python's MouseStroke format: HHHHIiiI
+    # (unit_id:H, flags:H, button_flags:H, button_data:H, _raw_buttons:I, x:i, y:i, information:I)
     _STROKE_FMT = "<HHHHIiiI"
     _STROKE_LEN = 24
 
@@ -134,6 +172,11 @@ class InterceptionBackend(object):
         try:
             import ctypes as _c
             self._k32 = _c.windll.kernel32
+
+            self._k32.CreateFileA.restype = _c.c_void_p
+            self._k32.CreateFileA.argtypes = [
+                _c.c_char_p, _c.c_uint32, _c.c_uint32,
+                _c.c_void_p, _c.c_uint32, _c.c_uint32, _c.c_void_p]
         except Exception as exc:
             self._reason = "kernel32 unavailable (%r)" % (exc,)
             self._degraded = True
@@ -166,14 +209,21 @@ class InterceptionBackend(object):
             return
         self._dev = dev
         self._handle = self._handles[dev][0]
+        # Disable mouse acceleration globally for the session (matching original
+        # snappy-detector behavior and ensuring consistent relative movement
+        # scaling for aim assist). Restored on close.
         if _set_mouse_accel(False) is True:
             self._prev_accel = True
             self._accel_disabled = True
             log("Input: Interception turned 'Enhance pointer precision' off "
                 "for this session (Windows ballistics scale synthetic flicks "
                 "unpredictably); it is restored when the app quits.")
+        else:
+            self._accel_disabled = False
+            self._prev_accel = None
 
     def _open_devices(self):
+        import ctypes as _c
         self._handles = [None] * self._MOUSE_SLOTS
         for num in range(self._MOUSE_SLOTS):
             try:
@@ -183,7 +233,7 @@ class InterceptionBackend(object):
                     self._OPEN_EXISTING, 0, None)
             except Exception:
                 continue
-            if h is None or h == -1:
+            if h is None or h == _c.c_void_p(-1).value:
                 continue
             try:
                 ev = self._k32.CreateEventA(None, 1, 0, None)
@@ -261,29 +311,36 @@ class InterceptionBackend(object):
         self._handle = None
 
     def close(self):
+        if not self._accel_disabled and not self._handles:
+            return  # Already closed, idempotent
         self._close_all()
-        if self._accel_disabled and self._prev_accel is not None:
-            _set_mouse_accel(self._prev_accel)
-        self._accel_disabled = False
+        if self._accel_disabled:
+            _set_mouse_accel(True)
         self._prev_accel = None
+
+    _avail_cache_lock = threading.Lock()
+    _avail_cache = None
+    _avail_cache_at = 0.0
 
     @classmethod
     def available(cls):
         if not IS_WINDOWS:
             return False
         _now = time.monotonic()
-        cached = getattr(cls, "_avail_cache", None)
-        cached_at = getattr(cls, "_avail_cache_at", 0.0)
-        if cached is not None and (_now - cached_at) < 30.0:
-            return cached
+        with cls._avail_cache_lock:
+            cached = cls._avail_cache
+            cached_at = cls._avail_cache_at
+            if cached is not None and (_now - cached_at) < 30.0:
+                return cached
         try:
             ok = bool(_call_with_timeout(cls._probe_slots, 8.0))
         except _Timeout:
             ok = False
         except Exception:
             ok = False
-        cls._avail_cache = ok
-        cls._avail_cache_at = time.monotonic()
+        with cls._avail_cache_lock:
+            cls._avail_cache = ok
+            cls._avail_cache_at = time.monotonic()
         return ok
 
     @staticmethod
@@ -291,6 +348,10 @@ class InterceptionBackend(object):
         import ctypes as _c
         try:
             k32 = _c.windll.kernel32
+            k32.CreateFileA.restype = _c.c_void_p
+            k32.CreateFileA.argtypes = [
+                _c.c_char_p, _c.c_uint32, _c.c_uint32,
+                _c.c_void_p, _c.c_uint32, _c.c_uint32, _c.c_void_p]
         except Exception:
             return False
         for num in range(10, 20):
@@ -300,7 +361,7 @@ class InterceptionBackend(object):
                     0x80000000, 0, None, 3, 0, None)
             except Exception:
                 continue
-            if h is not None and h != -1:
+            if h is not None and h != _c.c_void_p(-1).value:
                 try:
                     k32.CloseHandle(h)
                 except Exception:
@@ -311,6 +372,8 @@ class InterceptionBackend(object):
     @classmethod
     def _pack(cls, flags, btn, data, x, y):
         import struct as _struct
+        # Match interception-python MouseStroke layout:
+        # (unit_id:H, flags:H, button_flags:H, button_data:H, _raw_buttons:I, x:i, y:i, information:I)
         return _struct.pack(cls._STROKE_FMT, 0, flags, btn, data, 0,
                             int(x), int(y), 0)
 
@@ -318,6 +381,7 @@ class InterceptionBackend(object):
         return self._pack(self._MOUSE_MOVE_RELATIVE, 0, 0, dx, dy)
 
     def _button_stroke(self, down):
+        # Button strokes must use MOUSE_MOVE_ABSOLUTE flag (0x001) per interception spec
         return self._pack(self._MOUSE_MOVE_ABSOLUTE,
                           self._MOUSE_LEFT_DOWN if down
                           else self._MOUSE_LEFT_UP,
@@ -337,7 +401,6 @@ class InterceptionBackend(object):
             return -1
         return done[0] // self._STROKE_LEN
 
-
     def ok_for_button(self):
         return (not self._degraded) and self._dev is not None
 
@@ -346,9 +409,6 @@ class InterceptionBackend(object):
             self._degraded = True
             log("Input: Interception %s failed; falling back to Windows "
                 "injection for the rest of this session." % (where,))
-
-
-
 
     _STEP = 128
     _MAX_STROKE_TRAVEL = 400
@@ -359,7 +419,6 @@ class InterceptionBackend(object):
         try:
             cx, cy = win32rt.get_cursor_pos()
         except Exception:
-            win32rt.user32.SetCursorPos(tx, ty)
             win32rt.user32.SetCursorPos(tx, ty)
             return
         if (cx, cy) == (tx, ty):
@@ -372,10 +431,6 @@ class InterceptionBackend(object):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
             dy = max(-self._STEP, min(self._STEP, ty - cy))
 
-
-
-
-
             sh = self._shift
             if sh > 0 and dx < 0:
                 take = min(sh, -dx)
@@ -384,7 +439,8 @@ class InterceptionBackend(object):
                 take = min(-sh, dx)
                 dx -= take; self._shift += take
             s = self._move_stroke(dx, dy)
-            self._send(s, "move")
+            with _disable_mouse_accel():
+                self._send(s, "move")
             if self._degraded:
                 win32rt.user32.SetCursorPos(tx, ty)
                 return
@@ -398,7 +454,6 @@ class InterceptionBackend(object):
                     pass
                 return
 
-
             if dx:
                 real_dx = nx - cx
                 if (real_dx > 0) == (dx > 0) and abs(real_dx) > abs(dx):
@@ -407,7 +462,6 @@ class InterceptionBackend(object):
             if (cx, cy) == (tx, ty):
                 break
         else:
-
 
             try:
                 if win32rt.get_cursor_pos() != (tx, ty):
@@ -419,14 +473,8 @@ class InterceptionBackend(object):
         dx, dy = int(round(dx)), int(round(dy))
         if not dx and not dy:
             return True
-        return self._send(self._move_stroke(dx, dy), "nudge")
-
-    def __del__(self):
-        if self._accel_disabled and self._prev_accel is not None:
-            try:
-                _set_mouse_accel(self._prev_accel)
-            except Exception:
-                pass
+        with _disable_mouse_accel():
+            return self._send(self._move_stroke(dx, dy), "nudge")
 
     def _expect_now(self, kind):
         try:
@@ -477,7 +525,6 @@ class InterceptionBackend(object):
         time.sleep(random.uniform(0.015, 0.035))
         return ok
 
-
     def _send_count(self, payload, count, what):
         with self._lock:
             if self._degraded or self._handle is None:
@@ -495,7 +542,6 @@ class InterceptionBackend(object):
                 self.note_failure(what)
                 return False
             return True
-
 
 class _ExpectedLedger(object):
 
@@ -530,7 +576,6 @@ class _ExpectedLedger(object):
                 return True
             return False
 
-
 INPUT_BACKEND_CHOICES = ("win32", "driver")
 
 _BACKEND_ALIASES = {
@@ -544,7 +589,6 @@ PAD_EMU_DEFAULT = gamepad.PAD_EMU_DEFAULT
 PAD_EMU_AXIS_STEP = 14.0
 
 _MOUSE_WORDS = {"mouse1": 0, "mouse2": 1, "mouse3": 2, "mouse4": 3, "mouse5": 4}
-
 
 def parse_emulation(spec):
     import input_utils as hotkeys
@@ -587,7 +631,6 @@ def parse_emulation(spec):
         out[index] = ("key", parsed[0] & 0x000F, parsed[1])
     return out
 
-
 class _XUSB_REPORT(ctypes.Structure):
 
     _fields_ = [("wButtons", ctypes.c_ushort),
@@ -598,13 +641,11 @@ class _XUSB_REPORT(ctypes.Structure):
                 ("sThumbRX", ctypes.c_short),
                 ("sThumbRY", ctypes.c_short)]
 
-
 _VIGEM_DLL_NAMES = ("ViGEmClient.dll", "ViGEmClient_x64.dll", "vigemclient.dll")
 
 _vigem_dll = None
 _vigem_tried = False
 _vigem_lock = threading.Lock()
-
 
 def _load_vigem():
     global _vigem_dll, _vigem_tried
@@ -632,7 +673,7 @@ def _load_vigem():
                 dll.vigem_connect.restype = ctypes.c_ulong
                 dll.vigem_connect.argtypes = [ctypes.c_void_p]
                 dll.vigem_target_x360_alloc.restype = ctypes.c_void_p
-                dll.vigem_target_x360_alloc.argtypes = [ctypes.c_void_p]
+                dll.vigem_target_x360_alloc.argtypes = []
                 dll.vigem_target_add.restype = ctypes.c_ulong
                 dll.vigem_target_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
                 dll.vigem_target_x360_update.restype = ctypes.c_ulong
@@ -643,7 +684,6 @@ def _load_vigem():
             _vigem_dll = dll
             return _vigem_dll
         return None
-
 
 class ViGemPadBackend(object):
 
@@ -675,7 +715,7 @@ class ViGemPadBackend(object):
             if error != self.VIGEM_ERROR_NONE:
                 raise RuntimeError("vigem_connect failed (0x%08X) - is the "
                                    "ViGEmBus driver installed?" % (error,))
-            self._target = dll.vigem_target_x360_alloc(self._client)
+            self._target = dll.vigem_target_x360_alloc()
             if not self._target:
                 raise RuntimeError("vigem_target_x360_alloc returned NULL")
             error = dll.vigem_target_add(self._client, self._target)
@@ -808,7 +848,6 @@ class ViGemPadBackend(object):
         except Exception:
             pass
 
-
 class EmulatedPadBackend(object):
 
     name = "emulated"
@@ -925,7 +964,6 @@ class EmulatedPadBackend(object):
     def close(self):
         self.release_all()
 
-
 def make_pad_backend(cfg):
     choice = str((cfg.get("pad_output", "auto") if cfg is not None else "auto")
                  or "auto").strip().lower()
@@ -963,7 +1001,6 @@ def make_pad_backend(cfg):
             % (reason or "unknown reason",))
     return EmulatedPadBackend(cfg)
 
-
 def make_input_backend(cfg):
     raw = str(cfg.get("input_backend", "win32") or "win32").strip().lower()
     choice = _BACKEND_ALIASES.get(raw)
@@ -996,13 +1033,11 @@ def make_input_backend(cfg):
             "the standard Windows method." % why)
     return Win32Backend()
 
-
 _VIGEM_STEER = None
 _VIGEM_STEER_LOCK = threading.Lock()
 
 _RX_GAIN = 80.0
 _RY_GAIN = 150.0
-
 
 def _get_vigem_steer(cfg=None):
     """Get the ViGEm steering backend.
@@ -1011,12 +1046,18 @@ def _get_vigem_steer(cfg=None):
     """
     global _VIGEM_STEER
     with _VIGEM_STEER_LOCK:
-        # Check if ViGEm steering is allowed by config
+
         if cfg is not None:
             choice = str(cfg.get("pad_output", "auto") or "auto").strip().lower()
             _EMU = ("emulate", "emulated", "km", "keyboard")
             if choice in _EMU:
-                return False  # User explicitly disabled ViGEm output
+                if _VIGEM_STEER is not False and _VIGEM_STEER is not None:
+                    try:
+                        _VIGEM_STEER.close()
+                    except Exception:
+                        pass
+                    _VIGEM_STEER = None
+                return False
         if _VIGEM_STEER is None:
             try:
                 _VIGEM_STEER = ViGemPadBackend()
@@ -1026,7 +1067,6 @@ def _get_vigem_steer(cfg=None):
                 _VIGEM_STEER.close()
                 _VIGEM_STEER = False
         return _VIGEM_STEER
-
 
 def aim_assist_step(dx: float, dy: float, cfg=None) -> bool:
     """Unibot-style continuous aim assist.
@@ -1044,7 +1084,6 @@ def aim_assist_step(dx: float, dy: float, cfg=None) -> bool:
             steer.axis(5, 0)
             return steer.flush()
 
-        # Read aim_speed and aim_y_speed_multiplier from cfg if provided
         gain_x = _RX_GAIN
         gain_y = _RY_GAIN
         if cfg is not None:
@@ -1068,7 +1107,6 @@ def aim_assist_step(dx: float, dy: float, cfg=None) -> bool:
         return steer.flush()
     except Exception:
         return False
-
 
 def aim_assist_center(cfg=None) -> bool:
     """Center the stick (call when target lost)."""

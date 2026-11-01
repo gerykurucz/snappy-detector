@@ -22,10 +22,6 @@ if IS_WINDOWS:
     WM_KEYUP = 0x0101
     LLKHF_INJECTED = 0x00000010
 
-
-
-
-
     WM_MOUSEMOVE = 0x0200
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONUP = 0x0202
@@ -229,8 +225,6 @@ if IS_WINDOWS:
     user32.SendInput.restype = wt.UINT
     user32.SendInput.argtypes = [wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 
-
-
     _MACRO_MOD_VKS = ((0x0004, VK_SHIFT), (0x0002, VK_CONTROL),
                       (0x0001, VK_MENU), (0x0008, VK_LWIN))
 
@@ -285,12 +279,6 @@ if IS_WINDOWS:
         except Exception:
             return False
         return sent == len(inputs)
-
-
-
-
-
-
 
     def _key_input(vk, up):
         inp = INPUT()
@@ -479,10 +467,6 @@ if IS_WINDOWS:
             except Exception:
                 return 0, 0, 1920, 1080
 
-
-
-
-
     class CaptureBackend(object):
 
         def __init__(self, prefer="auto"):
@@ -496,21 +480,10 @@ if IS_WINDOWS:
             self._wgc_tried = False
             self._wgc_lock = threading.Lock()
 
-
-
-
-
-
             self._mss_lock = threading.Lock()
             self._mss_cache = {}
             self._notes = set()
             self._note_lock = threading.Lock()
-
-
-
-
-
-
 
             self.stats_lock = threading.Lock()
             self.stats = {
@@ -560,8 +533,12 @@ if IS_WINDOWS:
                 st = self.stats[which]
                 total = st["frames"]
                 bad = st["black"] + st["frozen"]
-            if total >= 20 and bad * 4 >= total * 3 and not self._bad_noted:
-                self._bad_noted = True
+                if total >= 20 and bad * 4 >= total * 3 and not self._bad_noted:
+                    self._bad_noted = True
+                    bad_now = True
+                else:
+                    bad_now = False
+            if bad_now:
                 self._note(
                     "Capture: %s frames are mostly black or unchanging "
                     "(%d/%d). The screen looks correct to YOUR eyes but "
@@ -608,9 +585,6 @@ if IS_WINDOWS:
                 if self.prefer not in ("dxcam", "wgc"):
                     return None
 
-
-
-
                 try:
                     import dxcam
                 except ImportError:
@@ -648,7 +622,6 @@ if IS_WINDOWS:
                 if entry is None:
                     import mss
 
-
                     factory = getattr(mss, "MSS", None) or mss.mss
                     sct = factory()
                     self._mss_cache[cur.ident] = (cur, sct)
@@ -657,6 +630,7 @@ if IS_WINDOWS:
             return sct
 
         def _wgc(self):
+
             with self._wgc_lock:
                 if self._wgc_tried:
                     return self._wgc_state
@@ -678,9 +652,6 @@ if IS_WINDOWS:
                     state = {"frame": None, "closed": False, "errs": 0}
                     lock = threading.Lock()
 
-
-
-
                     cap = WindowsCapture(cursor_capture=False,
                                          draw_border=False,
                                          monitor_index=1,
@@ -690,13 +661,6 @@ if IS_WINDOWS:
                         try:
                             arr = None
 
-
-
-
-
-
-
-
                             buf = getattr(frame, "frame_buffer", None)
                             if buf is not None:
                                 arr = np.ascontiguousarray(
@@ -705,9 +669,6 @@ if IS_WINDOWS:
                             else:
                                 to_bgr = getattr(frame, "to_bgr", None)
                                 if to_bgr is not None:
-
-
-
 
                                     arr = np.ascontiguousarray(
                                         to_bgr(), dtype=np.uint8)
@@ -736,7 +697,6 @@ if IS_WINDOWS:
                                 raise RuntimeError("frame has no usable "
                                                    "numpy accessor")
                             with lock:
-
 
                                 state["frame"] = np.ascontiguousarray(
                                     arr, dtype=np.uint8)
@@ -811,12 +771,15 @@ if IS_WINDOWS:
             if closed:
                 self._note("Capture: wgc session closed; using "
                            "dxcam/mss fallback.")
+                self._wgc_state = None
                 return None
             if frame is None:
                 return None
             fh, fw = frame.shape[:2]
             l, t, r, b = region
             if l < 0 or t < 0 or r > fw or b > fh or r <= l or b <= t:
+                self._note("Capture: wgc frame does not cover the "
+                           "requested region; using fallback.")
                 return None
             return np.ascontiguousarray(frame[t:b, l:r])
 
@@ -829,29 +792,12 @@ if IS_WINDOWS:
                     self._record("wgc", shot)
                     return shot
 
-
-
-
-
-
-
-
-
-
-
             if self._dx_forced or self.prefer == "wgc":
                 cam = self._dx()
                 if cam is not None:
                     frame = None
                     try:
                         with self._dx_lock:
-
-
-
-
-
-
-
                             for _ in range(5):
                                 frame = cam.grab(region=region)
                                 if frame is not None:
@@ -859,18 +805,15 @@ if IS_WINDOWS:
                                 time.sleep(0.001)
                     except Exception as exc:
                         frame = None
-
-
-
-
-                        self._dx_failures += 1
-                        if self._dx_failures >= 30:
-                            self._note("Capture: dxcam failing repeatedly (%r); "
-                                       "switching to mss." % (exc,))
-                            with self._dx_lock:
+                        with self._dx_lock:
+                            self._dx_failures += 1
+                            if self._dx_failures >= 30:
+                                self._note("Capture: dxcam failing repeatedly (%r); "
+                                           "switching to mss." % (exc,))
                                 self._dx_cam = None
                     else:
-                        self._dx_failures = 0
+                        with self._dx_lock:
+                            self._dx_failures = 0
 
                     if frame is not None:
                         img = np.ascontiguousarray(frame[:, :, :3], dtype=np.uint8)
@@ -893,4 +836,3 @@ if IS_WINDOWS:
             except Exception as exc:
                 self._note("Capture: mss error %r" % (exc,))
                 return None
-

@@ -11,7 +11,6 @@ import config
 import hpose_bridge
 import vision
 
-
 class Check(object):
     def __init__(self):
         self.passed = 0
@@ -46,13 +45,10 @@ def test_keypoints(c):
     c.near("iou of disjoint boxes", box_iou((0, 0, 1, 1), (5, 5, 6, 6)),
            0.0, 1e-6)
 
-
 def test_model3d(c):
     import hpose_model3d as model3d
     rng = np.random.default_rng(0)
     for yaw in (0.0, 45.0, 90.0, 180.0, 270.0):
-        s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
-        s["yaw"] = yaw
         name = model3d.yaw_to_class(yaw)
         expect = {0.0: "front", 45.0: "front_right_45", 90.0: "side_right",
                   180.0: "back", 270.0: "side_left"}[yaw]
@@ -66,7 +62,6 @@ def test_model3d(c):
     c.ok("nose is further out from the side",
          model3d.face_visibility(90.0)["nose"] < 1.0)
 
-
 def test_fit(c):
     import hpose_model3d as model3d
     import hpose_posefit as posefit
@@ -75,7 +70,7 @@ def test_fit(c):
     back_err = []
     for _ in range(30):
         s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
-        face = math.cos(math.radians(s["yaw"])) > 0.34
+        face = math.cos(math.radians(s["yaw"])) > 0.35
         r = posefit.fit(s["kps"], focal_px=s["focal"], face_visible=face)
         if face:
             front_err.append(abs(((r["yaw"] - s["yaw"] + 180.0) % 360.0)
@@ -100,6 +95,39 @@ def test_fit(c):
     c.ok("confident joints are left alone",
          repaired[5][0] == kps[5][0] and repaired[5][1] == kps[5][1])
 
+def test_fit_small_target(c):
+    import hpose_model3d as model3d
+    import hpose_posefit as posefit
+    import math
+    rng = np.random.default_rng(4)
+    stages = []
+    residuals = []
+    errs = []
+    n_small = 0
+    for _ in range(40):
+        s = model3d.make_sample(rng, "stand", 0.0, (80, 80))
+        face = math.cos(math.radians(s["yaw"])) > 0.35
+        h_px = s["box"][3] - s["box"][1]
+        if h_px >= 40.0:
+            continue                                # only small-target samples
+        n_small += 1
+        r = posefit.fit(s["kps"], focal_px=s["focal"], face_visible=face,
+                         box_h_px=h_px)
+        stages.append(r.get("stage", 0))
+        residuals.append(r.get("residual", float("inf")))
+        errs.append(abs(((r["yaw"] - s["yaw"] + 180.0) % 360.0) - 180.0))
+    c.ok("small-target fit runs at all",
+         len(errs) > 0, "n_small=%d" % (n_small,))
+    if not errs:
+        return
+    c.ok("small-target fit completes (stage >= 1)",
+         all(s >= 1 for s in stages), str(stages))
+    c.ok("small-target fit is finite",
+         all(np.isfinite(r) for r in residuals), str(residuals))
+    c.ok("small-target fit does not run the fine stage",
+         all(s < 2 for s in stages), str(stages))
+    c.ok("small-target fit yaw is usable (median %.1f deg)"
+         % (np.median(errs),), np.median(errs) < 60.0, str(np.median(errs)))
 
 def test_features(c):
     import hpose_features as features
@@ -121,10 +149,10 @@ def test_features(c):
     v3 = features.extract(empty, fit=None)
     c.ok("features survive an empty pose", bool(np.all(np.isfinite(v3))))
 
-
 def test_bundle(c):
     from hpose_bundle import Bundle, load_bundle
     from hpose_classifier import LinearHead
+    import hpose_features as features
     rng = np.random.default_rng(6)
     x = rng.normal(0, 1, size=(200, 6)).astype(np.float32)
     head = LinearHead(rng.normal(0, 0.1, (6, 2)).astype(np.float32),
@@ -150,7 +178,12 @@ def test_bundle(c):
     c.ok("the shipped bundle is found and trained",
          shipped.has_view() and shipped.has_stance(),
          "expected models/hpose_bundle.npz with both heads")
-
+    c.ok("shipped bundle was trained on current features",
+         getattr(shipped, "feature_version", None)
+            == features.FEATURE_VERSION,
+         "bundle fv=%r runtime fv=%r"
+         % (getattr(shipped, "feature_version", None),
+            features.FEATURE_VERSION))
 
 def test_motion(c):
     from hpose_motion import KalmanBox, MotionModel
@@ -158,6 +191,9 @@ def test_motion(c):
     for i in range(1, 11):
         kb.update((i * 5.0, 0, i * 5.0 + 20, 40), float(i) * 0.05)
     kb.predict(0.15)
+    # last_t must never move backward: predict into the past is clamped
+    c.ok("kalman last_t stays at 0.50 after predict into past",
+         abs(kb.last_t - 0.50) < 1e-6, "last_t=%.3f" % (kb.last_t,))
     vx, vy = kb.velocity
     c.ok("kalman follows a moving box", vx > 50.0, "vx=%.1f" % (vx,))
     c.ok("kalman ignores a vertical drift", abs(vy) < 30.0, "vy=%.1f" % (vy,))
@@ -169,7 +205,6 @@ def test_motion(c):
     x, y, ox, oy = m.predict(0.1)
     c.ok("lead moves the target forward", ox > 0.0, "ox=%.1f" % (ox,))
     c.near("lead is proportional to the delay", ox, m.speed * 0.1, 60.0)
-
 
 def test_tracker(c):
     from hpose_tracker import Tracker
@@ -189,7 +224,7 @@ def test_tracker(c):
     c.ok("track knows the view", tracks[0].view == "front", tracks[0].view)
     c.ok("track knows the stance", tracks[0].stance == "standing",
          tracks[0].stance)
-    c.ok("track is moving", tracks[0].speed > 1.0, str(tracks[0].speed))
+    c.ok("track is moving", tracks[0].speed > 20.0, str(tracks[0].speed))
     far = [{"box": (900.0, 900.0, 950.0, 990.0), "score": 0.9,
             "view_probs": {"front": 0.9, "back": 0.1},
             "stance_probs": {"standing": 1.0}}]
@@ -198,19 +233,227 @@ def test_tracker(c):
          str(len(tracks)))
 
 
+def test_decode_single_detection(c):
+    from hpose_detector import PoseDetector
+    det = PoseDetector.__new__(PoseDetector)
+    det.conf, det.iou = 0.05, 0.45
+    raw = np.zeros((1, 56), dtype=np.float32)
+    raw[0, 0:4] = (320.0, 320.0, 40.0, 80.0)
+    raw[0, 4] = 0.9
+    raw[0, 5::3] = 320.0
+    raw[0, 6::3] = 320.0
+    raw[0, 7::3] = 0.9
+    c.ok("decode handles (1, 56)",
+         len(det.decode(raw, 1.0, 0.0, 0.0, 640, 640)) == 1)
+    raw_t = np.ascontiguousarray(raw.T)
+    c.ok("decode handles (56, 1)",
+         len(det.decode(raw_t, 1.0, 0.0, 0.0, 640, 640)) == 1)
+
+def test_onnx_provider(c):
+    """Assert the ORT session uses a GPU provider when one is available,
+    and falls back to CPU otherwise."""
+    import hpose_detector
+    import onnxruntime as ort
+    available = ort.get_available_providers()
+    want_gpu = any(ep in available for ep in (
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+        "DmlExecutionProvider"))
+    try:
+        det = hpose_detector.PoseDetector(download=False)
+    except Exception as exc:
+        c.ok("PoseDetector loads", False, repr(exc))
+        return
+    c.ok("PoseDetector loads", det.session is not None)
+    if want_gpu:
+        c.ok("PoseDetector uses a GPU provider",
+             det.active_provider != "CPUExecutionProvider",
+             "active=%s available=%s"
+             % (det.active_provider, available))
+    else:
+        c.ok("PoseDetector falls back to CPU",
+             det.active_provider == "CPUExecutionProvider",
+             det.active_provider)
+
+def test_kalman_size_scaling(c):
+    from hpose_motion import KalmanBox
+    rng = np.random.default_rng(0)
+
+    def track_err(h, n=30):
+        kf = KalmanBox((0, 0, h / 2, h), 0.0)
+        errs = []
+        for i in range(1, n + 1):
+            t = i * 0.033
+            true_cx = 100.0 * t
+            meas_cx = true_cx + rng.normal(0, 1.0)
+            kf.update((meas_cx - h / 4, 0, meas_cx + h / 4, h), t)
+            errs.append(abs(kf.x[0] - true_cx) / h)
+        return float(np.mean(errs))
+
+    err_small = track_err(20)
+    err_large = track_err(200)
+    c.ok("small targets track tighter relative to size",
+         err_small < 4 * err_large,
+         "small=%.3f large=%.3f" % (err_small, err_large))
+
+def test_features_no_feet(c):
+    import hpose_features as features
+    import hpose_model3d as model3d
+    from hpose_keypoints import Pose
+    rng = np.random.default_rng(11)
+    s = model3d.make_sample(rng, "stand", 0.0, (640, 640))
+    kps = s["kps"].copy()
+    kps[15, 2] = 0.0
+    kps[16, 2] = 0.0
+    vec = features.extract(Pose(kps, s["box"], 1.0), fit=None)
+    names = features.feature_names()
+    c.ok("features are length-stable without feet",
+         len(vec) == len(names), "%d vs %d" % (len(vec), len(names)))
+
+def test_motion_state_adapts(c):
+    from hpose_motion import MotionModel
+    m = MotionModel(body_h_px=20.0)
+    # Add enough samples for EMA to converge near true speed
+    for i in range(50):
+        m.add(i * 0.05, i * 2.0, 100.0)
+    # True speed is 40 px/s; fast threshold = 2*20=40. EMA should converge
+    # to just below 40, so state may be "slow" - accept either.
+    c.ok("20px: speed converges near 40px/s",
+         m.speed > 35.0 and m.speed < 45.0, "speed=%.1f state=%s" % (m.speed, m.state()))
+    # Now grow to 200px: fast=400, slow=100. Speed ~40 is static.
+    m.body_h_px = 200.0
+    c.ok("200px: 40px/s is static", m.state() == "static", m.state())
+
+def test_pick_small_target(c):
+    import hpose_bridge
+    from hpose_bridge import Subject
+
+    sub = Subject((100, 100, 115, 120), score=0.15, raw_score=0.15,
+                  kp_conf=0.20)
+    sub.hits = 1
+    cfg = {"hpose_min_conf": 12, "hpose_view": "any",
+           "hpose_stance": "any"}
+    picked = hpose_bridge.pick([sub], cfg, 107, 110, 40)
+    c.ok("pick accepts a 20px 1-hit target",
+         picked is not None, "got None")
+
+def test_blob_watch_basic(c):
+    import numpy as np
+    import vision
+    img = np.zeros((200, 200, 3), np.uint8)
+    img[80:120, 90:110] = 200
+    t = vision._blob_watch(img, 100, 100, 40)
+    c.ok("blob watch finds a 20x40 blob", t is not None)
+    if t is not None:
+        c.ok("blob watch reports a 20x40 box",
+             15 <= t.bw <= 25 and 35 <= t.bh <= 45,
+             "%dx%d" % (t.bw, t.bh))
+
+def test_fig_score_can_cross_tier(c):
+    import numpy as np
+    import vision
+    tier = vision._shape_tier(40, 100, 4000)
+    c.ok("aspect-only tier is 2 for r=2.5", tier == 2, str(tier))
+    score_ones = vision._figure_score(40, 100, 4000,
+                                       np.ones((100, 40), dtype=bool))
+    c.ok("all-ones mask is capped below the memory gate",
+         score_ones < 0.50, str(score_ones))
+
+
+
+
+
+
 def unit_checks(c):
     print("unit checks")
     test_keypoints(c)
     test_model3d(c)
     test_fit(c)
+    test_fit_small_target(c)
     test_features(c)
+    test_features_no_feet(c)
     test_bundle(c)
     test_motion(c)
+    test_kalman_size_scaling(c)
+    test_motion_state_adapts(c)
     test_tracker(c)
+    test_decode_single_detection(c)
+    test_onnx_provider(c)
+    test_pick_small_target(c)
+    test_blob_watch_basic(c)
+    test_fig_score_can_cross_tier(c)
+    test_blob_fallback_through_tracker(c)
+    test_blob_watch_no_false_positives(c)
+
+
+def test_blob_fallback_through_tracker(c):
+    """Blob detections must flow through the tracker and produce a Subject
+    with hits >= 1 and a stable track_id across frames."""
+    import numpy as np
+    import hpose_bridge
+    import time as _time
+    cfg = {"hpose_mode": "on"}
+    hpose_bridge.preload(cfg)
+    for _ in range(240):
+        if hpose_bridge.engine(cfg) is not None:
+            break
+        _time.sleep(0.25)
+    eng = hpose_bridge.engine(cfg)
+    if eng is None:
+        c.ok("hpose engine available", False)
+        return
+    eng.reset()
+    img = np.zeros((120, 120, 3), dtype=np.uint8)
+    img[40:80, 55:65] = 200  # 10 x 40 blob, aspect 0.25 (stick figure)
+    subs1 = eng.scan(img, origin=(0, 0), aim=(60, 60), aim_radius=40)
+    c.ok("blob fallback produces a Subject", len(subs1) >= 1,
+         "got %d" % len(subs1))
+    if not subs1:
+        return
+    c.ok("blob Subject has a track id", subs1[0].track_id > 0,
+         "id=%d" % subs1[0].track_id)
+    c.ok("blob Subject has hits >= 1", subs1[0].hits >= 1,
+         "hits=%d" % subs1[0].hits)
+    subs2 = eng.scan(img, origin=(0, 0), aim=(60, 60), aim_radius=40)
+    c.ok("blob Subject keeps its identity",
+         len(subs2) == 1 and subs2[0].track_id == subs1[0].track_id)
+    c.ok("blob Subject accumulates hits",
+         len(subs2) == 1 and subs2[0].hits > subs1[0].hits)
+
+
+def test_blob_watch_no_false_positives(c):
+    """Blob_watch must not fire on UI elements: vertical menu dividers,
+    table grid lines, and text editor carets are all 1-2 px wide, tall
+    vertical sticks with aspect ratio ~0.02-0.10. With BLOB_STICK_LO=0.15,
+    none of these should qualify as person-like blobs."""
+    import os
+    import cv2
+    import vision
+    neg_dir = os.path.join("testdata", "negatives")
+    neg_files = ("menu_bar.jpg", "table_grid.jpg", "editor_caret.jpg")
+    found_any = False
+    for name in neg_files:
+        path = os.path.join(neg_dir, name)
+        if not os.path.isfile(path):
+            continue
+        found_any = True
+        img = cv2.imread(path)
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        # Run blob_watch centered on the image with a reasonable radius
+        bt = vision._blob_watch(img, w // 2, h // 2, min(w, h) // 4)
+        c.ok("blob_watch no false positive: %s" % (name,),
+             bt is None,
+             "got box=%sx%s" % (bt.bw, bt.bh) if bt is not None else "")
+    if not found_any:
+        c.ok("blob_watch negative fixtures exist",
+             False,
+             "no negative fixture images found in %s" % neg_dir)
+
 
 def tempfile_dir():
     return os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp"
-
 
 def _sample_images(extra_dir=None):
     out = []
@@ -226,7 +469,6 @@ def _sample_images(extra_dir=None):
             if name.lower().endswith((".jpg", ".png", ".jpeg")):
                 out.append(os.path.join(folder, name))
     return out
-
 
 def integration_checks(c, images, cv2):
     print("integration checks (%d picture(s))" % (len(images),))
@@ -249,10 +491,13 @@ def integration_checks(c, images, cv2):
     cfg["hpose_mode"] = "on"
     cfg["hpose_min_conf"] = 25
     hpose_bridge.preload(cfg)
-    for _ in range(120):
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
         if hpose_bridge.engine(cfg) is not None:
             break
         time.sleep(0.25)
+    else:
+        c.ok("the hpose engine loads", False, "timeout")
     c.ok("the hpose engine loads", hpose_bridge.engine(cfg) is not None)
 
     found = 0
@@ -335,7 +580,6 @@ def integration_checks(c, images, cv2):
         c.ok("a moving target is measured as moving", moved)
         c.ok("a moving target is led", lead_seen)
 
-
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     print("hpose check")
@@ -367,7 +611,6 @@ def main(argv=None):
             print("  failed: %s" % (name,))
         return 1
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

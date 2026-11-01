@@ -20,9 +20,6 @@ import system_core as edsig
 import system_core as i18n
 from config import config_dir
 
-
-
-
 i18n.publish("en", {
     "online.cancelled": "Discord authentication has been cancelled (or "
                         "failed). Please try again.",
@@ -46,41 +43,11 @@ i18n.publish("en", {
 })
 from system_core import APP_VERSION, IS_WINDOWS, log
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ENTITLEMENT_PATH = "entitlements.json"
-
-
 
 FRESHNESS_SECONDS = 6 * 3600
 
-
-
-
 _DEV_REPO = ""
-
 
 def set_dev_repo(value):
     global _DEV_REPO
@@ -90,29 +57,11 @@ def set_dev_repo(value):
     _DEV_REPO = str(value or "").strip().strip("/")
     return True
 
-
-
-
-
-
-
-
-
 LOOPBACK_HOST = "127.0.0.1"
 LOOPBACK_PORT = 48321
 LOOPBACK_PATH = "/oauth"
 
-
-
-
-
-
 SESSION_FILE = "session.json"
-
-
-
-
-
 
 PRESENCE_HEARTBEAT_MINUTES = 2
 
@@ -122,12 +71,6 @@ LOGIN_TIMEOUT = 300.0
 def CANCELLED_MSG():
     return i18n.L("online.cancelled")
 
-
-
-
-
-
-
 def _provider_table():
     return {
         "discord": dict(
@@ -136,11 +79,6 @@ def _provider_table():
             token="https://discord.com/api/oauth2/token",
             userinfo="https://discord.com/api/users/@me",
 
-
-
-
-
-
             scope="identify email", pkce=True, refresh=True,
             client_id=build_secrets.discord_client_id(),
             client_secret=build_secrets.discord_client_secret() or None,
@@ -148,7 +86,6 @@ def _provider_table():
                                 u.get("username")),
         ),
     }
-
 
 class _ProviderProxy(object):
 
@@ -176,36 +113,21 @@ class _ProviderProxy(object):
     def values(self):
         return _provider_table().values()
 
-
 PROVIDER_TABLE = _ProviderProxy()
 
 PROVIDERS = [(k, PROVIDER_TABLE[k]["label"]) for k in ("discord",)]
 
-
-
-
-
-
-
-
 class OnlineError(Exception):
     pass
-
-
-
-
-
 
 def entitlement_repo(cfg=None):
     if _DEV_REPO:
         return _DEV_REPO
     return build_secrets.entitlement_repo()
 
-
 def entitlement_branch(cfg=None):
     raw = build_secrets.entitlement_branch() or "live"
     return _safe_url_segment(raw, "live")
-
 
 def _safe_url_segment(value, fallback):
     v = str(value or "").strip().strip("/")
@@ -219,30 +141,24 @@ def _safe_url_segment(value, fallback):
             return fallback
     return v
 
-
 def entitlement_pubkey(cfg=None):
     return build_secrets.entitlement_pubkey()
-
 
 def entitlement_url(cfg=None):
     return "https://raw.githubusercontent.com/%s/%s/%s" % (
         entitlement_repo(cfg), entitlement_branch(cfg), ENTITLEMENT_PATH)
-
 
 def payment_link(cfg=None, kind="monthly"):
     if kind == "trial":
         return build_secrets.stripe_trial_link()
     return build_secrets.stripe_monthly_link()
 
-
 def build_is_ready():
     return build_secrets.describe_readiness()
-
 
 def configured(cfg=None):
     return bool(entitlement_repo(cfg) and entitlement_pubkey(cfg)
                 and build_secrets.discord_client_id())
-
 
 def _http(url, data=None, headers=None, timeout=HTTP_TIMEOUT,
           form=None):
@@ -268,17 +184,11 @@ def _http(url, data=None, headers=None, timeout=HTTP_TIMEOUT,
     except Exception as exc:
         raise OnlineError("%r" % (exc,))
 
-
 def _json(status, body):
     try:
         return status, json.loads(body.decode("utf-8", "replace"))
     except ValueError:
         raise OnlineError("non-JSON answer (HTTP %d)" % status)
-
-
-
-
-
 
 def _dpapi_protect(blob):
     if not IS_WINDOWS:
@@ -304,7 +214,6 @@ def _dpapi_protect(blob):
     except Exception:
         return None
 
-
 def _dpapi_unprotect(blob):
     if not IS_WINDOWS:
         return None
@@ -329,7 +238,6 @@ def _dpapi_unprotect(blob):
     except Exception:
         return None
 
-
 def secure_dir():
     if IS_WINDOWS:
         base = os.environ.get("LOCALAPPDATA")
@@ -352,10 +260,8 @@ def secure_dir():
     except OSError:
         return config_dir()
 
-
 def _session_path():
     return os.path.join(secure_dir(), SESSION_FILE)
-
 
 def load_session():
     try:
@@ -374,12 +280,10 @@ def load_session():
     except Exception:
         return None
 
-
 def save_session(sess):
     raw = json.dumps(sess).encode("utf-8")
     prot = "b64"
     blob = _dpapi_protect(raw)
-
 
     if blob is not None and _dpapi_unprotect(blob) == raw:
         raw, prot = blob, "dpapi"
@@ -400,19 +304,16 @@ def save_session(sess):
         log("session.json: could not save (%r)" % (exc,))
         return False
 
-
 def clear_session():
     try:
         os.remove(_session_path())
     except OSError:
         pass
 
-
 def identity_key(identity):
     identity = identity or {}
     return "%s:%s" % (str(identity.get("provider", "")).lower(),
                       str(identity.get("sub", "")))
-
 
 def identity_label(identity):
     identity = identity or {}
@@ -420,29 +321,7 @@ def identity_label(identity):
             or str(identity.get("name") or "").strip()
             or identity_key(identity))
 
-
-
-
-
-
 AUTH_BROWSER_PROFILE = "authbrowser"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 FAST_EXIT_SECONDS = 3.0
 LAUNCH_FAIL_OPEN_AFTER = 1.0
@@ -450,10 +329,8 @@ UNVERIFIED_OPEN_AFTER = 12.0
 CANCEL_GRACE_SECONDS = 2.0
 PROFILES_TO_KEEP = 2
 
-
 def _auth_profile_dir():
     return os.path.join(secure_dir(), AUTH_BROWSER_PROFILE)
-
 
 _KNOWN_BROWSER_PATHS = (
     ("msedge", ("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe"),
@@ -476,16 +353,9 @@ _BROWSER_ORDER = ("msedge", "chrome", "brave", "vivaldi", "firefox")
 _BROWSER_EXES = ("msedge.exe", "chrome.exe", "brave.exe", "vivaldi.exe",
                  "firefox.exe")
 
-
-
-
 _PROGID_KINDS = (("MSEdgeHTM", "msedge"), ("ChromeHTML", "chrome"),
                  ("BraveHTML", "brave"), ("Vivaldi", "vivaldi"),
                  ("FirefoxURL", "firefox"), ("FirefoxHTML", "firefox"))
-
-
-
-
 
 _FIREFOX_USER_JS = """\
 user_pref("browser.aboutwelcome.enabled", false);
@@ -498,7 +368,6 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("app.update.auto", false);
 """
 
-
 def _winreg_views():
     try:
         import winreg
@@ -510,7 +379,6 @@ def _winreg_views():
         views.append(winreg.KEY_READ | flag)
     views.append(winreg.KEY_READ)
     return winreg, views
-
 
 def _app_paths_browser(exe_name):
     winreg, views = _winreg_views()
@@ -530,7 +398,6 @@ def _app_paths_browser(exe_name):
                 return val
     return None
 
-
 def _exe_from_command(cmd):
     cmd = (cmd or "").strip()
     if not cmd:
@@ -540,7 +407,6 @@ def _exe_from_command(cmd):
         return cmd[1:end] if end > 1 else None
     idx = cmd.lower().find(".exe")
     return cmd[:idx + 4] if idx > 0 else None
-
 
 def _default_browser_exe():
     winreg, views = _winreg_views()
@@ -575,7 +441,6 @@ def _default_browser_exe():
             return kind, exe
     return None
 
-
 def _find_auth_browser():
     if not IS_WINDOWS:
         return None
@@ -608,19 +473,6 @@ def _find_auth_browser():
             return kind, which
     return None
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_DEFAULT_ERROR_MODE = 0x04000000
@@ -629,14 +481,12 @@ _SPAWN_FLAGS = (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
 _NO_WINDOW_FLAGS = 0x00000001
 _SW_HIDE = 0
 
-
 class _StartupInfo:
     __slots__ = ("dwFlags", "wShowWindow")
 
     def __init__(self):
         self.dwFlags = 0
         self.wShowWindow = 0
-
 
 def _hidden_spawn_kwargs():
     if not IS_WINDOWS:
@@ -651,19 +501,16 @@ def _hidden_spawn_kwargs():
     except Exception:
         return {"creationflags": _SPAWN_FLAGS}
 
-
 def _gui_spawn_flags():
     if not IS_WINDOWS:
         return 0
     return CREATE_NO_WINDOW | CREATE_DEFAULT_ERROR_MODE
-
 
 def _open_url(url):
     url = str(url or "").strip()
     if not url:
         return False
     if IS_WINDOWS:
-
 
         try:
             os.startfile(url)
@@ -688,7 +535,6 @@ def _open_url(url):
         return bool(webbrowser.open(url))
     except Exception:
         return False
-
 
 def _kill_browser_tree(proc):
     if proc is None:
@@ -719,13 +565,11 @@ def _kill_browser_tree(proc):
         except Exception:
             continue
 
-
 def _reap(proc):
     try:
         proc.wait(timeout=2)
     except Exception:
         pass
-
 
 def _win32_kill_tree(root_pid):
     if not IS_WINDOWS:
@@ -763,7 +607,6 @@ def _win32_kill_tree(root_pid):
             continue
     return killed
 
-
 def _process_snapshot():
     if not IS_WINDOWS:
         return None
@@ -787,8 +630,6 @@ def _process_snapshot():
 
     def _as_bool(value):
 
-
-
         return value is True or (isinstance(value, int) and value != 0)
 
     try:
@@ -796,10 +637,6 @@ def _process_snapshot():
         k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
         k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD,
                                                 wintypes.DWORD]
-
-
-
-
 
         k32.CloseHandle.argtypes = [wintypes.HANDLE]
         k32.CloseHandle.restype = wintypes.BOOL
@@ -834,7 +671,6 @@ def _process_snapshot():
     except Exception:
         return None
 
-
 def _process_tree(snapshot, root_pid):
     try:
         root = int(root_pid)
@@ -857,16 +693,13 @@ def _process_tree(snapshot, root_pid):
     order.append(root)
     return order
 
-
 def _browser_pids(exe_path):
     snap = _process_snapshot()
     if not snap:
         return None
 
-
     want = str(exe_path or "").lower().replace("\\", "/").rsplit("/", 1)[-1]
     return {pid for pid, entry in snap.items() if entry[0] == want}
-
 
 def _prune_profiles(root, keep):
     import shutil
@@ -878,7 +711,6 @@ def _prune_profiles(root, keep):
         return
     for stale in dirs[:max(0, len(dirs) - PROFILES_TO_KEEP)]:
         shutil.rmtree(stale, ignore_errors=True)
-
 
 def _fresh_profile_dir(kind):
     root = _auth_profile_dir()
@@ -906,7 +738,6 @@ def _fresh_profile_dir(kind):
     _prune_profiles(root, prof)
     return prof
 
-
 class _Launch:
     __slots__ = ("proc", "label", "exe", "before")
 
@@ -915,7 +746,6 @@ class _Launch:
         self.label = label
         self.exe = exe
         self.before = before
-
 
 def _spawn_auth_browser(url):
     found = _find_auth_browser()
@@ -949,11 +779,8 @@ def _spawn_auth_browser(url):
         log("Sign-in: %s did not start (%r)." % (kind, exc))
         return None
 
-
-
 def _redirect_uri():
     return "http://%s:%d%s" % (LOOPBACK_HOST, LOOPBACK_PORT, LOOPBACK_PATH)
-
 
 def _exchange_code(provider, code, verifier=None):
     p = PROVIDER_TABLE[provider]
@@ -978,7 +805,6 @@ def _exchange_code(provider, code, verifier=None):
         raise OnlineError("token exchange failed (HTTP %d)" % status)
     return tok
 
-
 def _refresh(provider, refresh_token):
     p = PROVIDER_TABLE[provider]
     status, tok = _json(*_http(p["token"], form={
@@ -990,7 +816,6 @@ def _refresh(provider, refresh_token):
     if status != 200 or "access_token" not in tok:
         return None
     return tok
-
 
 def _userinfo(provider, access_token):
     p = PROVIDER_TABLE[provider]
@@ -1005,25 +830,17 @@ def _userinfo(provider, access_token):
     return {"provider": provider, "sub": str(sub),
             "email": email or None, "name": name or None}
 
-
 def _token_expiry(tok):
     try:
         return time.time() + float(tok.get("expires_in", 0)) - 60
     except (TypeError, ValueError):
         return 0.0
 
-
-
-
-
-
 def _canonical_bytes(doc):
     return json.dumps({k: v for k, v in doc.items() if k != "sig"},
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-
 CACHE_BUCKET_SECONDS = 30
-
 
 def fetch_entitlements(cfg, fresh=False):
     if not configured(cfg):
@@ -1069,7 +886,6 @@ def fetch_entitlements(cfg, fresh=False):
                FRESHNESS_SECONDS // 3600))
     return doc.get("rows") or {}, gen
 
-
 def _row_to_ent(row, now):
     if not isinstance(row, dict):
         return {"active": False, "status": "unsubscribed", "plan": None,
@@ -1085,9 +901,7 @@ def _row_to_ent(row, now):
             "plan": row.get("plan"), "until": until,
             "shared": bool(row.get("shared", False))}
 
-
 IDENTITY_REFRESH_SECONDS = 6 * 3600
-
 
 def me(cfg, fresh=False):
     sess = load_session()
@@ -1126,7 +940,6 @@ def me(cfg, fresh=False):
 
     if need_refresh:
 
-
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             fut_id = pool.submit(_safe_userinfo, provider, sess["access_token"])
             fut_rows = pool.submit(fetch_entitlements, cfg, fresh)
@@ -1139,7 +952,6 @@ def me(cfg, fresh=False):
             cached = fresh_ident
         elif not cached_ok:
 
-
             raise OnlineError("could not confirm the sign-in with %s "
                               "(no cached identity)" % provider)
         else:
@@ -1151,13 +963,9 @@ def me(cfg, fresh=False):
     row, _used = lookup_row(rows, cached)
     ent = _row_to_ent(row, time.time())
 
-
-
-
     idh = _used or row_hash(cached)
     ent["shared"] = row_shared(rows, idh, _gen)
     return cached, ent
-
 
 def _safe_userinfo(provider, access_token):
     try:
@@ -1165,7 +973,6 @@ def _safe_userinfo(provider, access_token):
     except OnlineError as exc:
         log("userinfo(%s) failed: %s" % (provider, exc))
         return None
-
 
 def entitlement_active(ent, now=None):
     if not isinstance(ent, dict):
@@ -1179,24 +986,19 @@ def entitlement_active(ent, now=None):
     now = now if now is not None else time.time()
     return until > now
 
-
 def entitlement_key(identity):
     identity = identity or {}
     email = str(identity.get("email") or "").strip().lower()
     return ("email:" + email) if email else identity_key(identity)
 
-
 def _hash_key(key, pepper):
     return hashlib.sha256((pepper + key).encode("utf-8")).hexdigest()
-
 
 def row_hash(identity):
     return _hash_key(entitlement_key(identity), build_secrets.row_pepper())
 
-
 def row_hash_legacy(identity):
     return _hash_key(entitlement_key(identity), "")
-
 
 def row_hashes(identity):
     out = [row_hash(identity)]
@@ -1204,7 +1006,6 @@ def row_hashes(identity):
     if legacy not in out:
         out.append(legacy)
     return out
-
 
 def lookup_row(rows, identity):
     if not isinstance(rows, dict):
@@ -1218,7 +1019,6 @@ def lookup_row(rows, identity):
             return row, h
     return None, None
 
-
 _STATUS_KEYS = {
     "active": "ent.st.active",
     "trial": "ent.st.trial",
@@ -1229,7 +1029,6 @@ _STATUS_KEYS = {
     "refunded": "ent.st.refunded",
     "unsubscribed": "ent.st.unsubscribed",
 }
-
 
 def entitlement_summary(ent, now=None):
     if not isinstance(ent, dict) or not ent:
@@ -1243,7 +1042,6 @@ def entitlement_summary(ent, now=None):
     day = time.strftime("%Y-%m-%d", time.gmtime(until)) if until else ""
     plan = str(ent.get("plan") or "")
     if st in ("active", "trial", "grant") and until > now:
-
 
         label = i18n.L(_STATUS_KEYS[st])
         show_plan = plan and plan.lower() not in label.lower()
@@ -1262,7 +1060,6 @@ def entitlement_summary(ent, now=None):
         return i18n.L("ent.expired_line", day)
     return i18n.L(_STATUS_KEYS.get(st, "ent.st.unsubscribed"))
 
-
 def subscribe_url(cfg, identity, kind="monthly"):
     link = payment_link(cfg, kind)
     if not link:
@@ -1275,17 +1072,7 @@ def subscribe_url(cfg, identity, kind="monthly"):
         out += "&prefilled_email=%s" % urllib.parse.quote(email, safe="")
     return out
 
-
-
-
-
-
-
-
-
-
 DEFAULT_DISPATCH_PAT = ""
-
 
 def dispatch_pat(cfg=None):
     import os as _os
@@ -1302,10 +1089,8 @@ def dispatch_pat(cfg=None):
         pass
     return DEFAULT_DISPATCH_PAT
 
-
 _NUDGE_MIN_SECONDS = 60.0
 _last_nudge = [0.0]
-
 
 def nudge_publisher(cfg=None):
     if getattr(sys, "frozen", False):
@@ -1319,7 +1104,6 @@ def nudge_publisher(cfg=None):
     ok = dispatch_publish(cfg)
     log("Publisher nudge %s." % ("accepted" if ok else "refused"))
     return ok
-
 
 def dispatch_publish(cfg=None):
     pat = dispatch_pat(cfg)
@@ -1340,45 +1124,7 @@ def dispatch_publish(cfg=None):
     except OnlineError:
         return False
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 SHARED_CONFIRM_SNAPSHOTS = 2
-
 
 class _SharedGuard(object):
 
@@ -1415,23 +1161,18 @@ class _SharedGuard(object):
             else:
                 self._seen.pop(idh, None)
 
-
 SHARED_GUARD = _SharedGuard()
-
 
 def presence_webhook(cfg=None):
     return build_secrets.presence_webhook()
-
 
 def row_shared(rows, idh, gen):
     row = rows.get(idh) if isinstance(rows, dict) else None
     raw = bool((row or {}).get("shared", False))
     return SHARED_GUARD.observe(idh, raw, gen)
 
-
 def presence_interval_seconds(cfg=None):
     return PRESENCE_HEARTBEAT_MINUTES * 60
-
 
 def post_presence(cfg, identity_hash, nonce, bye=False):
     url = presence_webhook(cfg)
@@ -1449,13 +1190,10 @@ def post_presence(cfg, identity_hash, nonce, bye=False):
     except OnlineError:
         return False
 
-
 _EMAIL_IN_URL = re.compile(r"(prefilled_email=|client_reference_id=)[^&]*")
-
 
 def redact_url(url):
     return _EMAIL_IN_URL.sub(r"\1<redacted>", str(url or ""))
-
 
 def open_subscribe(cfg, identity, kind="monthly"):
     url = subscribe_url(cfg, identity, kind)
@@ -1465,14 +1203,8 @@ def open_subscribe(cfg, identity, kind="monthly"):
     except Exception:
         return False
 
-
-
-
-
-
 PING_PATH = "/__snappy_ping"
 PING_TOKEN = "snappyai-loopback"
-
 
 class _Attempt:
     __slots__ = ("state", "result", "done", "live")
@@ -1483,10 +1215,8 @@ class _Attempt:
         self.done = threading.Event()
         self.live = True
 
-
 _ATTEMPT = None
 _ATTEMPT_LOCK = threading.Lock()
-
 
 class _OAuthReturn(BaseHTTPRequestHandler):
     def _send(self, body, code=200, ctype="text/html; charset=utf-8"):
@@ -1514,13 +1244,9 @@ class _OAuthReturn(BaseHTTPRequestHandler):
         with _ATTEMPT_LOCK:
             att = _ATTEMPT
 
-
-
-
             if att is None or not att.live or state != att.state:
                 att = None
         if att is None:
-
 
             self._send(_PAGE_STALE)
             return
@@ -1539,7 +1265,6 @@ class _OAuthReturn(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
-
 
 _CLOSE_SCRIPT = """<script>
 /* The app has everything it needs the instant this page loads. A window
@@ -1579,15 +1304,12 @@ _PAGE_STALE = ("""<html><head><title>Snappy AI</title></head>"""
                """<p style="opacity:0.6">You can close it. To sign in, """
                """start again from the app.</p></body></html>""")
 
-
 def _esc(text):
     return (str(text).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;"))
 
-
 _HTTPD = None
 _HTTPD_LOCK = threading.Lock()
-
 
 def _probe_listener():
     url = "http://%s:%d%s" % (LOOPBACK_HOST, LOOPBACK_PORT, PING_PATH)
@@ -1599,7 +1321,6 @@ def _probe_listener():
         except Exception:
             time.sleep(0.15)
     return False
-
 
 def _loopback_listener():
     global _HTTPD
@@ -1637,8 +1358,6 @@ def _loopback_listener():
         log("Sign-in: loopback listener ready on http://%s:%d%s"
             % (LOOPBACK_HOST, LOOPBACK_PORT, LOOPBACK_PATH))
         return httpd
-
-
 
 def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
                         opener=None):
@@ -1700,13 +1419,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
         log(msg)
         return None, msg
 
-
-
-
-
-
-
-
     started = time.time()
     cancel_event = threading.Event()
     handed_off = threading.Event()
@@ -1729,15 +1441,8 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
                 if now is not None:
                     if launch.before is not None:
 
-
                         alive = bool(now - launch.before)
                     else:
-
-
-
-
-
-
 
                         alive = False
                     if alive:
@@ -1771,7 +1476,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
                              and time.time() - started
                              >= LAUNCH_FAIL_OPEN_AFTER):
 
-
             reopened = True
             log("Sign-in: opening the link in your default browser "
                 "instead - the sign-in still ends here.")
@@ -1781,7 +1485,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
                 pass
         if not reopened and handed_off.is_set() and time.time() - started \
                 >= UNVERIFIED_OPEN_AFTER:
-
 
             reopened = True
             log("Sign-in: no window appeared - opening the link in your "
@@ -1797,7 +1500,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
         if _ATTEMPT is att:
             _ATTEMPT = None
     if launch is not None and not handed_off.is_set():
-
 
         if came:
             time.sleep(0.6)
@@ -1830,8 +1532,6 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
         "identity": identity,
         "identity_at": time.time(),
     })
-
-
 
     log("Signed in as %s (%s)." % (identity_key(identity), provider))
     return identity, ""

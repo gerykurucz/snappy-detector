@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import ctypes
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -27,17 +29,14 @@ LIMITS = (
     "on-screen pad flashes with every synthetic click."
 )
 
-
 @dataclass
 class ClickLeg:
     ok: bool = False
     rtts_ms: list[float] = field(default_factory=list)
     error: str = ""
 
-
 def _qpc_ms() -> float:
     return time.perf_counter() * 1000.0
-
 
 def _install_hook(on_event: Callable[[int], None]) -> Any:
     import ctypes
@@ -80,39 +79,41 @@ def _install_hook(on_event: Callable[[int], None]) -> Any:
         raise OSError(f"SetWindowsHookEx failed: {ctypes.get_last_error()}")
     return {"user32": user32, "hook": hook, "proc": _proc}
 
-
 def _remove_hook(handle: Any) -> None:
     try:
         handle["user32"].UnhookWindowsHookEx(handle["hook"])
     except Exception:
         pass
 
-
 CLICK_HOLD_S = 0.05
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("mi", MOUSEINPUT)]
+
+_SENDINPUT_SET = False
+
+def _ensure_sendinput_sig(user32):
+    global _SENDINPUT_SET
+    if not _SENDINPUT_SET:
+        user32.SendInput.argtypes = [
+            wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int
+        ]
+        user32.SendInput.restype = wintypes.UINT
+        _SENDINPUT_SET = True
 
 def _send_click(user32: Any) -> None:
-    import ctypes
     import time
-    from ctypes import wintypes
-
-    class MOUSEINPUT(ctypes.Structure):
-        _fields_ = [
-            ("dx", wintypes.LONG),
-            ("dy", wintypes.LONG),
-            ("mouseData", wintypes.DWORD),
-            ("dwFlags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ctypes.c_void_p),
-        ]
-
-    class INPUT(ctypes.Structure):
-        _fields_ = [("type", wintypes.DWORD), ("mi", MOUSEINPUT)]
-
-    user32.SendInput.argtypes = [
-        wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int
-    ]
-    user32.SendInput.restype = wintypes.UINT
+    _ensure_sendinput_sig(user32)
 
     def _one(flag: int) -> None:
         inp = INPUT()
@@ -126,14 +127,12 @@ def _send_click(user32: Any) -> None:
     time.sleep(CLICK_HOLD_S)
     _one(MOUSEEVENTF_LEFTUP)
 
-
 def _click_pad() -> dict[str, Any]:
     import ctypes
     from ctypes import wintypes
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
     user32.DefWindowProcW.argtypes = [
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
     ]
@@ -141,7 +140,6 @@ def _click_pad() -> dict[str, Any]:
 
     W = 244
     H = 64
-    state = {"down": False}
 
     @ctypes.WINFUNCTYPE(
         wintypes.LPARAM, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
@@ -150,11 +148,10 @@ def _click_pad() -> dict[str, Any]:
     def _wndproc(hwnd: int, msg: int, wp: int, lp: int) -> int:
         try:
             if msg in (WM_LBUTTONDOWN, WM_LBUTTONUP):
-                state["down"] = msg == WM_LBUTTONDOWN
                 return 0
             return user32.DefWindowProcW(hwnd, msg, wp, lp)
         except Exception:
-            return 0
+            return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
     class WNDCLASSEXW(ctypes.Structure):
         _fields_ = [
@@ -208,6 +205,7 @@ def _click_pad() -> dict[str, Any]:
         0x80000000, x, y, W, H, None, None, hinst, None,
     )
     if not hwnd:
+        user32.UnregisterClassW(name, hinst)
         return {}
     user32.SetLayeredWindowAttributes(hwnd, 0, 0, 0x00000002)
     user32.ShowWindow(hwnd, 8)
@@ -226,20 +224,27 @@ def _click_pad() -> dict[str, Any]:
     return {"user32": user32, "hwnd": hwnd, "proc": _wndproc,
             "close": close, "size": (W, H)}
 
-
 def _pump_until(stop: threading.Event, user32: Any, timeout: float) -> None:
     import ctypes
     from ctypes import wintypes
 
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        wintypes.UINT, wintypes.UINT, wintypes.UINT
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+
     msg = wintypes.MSG()
     deadline = time.monotonic() + timeout
+    PM_REMOVE = 0x0001
     while not stop.is_set() and time.monotonic() < deadline:
-        got = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-        if got <= 0:
-            break
-        user32.TranslateMessage(ctypes.byref(msg))
-        user32.DispatchMessageW(ctypes.byref(msg))
-
+        if user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        else:
+            time.sleep(0.01)
 
 def run_click_test(
     count: int = 20, interval: float = 0.15,
@@ -300,17 +305,21 @@ def run_click_test(
     tid_box = [ctypes.windll.kernel32.GetCurrentThreadId()]
     t = threading.Thread(target=worker, args=(tid_box,), daemon=True)
     t.start()
-    _pump_until(stop, user32, timeout=count * (interval + 1.0) + 10.0)
-    stop.set()
-    t.join(timeout=5.0)
-    if pad is not None:
-        pad["close"]()
-    _remove_hook(handle)
+    try:
+        _pump_until(stop, user32, timeout=count * (interval + 1.0) + 10.0)
+    finally:
+        stop.set()
+        t.join(timeout=5.0)
+        if pad is not None:
+            try:
+                pad["close"]()
+            except Exception:
+                pass
+        _remove_hook(handle)
     if not rtts:
         detail = f"; {errors} injection failures" if errors else ""
         return ClickLeg(ok=False, error="no hook dispatches observed" + detail)
     return ClickLeg(ok=True, rtts_ms=rtts)
-
 
 def list_hid_mice() -> list[str]:
     if not sys.platform.startswith("win"):
@@ -360,7 +369,6 @@ def list_hid_mice() -> list[str]:
     except Exception:
         return []
 
-
 def measure_sleep_overshoot(n: int = 50, sleep_s: float = 0.001) -> dict[str, Any]:
     if n <= 0:
         return {"requested_ms": sleep_s * 1000.0, "over_ms": [], "error": "no samples"}
@@ -376,7 +384,6 @@ def measure_sleep_overshoot(n: int = 50, sleep_s: float = 0.001) -> dict[str, An
         "p50_over_ms": over[len(over) // 2],
         "max_over_ms": over[-1],
     }
-
 
 def measure_input(
     count: int = 20, interval: float = 0.15,
@@ -401,12 +408,6 @@ import re
 
 from system_core import IS_WINDOWS, log
 
-
-
-
-
-
-
 HOTKEY_MODS = {"ctrl": 0x0002, "alt": 0x0001, "shift": 0x0004, "win": 0x0008}
 HOTKEY_NOREPEAT = 0x4000
 
@@ -417,7 +418,6 @@ _NAMED_KEYS = {
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
     "comma": 0xBC, "period": 0xBE, "minus": 0xBD, "plus": 0xBB,
 }
-
 
 def _key_to_vk(key):
     if len(key) == 1:
@@ -436,10 +436,8 @@ def _key_to_vk(key):
 
     return None
 
-
 _MOD_HEAD = re.compile(r"^(ctrl|alt|shift|win)\+(.*)$",
                        re.IGNORECASE | re.DOTALL)
-
 
 def _parse_hotkey(spec):
     if spec is None:
@@ -467,9 +465,7 @@ def _parse_hotkey(spec):
         return None
     return mods, vk
 
-
 MACRO_MAX_TOKENS = 5
-
 
 def _parse_macro_spec(spec, max_tokens=MACRO_MAX_TOKENS):
     if spec is None:
@@ -497,19 +493,19 @@ def _parse_macro_spec(spec, max_tokens=MACRO_MAX_TOKENS):
         keys.append(vk)
     if not mods and not keys:
         return None
-    return mods, tuple(keys)
 
+    if len(keys) > 1:
+        return None
+    return mods, tuple(keys)
 
 def _macro_spec_text(mods, key_tokens):
     head = [name for name, _bit in ((n, HOTKEY_MODS[n]) for n in MOD_ORDER)
             if mods & HOTKEY_MODS[name]]
     return "+".join(head + [str(t) for t in key_tokens])
 
-
 MOD_VKS = {"ctrl": (0x11,), "alt": (0x12,), "shift": (0x10,),
            "win": (0x5B, 0x5C)}
 MOD_ORDER = ("ctrl", "alt", "shift", "win")
-
 
 def parse_bypass_spec(spec):
     parsed = _parse_hotkey(spec)
@@ -525,7 +521,6 @@ def parse_bypass_spec(spec):
             return None
         mods |= bit
     return (mods, None) if mods else None
-
 
 def describe_bypass_spec(spec):
     parsed = parse_bypass_spec(spec)
@@ -543,14 +538,12 @@ def describe_bypass_spec(spec):
         raw = match.group(2)
     return "+".join(head + [raw.strip()])
 
-
 def bypass_mod_vks(mods):
     out = []
     for name in MOD_ORDER:
         if mods & HOTKEY_MODS[name]:
             out.append(MOD_VKS[name])
     return out
-
 
 def effective_mode_key(cfg, which):
     raw = cfg.get("key_mode%d" % which, str(which))
@@ -566,14 +559,9 @@ def effective_mode_key(cfg, which):
         return last + " (fires everywhere, key still types)"
     return last + " (blocks typing while bound)"
 
-
 MACRO_SLOTS = 5
 
-
-
-
 REC_PLAY_SLOTS = 5
-
 
 def build_hotkey_table(cfg):
     specs = {
@@ -584,19 +572,11 @@ def build_hotkey_table(cfg):
         31: cfg.get("key_play", "ctrl+alt+m"),
     }
 
-
-
-
-
     for i in range(1, REC_PLAY_SLOTS + 1):
         specs[31 + i] = cfg.get("key_play%d" % i, "ctrl+%d" % i)
 
     always = []
     local = []
-
-
-
-
 
     _specs = {}
 
@@ -614,7 +594,6 @@ def build_hotkey_table(cfg):
             always.append((key_id, mods, vk))
         else:
             local.append((key_id, vk))
-
 
     for which, ids in MODE_KEY_IDS.items():
         raw = str(cfg.get("key_mode%d" % which, str(which)))
@@ -635,9 +614,6 @@ def build_hotkey_table(cfg):
             else:
                 local.append((key_id, vk))
 
-
-
-
     seen_always = {}
     for key_id, mods, vk in always:
         k = (mods & 0x000F, vk)
@@ -657,18 +633,6 @@ def build_hotkey_table(cfg):
             seen_local[vk] = key_id
 
     return always, local
-
-
-
-
-
-
-
-
-
-
-
-
 
 def build_macro_table(cfg):
     macros = []
@@ -719,11 +683,9 @@ def build_macro_table(cfg):
             macro_map[(tmods & 0x000F, tvks[0])] = m
     return macros, macro_map
 
-
 ACTION_IDS = {
     10: "launch",
     11: "pause",
-
 
     6: "reload",
     20: "mode1",
@@ -755,11 +717,6 @@ from system_core import BudgetComponent, Confidence, Risk, Verdict
 from models import manual, reg_set
 from models import Finding, Step, Tweak
 
-
-
-
-
-
 def _refresh_probe(inv: Any) -> Finding:
     disp = inv.primary_display
     if disp is None:
@@ -784,7 +741,6 @@ def _refresh_probe(inv: Any) -> Finding:
         verdict=Verdict.NO_PROBLEM, summary="display runs at its maximum rate"
     )
 
-
 def _refresh_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -798,7 +754,6 @@ def _refresh_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _low_latency_probe(inv: Any) -> Finding:
     gpu = inv.primary_gpu
     if gpu is None:
@@ -808,7 +763,6 @@ def _low_latency_probe(inv: Any) -> Finding:
         summary=f"driver frame queueing on {gpu.name} was not confirmed optimal",
         measured={"gpu": gpu.name},
     )
-
 
 def _low_latency_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -822,7 +776,6 @@ def _low_latency_plan(inv: Any) -> list[Step]:
             notes="One fewer queued frame removes a full frame time of input lag.",
         )
     ]
-
 
 def _hags_probe(inv: Any) -> Finding:
     gpu = inv.primary_gpu
@@ -848,7 +801,6 @@ def _hags_probe(inv: Any) -> Finding:
         summary=f"hardware scheduling is {'on' if gpu.hags else 'off'}; test both states",
     )
 
-
 def _hags_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -861,7 +813,6 @@ def _hags_plan(inv: Any) -> list[Step]:
             notes="The effect varies by hardware; only measurement decides.",
         )
     ]
-
 
 def _dvr_probe(inv: Any) -> Finding:
     cap = inv.game_dvr_app_capture
@@ -883,7 +834,6 @@ def _dvr_probe(inv: Any) -> Finding:
         verdict=Verdict.NO_PROBLEM, summary="game recording is already off"
     )
 
-
 def _dvr_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -902,7 +852,6 @@ def _dvr_plan(inv: Any) -> list[Step]:
             notes="Master switch for the recording pipeline.",
         ),
     ]
-
 
 TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -956,7 +905,6 @@ TWEAKS: tuple[Tweak, ...] = (
     ),
 )
 
-
 @dataclass
 class Theme:
     bg: str = "#14171a"
@@ -979,11 +927,9 @@ class Theme:
     font_big: tuple = ("Segoe UI Semibold", 30)
     font_entry: tuple = ("Segoe UI", 10)
 
-
 DEFAULT_THEME = Theme()
 
 ButtonFactory = Callable[..., Any]
-
 
 def snappy_theme(pal: dict[str, str], fonts: dict[str, tuple]) -> Theme:
     return Theme(
@@ -1019,7 +965,6 @@ LATENCY_TABS = (TAB_FIX, TAB_LIVE, TAB_TOOLS)
 
 BRAND = "SnappyAI"
 
-
 def default_out_root():
     try:
         import online
@@ -1030,7 +975,6 @@ def default_out_root():
     if not base:
         base = os.getcwd()
     return os.path.join(base, "latency")
-
 
 def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
           brand=BRAND, cfg=None):
@@ -1072,7 +1016,14 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
     )
 
     if startup_timer_us > 0:
-        app.var_timer.set(True)
+        # Restore the saved tick silently: a plain var write would fire the
+        # toggle trace and race the explicit request below into an
+        # "another operation is still running" error box at startup.
+        app._timer_trace_guard = True
+        try:
+            app.var_timer.set(True)
+        finally:
+            app._timer_trace_guard = False
         ctl.start_timer_request(float(startup_timer_us))
 
     def _restyle():
@@ -1080,7 +1031,6 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
 
     kit.repaint(_restyle)
     return {"app": app, "ctl": ctl}
-
 
 def pump(root, handle):
     import tkinter as tk
@@ -1095,7 +1045,6 @@ def pump(root, handle):
         root.after(POLL_MS, lambda: pump(root, handle))
     except tk.TclError:
         pass
-
 
 def shutdown(handle):
     try:
@@ -1202,7 +1151,6 @@ _dll = None
 _dll_tried = False
 _dll_lock = threading.Lock()
 
-
 class _Gamepad(ctypes.Structure):
     _fields_ = [("wButtons", ctypes.c_ushort),
                 ("bLeftTrigger", ctypes.c_ubyte),
@@ -1212,11 +1160,9 @@ class _Gamepad(ctypes.Structure):
                 ("sThumbRX", ctypes.c_short),
                 ("sThumbRY", ctypes.c_short)]
 
-
 class _State(ctypes.Structure):
     _fields_ = [("dwPacketNumber", ctypes.c_ulong),
                 ("Gamepad", _Gamepad)]
-
 
 class _Capabilities(ctypes.Structure):
     _fields_ = [("Type", ctypes.c_ubyte),
@@ -1225,11 +1171,9 @@ class _Capabilities(ctypes.Structure):
                 ("Gamepad", _Gamepad),
                 ("Vibration", ctypes.c_ushort * 2)]
 
-
 class _Vibration(ctypes.Structure):
     _fields_ = [("wLeftMotorSpeed", ctypes.c_ushort),
                 ("wRightMotorSpeed", ctypes.c_ushort)]
-
 
 def _load_dll():
     global _dll, _dll_tried
@@ -1271,10 +1215,8 @@ def _load_dll():
             "Snappy AI is unaffected." % ", ".join(_DLL_NAMES))
         return None
 
-
 def available():
     return _load_dll() is not None
-
 
 class PadState(object):
 
@@ -1311,9 +1253,7 @@ class PadState(object):
                 % (self.connected, self.packet, format_buttons(self.buttons),
                    self.lt, self.rt, self.lx, self.ly, self.rx, self.ry))
 
-
 EMPTY_STATE = PadState()
-
 
 def _threshold_triggers(lt, rt, threshold):
     mask = 0
@@ -1322,7 +1262,6 @@ def _threshold_triggers(lt, rt, threshold):
     if rt >= threshold:
         mask |= 1 << PAD_BUTTONS.index("rt")
     return mask
-
 
 def read(index=0, trigger_threshold=DEFAULT_TRIGGER_THRESHOLD, reader=None):
     if reader is not None:
@@ -1367,7 +1306,6 @@ def read(index=0, trigger_threshold=DEFAULT_TRIGGER_THRESHOLD, reader=None):
                     rx=int(pad.sThumbRX), ry=int(pad.sThumbRY),
                     when=time.perf_counter())
 
-
 def capabilities(index=0):
     dll = _load_dll()
     if dll is None or not hasattr(dll, "XInputGetCapabilities"):
@@ -1382,7 +1320,6 @@ def capabilities(index=0):
     if result != ERROR_SUCCESS:
         return None
     return int(caps.Type), int(caps.SubType), int(caps.Flags)
-
 
 def set_rumble(index, left=0.0, right=0.0, seconds=0.0):
     dll = _load_dll()
@@ -1402,7 +1339,6 @@ def set_rumble(index, left=0.0, right=0.0, seconds=0.0):
     except (OSError, ValueError, ctypes.ArgumentError):
         return False
 
-
 def apply_deadzone(x, y, deadzone, scale=1.0):
     try:
         x = float(x)
@@ -1417,8 +1353,6 @@ def apply_deadzone(x, y, deadzone, scale=1.0):
     k = min(1.0, normalised) / mag * float(scale)
     return x * k, y * k
 
-
-
 def normalise_axis(index, value):
     name = PAD_AXES[index]
     try:
@@ -1429,7 +1363,6 @@ def normalise_axis(index, value):
         return max(0, min(TRIGGER_FULL, v))
     return max(-AXIS_FULL - 1, min(AXIS_FULL, v))
 
-
 def parse_token(token):
     name = str(token or "").strip().lower()
     if not name:
@@ -1438,7 +1371,6 @@ def parse_token(token):
     if name in PAD_BUTTONS:
         return PAD_BUTTONS.index(name)
     return None
-
 
 def parse_spec(spec):
     if spec is None:
@@ -1458,7 +1390,6 @@ def parse_spec(spec):
         return None
     return frozenset(indices)
 
-
 def spec_mask(spec):
     indices = parse_spec(spec)
     if not indices:
@@ -1468,14 +1399,12 @@ def spec_mask(spec):
         mask |= 1 << index
     return mask
 
-
 def format_buttons(buttons):
     if not buttons:
         return ""
     names = [PAD_BUTTONS[i] for i in range(len(PAD_BUTTONS))
              if buttons & (1 << i)]
     return "+".join(names)
-
 
 def describe_spec(spec):
     indices = parse_spec(spec)
@@ -1485,8 +1414,6 @@ def describe_spec(spec):
     for index in indices:
         mask |= 1 << index
     return format_buttons(mask)
-
-
 
 class PadTracker(object):
 
@@ -1512,7 +1439,6 @@ class PadTracker(object):
         self.down = True
         return "press"
 
-
 def shadowed_indices(bindings, buttons):
     matching = [b for b in bindings if b.indices and b.tracker.matches(buttons)]
     out = set()
@@ -1524,7 +1450,6 @@ def shadowed_indices(bindings, buttons):
                 out.add(id(short))
                 break
     return out
-
 
 class PadBinding(object):
 
@@ -1540,7 +1465,6 @@ class PadBinding(object):
     @property
     def valid(self):
         return self.indices is not None
-
 
 def build_bindings(table):
     out = []
@@ -1562,13 +1486,11 @@ def build_bindings(table):
         out.append(PadBinding(key, spec, action))
     return out
 
-
 def _mask_of(indices):
     mask = 0
     for index in indices:
         mask |= 1 << index
     return mask
-
 
 ACTION_KEYS = (
     ("pad_launch", "launch"),
@@ -1585,13 +1507,11 @@ ACTION_KEYS = (
     ("pad_play5", "play_macro5"),
 )
 
-
 def action_ids():
     out = {}
     for hid, name in ACTION_IDS.items():
         out.setdefault(name, hid)
     return out
-
 
 def build_action_bindings(cfg):
     ids = action_ids()
@@ -1601,7 +1521,6 @@ def build_action_bindings(cfg):
             continue
         table[key] = (str(cfg.get(key, "") or ""), ids[name])
     return build_bindings(table)
-
 
 def parse_macro_action(spec):
     raw = str(spec or "").strip()
@@ -1616,7 +1535,6 @@ def parse_macro_action(spec):
     if parsed is None:
         return None
     return ("key", parsed[0] & 0x000F, parsed[1])
-
 
 def build_pad_macro_table(cfg):
     macros = []
@@ -1644,7 +1562,6 @@ def build_pad_macro_table(cfg):
         macros.append((slot, tspec, indices, action))
     return macros
 
-
 def first_connected(index=0, reader=None, count=XUSER_MAX_COUNT):
     if reader is None and not available():
         return None
@@ -1655,7 +1572,6 @@ def first_connected(index=0, reader=None, count=XUSER_MAX_COUNT):
         if read(candidate, reader=reader).connected:
             return candidate
     return None
-
 
 def describe(index=None, reader=None):
     if reader is None and not available():
@@ -1701,7 +1617,6 @@ i18n.publish("en", {
 REC_FILE = "macros.json"
 PAD_REC_FILE = "pad_macros.json"
 
-
 STEP_KEY = 0
 STEP_MOVE = 1
 STEP_BUTTON = 2
@@ -1719,14 +1634,11 @@ MAX_NAME_LEN = 60
 MAX_COORD = 65536
 FORMAT_VERSION = 3
 
-
 def pad_axis_range(index):
     name = PAD_AXES[index]
     if name in ("lt", "rt"):
         return 0, TRIGGER_FULL
     return -AXIS_FULL - 1, AXIS_FULL
-
-
 
 def validate_steps(raw):
     if not isinstance(raw, (list, tuple)) or not raw:
@@ -1802,7 +1714,6 @@ def validate_steps(raw):
         out.append((STEP_KEY, mods, vk, max(0, min(MAX_DELAY_MS, delay))))
     return out
 
-
 def _as_bool(value, default=False):
     if isinstance(value, bool):
         return value
@@ -1811,7 +1722,6 @@ def _as_bool(value, default=False):
     if value is None:
         return default
     return bool(value)
-
 
 def _clean_rec(data, fallback_name):
     if not isinstance(data, dict):
@@ -1829,7 +1739,6 @@ def _clean_rec(data, fallback_name):
     return {"name": name, "steps": steps, "loop": loop,
             "created": created, "id": None}
 
-
 class RecordingStore(object):
 
     def __init__(self, path=None):
@@ -1841,7 +1750,6 @@ class RecordingStore(object):
         self.revision = 0
         self._next_id = 1
         self._load()
-
 
     def _load(self):
         try:
@@ -1884,7 +1792,6 @@ class RecordingStore(object):
             log("macros.json: could not save (%r)" % (exc,))
             return False
 
-
     def _load_items(self):
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
@@ -1906,7 +1813,6 @@ class RecordingStore(object):
                 continue
             out.append(rec)
         return out
-
 
     def reload_from_disk(self):
         fresh = self._load_items()
@@ -2005,7 +1911,6 @@ class RecordingStore(object):
         return max(self.recordings,
                    key=lambda r: (r["created"], r["id"]))
 
-
     def export_to(self, path, rid=None):
         if rid is not None:
             rec = self.get(rid)
@@ -2050,9 +1955,14 @@ class RecordingStore(object):
             return False, i18n.L("rec.notfile")
 
         version = data.get("snappyai_recording") or data.get("snappyai_recordings")
-        if version is not None and version != FORMAT_VERSION:
-            log("recordings: import format version %r != %d, ignoring" % (version, FORMAT_VERSION))
-            return False, i18n.L("rec.bad_version", version, FORMAT_VERSION)
+        if version is not None:
+            try:
+                version = int(version)
+            except (TypeError, ValueError):
+                return False, i18n.L("rec.notfile")
+            if version != FORMAT_VERSION:
+                log("recordings: import format version %r != %d, ignoring" % (version, FORMAT_VERSION))
+                return False, i18n.L("rec.bad_version", version, FORMAT_VERSION)
 
         items = []
         if isinstance(data, dict):
@@ -2066,6 +1976,8 @@ class RecordingStore(object):
             return False, i18n.L("rec.notfile")
 
         added = 0
+        pre_len = len(self.recordings)
+        pre_id = self._next_id
         for i, item in enumerate(items):
             rec = _clean_rec(item, "Imported %d" % (i + 1))
             if rec is None:
@@ -2091,6 +2003,9 @@ class RecordingStore(object):
 
         if added:
             if not self.save():
+
+                del self.recordings[pre_len:]
+                self._next_id = pre_id
                 return False, i18n.L("rec.import_fail", "could not save library")
         return added > 0, i18n.L(
             "rec.imported", added,

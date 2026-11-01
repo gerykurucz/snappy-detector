@@ -6,7 +6,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-
 @dataclass
 class LoadController:
     direction: str
@@ -17,7 +16,6 @@ class LoadController:
     @property
     def configured(self) -> bool:
         return bool(self.url.strip())
-
 
 @dataclass
 class BufferbloatResult:
@@ -86,7 +84,6 @@ class BufferbloatResult:
         lines.append(f"  {self.explanation}")
         return "\n".join(lines)
 
-
 def _grade(increase: float | None) -> tuple[str, str]:
     if increase is None:
         return ("?", "only the idle line was measured")
@@ -99,7 +96,6 @@ def _grade(increase: float | None) -> tuple[str, str]:
     if increase < 500.0:
         return ("D", "severe bufferbloat; gaming under load will stutter")
     return ("F", "extreme bufferbloat; the loaded link is barely usable")
-
 
 class _Load:
     def __init__(self, ctl: LoadController) -> None:
@@ -145,7 +141,6 @@ class _Load:
         self.stop.set()
         for t in self.threads:
             t.join(timeout=2.0)
-
 
 def run_bufferbloat_test(
     target: str,
@@ -213,7 +208,6 @@ ASSUMPTIONS = (
     "pixel response are excluded and need a camera to observe"
 )
 
-
 def build_chain(
     input_res: dict[str, Any], render_res: dict[str, Any],
     net: dict[str, Any],
@@ -236,13 +230,11 @@ def build_chain(
 
 from system_core import Inventory
 
-
 @dataclass
 class CollectOptions:
     benchmark_dns: bool = True
     detect_processes: bool = True
     detect_anti_cheat: bool = True
-
 
 def collect_inventory(
     backend: Any,
@@ -282,15 +274,12 @@ import sys
 from system_core import SnappyAIError
 from general_utils import console_encoding, silent_kwargs
 
-
 class ProbeUnavailableError(SnappyAIError):
     pass
-
 
 @dataclass(slots=True)
 class Sample:
     rtt_ms: float | None = None
-
 
 @dataclass
 class ProbeResult:
@@ -320,7 +309,6 @@ class ProbeResult:
             bursts.append({"at": len(self.samples) - run, "lost": run})
         return bursts
 
-
 def _parse_ping_ms(stdout: str) -> float | None:
     m = re.search(r"[=<>]\s*(\d+(?:[.,]\d+)?)\s*ms", stdout or "")
     if not m:
@@ -329,7 +317,6 @@ def _parse_ping_ms(stdout: str) -> float | None:
         return float(m.group(1).replace(",", "."))
     except ValueError:
         return None
-
 
 def _ping_once(target: str, timeout: float) -> float | None:
     ms = int(max(100, min(4000, timeout * 1000.0)))
@@ -349,7 +336,6 @@ def _ping_once(target: str, timeout: float) -> float | None:
     if proc.returncode != 0:
         return None
     return _parse_ping_ms(proc.stdout)
-
 
 def _tcp_once(target: str, port: int, timeout: float) -> float | None:
     try:
@@ -380,7 +366,6 @@ def _tcp_once(target: str, port: int, timeout: float) -> float | None:
             pass
         return rtt
     return None
-
 
 def probe(
     target: str,
@@ -418,7 +403,6 @@ def probe(
         chosen = "icmp" if any(s.rtt_ms is not None for s in samples) else "unreachable"
     return ProbeResult(samples=samples, transport=chosen, target=target)
 
-
 def measure(
     target: str,
     count: int = 200,
@@ -434,7 +418,6 @@ def measure(
 
 from system_core import OSFamily, Vendor
 from system_core import CPU, DNS, NIC, Display, GPU, Power, Timer
-
 
 def build_fake_inventory() -> Inventory:
     return Inventory(
@@ -501,7 +484,6 @@ def build_fake_inventory() -> Inventory:
 
 import math
 
-
 def _pct(sorted_samples: list[float], q: float) -> float | None:
     if not sorted_samples:
         return None
@@ -514,7 +496,6 @@ def _pct(sorted_samples: list[float], q: float) -> float | None:
         return sorted_samples[lo]
     frac = pos - lo
     return sorted_samples[lo] * (1.0 - frac) + sorted_samples[hi] * frac
-
 
 @dataclass
 class Distribution:
@@ -609,14 +590,12 @@ class Distribution:
             d["samples"] = list(self.samples)
         return d
 
-
 @dataclass(slots=True)
 class _TestResult:
     p: float
     t: float = 0.0
     df: float = 0.0
     rank_biserial: float = 0.0
-
 
 def _mann_whitney(a: list[float], b: list[float]) -> _TestResult:
     n1, n2 = len(a), len(b)
@@ -648,7 +627,6 @@ def _mann_whitney(a: list[float], b: list[float]) -> _TestResult:
     rbc = 1.0 - (2.0 * u1) / (n1 * n2)
     return _TestResult(p=p, rank_biserial=rbc)
 
-
 def _welch(a: list[float], b: list[float]) -> _TestResult:
     n1, n2 = len(a), len(b)
     if n1 < 8 or n2 < 8:
@@ -668,7 +646,6 @@ def _welch(a: list[float], b: list[float]) -> _TestResult:
     df = df_num / df_den if df_den else 1.0
     p = math.erfc(abs(t) / math.sqrt(2.0))
     return _TestResult(p=p, t=t, df=df)
-
 
 @dataclass
 class Comparison:
@@ -700,7 +677,6 @@ class Comparison:
             "after": self.after,
         }
 
-
 def _metric_value(dist: Distribution, metric: str) -> float | None:
     if metric == "mean":
         return dist.mean
@@ -713,7 +689,6 @@ def _metric_value(dist: Distribution, metric: str) -> float | None:
             return None
         return _pct(dist.ordered, q)
     return None
-
 
 def decide(
     base: Distribution,
@@ -781,7 +756,6 @@ def decide(
         after=after.as_dict(),
     )
 
-
 @dataclass(slots=True)
 class Hop:
     index: int
@@ -795,7 +769,6 @@ class Hop:
 
     def as_dict(self) -> dict[str, Any]:
         return {"hop": self.index, "address": self.address, "rtts_ms": list(self.rtts_ms)}
-
 
 @dataclass
 class TraceResult:
@@ -877,8 +850,6 @@ class TraceResult:
             lines.append(f"{h.index:>3}  {h.address or '*':<16}  {cells}")
         return "\n".join(lines)
 
-
-
 def traceroute(
     target: str,
     max_hops: int = 30,
@@ -937,7 +908,6 @@ LIMITS = (
     "which need a camera. Flip-discard is tried first, then legacy discard."
 )
 
-
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
 WS_OVERLAPPEDWINDOW = 0x00CF0000
@@ -945,7 +915,6 @@ WS_CLIPCHILDREN = 0x02000000
 WS_CLIPSIBLINGS = 0x04000000
 SW_SHOWNA = 8
 SW_SHOW = 5
-
 
 def _vcall(ptr: Any, index: int, restype: Any, *argtypes: Any) -> Any:
     import ctypes
@@ -957,7 +926,6 @@ def _vcall(ptr: Any, index: int, restype: Any, *argtypes: Any) -> Any:
     if isinstance(entry, ctypes.c_void_p):
         entry = entry.value
     return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(entry)
-
 
 def _open_window() -> dict[str, Any]:
     import ctypes
@@ -1053,7 +1021,6 @@ def _open_window() -> dict[str, Any]:
 
     return {"user32": user32, "hwnd": hwnd, "proc": _wndproc, "close": close}
 
-
 def _adapter_desc() -> str:
     import ctypes
     from ctypes import wintypes
@@ -1113,7 +1080,6 @@ def _adapter_desc() -> str:
         return name
     except Exception:
         return ""
-
 
 def _open_device(hwnd: Any) -> dict[str, Any]:
     import ctypes
@@ -1191,8 +1157,7 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
         desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
         return desc
 
-    # Try swap effects, verify Present works
-    swap_effects = [(4, "flip-discard"), (0, "discard")]  # try flip-discard first
+    swap_effects = [(4, "flip-discard"), (0, "discard")]
     driver_types = [(1, "hardware"), (5, "WARP")]
     effect = ""
     for driver_type, driver_name in driver_types:
@@ -1207,14 +1172,14 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
             logging.warning(f"D3D11CreateDeviceAndSwapChain driver={driver_name}, swap={code} hr={hr}, swapchain={swapchain.value}")
             if hr != 0 or not swapchain.value:
                 continue
-            # Test Present
+
             present_fn = _vcall(swapchain, 8, ctypes.c_long, wintypes.UINT, wintypes.UINT)
             test_hr = present_fn(swapchain, 1, 0)
             logging.warning(f"Test Present driver={driver_name}, swap={code} hr={test_hr}")
             if test_hr == 0:
                 effect = swap_name
                 break
-            # Clean up and try next
+
             release_fn = _vcall(swapchain, 2, wintypes.ULONG)
             release_fn(swapchain)
             swapchain = ctypes.c_void_p()
@@ -1263,7 +1228,6 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
         "present": do_present, "stats": stats, "now_ms": now_ms, "close": close,
         "effect": effect,
     }
-
 
 def measure_present(
     samples: int = 40, warmup: int = 30,
@@ -1331,7 +1295,7 @@ def measure_present(
                 alive = True
                 break
             elif s_post["hr"] != 0:
-                # GetFrameStatistics failed, but Present works - use fallback
+
                 alive = True
                 break
         if not alive:
@@ -1347,7 +1311,7 @@ def measure_present(
         for i in range(samples):
             s0 = stats()
             if s0["hr"] != 0:
-                # GetFrameStatistics failed, fall back to timing Present calls
+
                 use_stats = False
                 t0 = now_ms()
                 if present(1, 0) != 0:

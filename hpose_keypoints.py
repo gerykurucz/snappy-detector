@@ -5,35 +5,14 @@ import numpy as np
 
 N_KP = 17
 
+FACE_IDX = (0, 1, 2, 3, 4)
+
 KEYPOINT_NAMES = (
     "nose", "left_eye", "right_eye", "left_ear", "right_ear",
     "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
     "left_wrist", "right_wrist", "left_hip", "right_hip",
     "left_knee", "right_knee", "left_ankle", "right_ankle",
 )
-
-KP = {name: i for i, name in enumerate(KEYPOINT_NAMES)}
-
-SKELETON = (
-    (0, 1), (0, 2), (1, 3), (2, 4),
-    (0, 5), (0, 6), (5, 6),
-    (5, 7), (7, 9), (6, 8), (8, 10),
-    (5, 11), (6, 12), (11, 12),
-    (11, 13), (13, 15), (12, 14), (14, 16),
-)
-
-FACE_IDX = (0, 1, 2, 3, 4)
-SHOULDER_IDX = (5, 6)
-HIP_IDX = (11, 12)
-ELBOW_IDX = (7, 8)
-WRIST_IDX = (9, 10)
-KNEE_IDX = (13, 14)
-ANKLE_IDX = (15, 16)
-
-DERIVED_NAMES = ("neck", "pelvis", "head_center")
-N_KP_DERIVED = N_KP + len(DERIVED_NAMES)
-DERIVED_OFFSET = N_KP
-
 
 
 def derive_joints(kps: np.ndarray) -> np.ndarray:
@@ -56,15 +35,6 @@ def derive_joints(kps: np.ndarray) -> np.ndarray:
                      min(nose[2], neck[2])], dtype=np.float32)
     return np.concatenate([kps[:N_KP], neck[None], pelvis[None],
                            head[None]], axis=0)
-
-
-def midpoint(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    a = np.asarray(a, dtype=np.float32)
-    b = np.asarray(b, dtype=np.float32)
-    return np.array([(a[0] + b[0]) * 0.5,
-                     (a[1] + b[1]) * 0.5,
-                     min(a[2], b[2])], dtype=np.float32)
-
 
 class Pose(object):
 
@@ -114,7 +84,6 @@ class Pose(object):
         return "Pose(box=%s, score=%.3f)" % (
             tuple(round(v, 1) for v in self.box), self.score)
 
-
 def box_iou(a, b) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -133,9 +102,6 @@ def box_iou(a, b) -> float:
     if union <= 0.0:
         return 0.0
     return float(inter / union)
-
-
-
 
 def clip_box(box, width, height):
     x1 = min(max(0.0, float(box[0])), float(width))

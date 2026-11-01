@@ -30,7 +30,6 @@ class BudgetComponent(str, Enum):
     def floor_note(self) -> str:
         return _FLOOR_NOTES[self]
 
-
 _FLOOR_NOTES: dict[BudgetComponent, str] = {
     BudgetComponent.NETWORK_PATH: (
         "Bounded by the speed of light: ~10 ms RTT per 1000 km of fibre, before any "
@@ -50,7 +49,6 @@ _FLOOR_NOTES: dict[BudgetComponent, str] = {
     ),
 }
 
-
 class Verdict(str, Enum):
     PROBLEM = "problem"
     NO_PROBLEM = "no_problem"
@@ -61,20 +59,17 @@ class Verdict(str, Enum):
     def actionable(self) -> bool:
         return self is Verdict.PROBLEM
 
-
 class Risk(str, Enum):
     NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
-
 class Confidence(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
     UNVERIFIED = "unverified"
-
 
 class Vendor(str, Enum):
     NVIDIA = "nvidia"
@@ -87,7 +82,6 @@ class Vendor(str, Enum):
     OTHER = "other"
     UNKNOWN = "unknown"
 
-
 class OSFamily(str, Enum):
     WINDOWS = "windows"
     LINUX = "linux"
@@ -97,29 +91,23 @@ class OSFamily(str, Enum):
 class LattoolError(Exception):
     pass
 
-
 class RefusedTweakError(LattoolError):
     pass
-
 
 class TweakValidationError(LattoolError):
     pass
 
 SnappyAIError = LattoolError
 
-
 _P = 2 ** 255 - 19
 _L = 2 ** 252 + 27742317777372353535851937790883648493
 _D = (-121665 * pow(121666, _P - 2, _P)) % _P
 
-
 def _sha512(b):
     return hashlib.sha512(b).digest()
 
-
 def _inv(x):
     return pow(x, _P - 2, _P)
-
 
 def _recover_x(y, sign):
     if y >= _P:
@@ -134,10 +122,8 @@ def _recover_x(y, sign):
         x = _P - x
     return x
 
-
 _Gy = 4 * _inv(5) % _P
 _Gx = _recover_x(_Gy, 0)
-
 
 def _decode_point(s):
     if len(s) != 32:
@@ -150,7 +136,6 @@ def _decode_point(s):
         return None
     return (x, y, 1, x * y % _P)
 
-
 def _encode_point(pt):
     x, y, z, _t = pt
     if z == 0:
@@ -160,7 +145,6 @@ def _encode_point(pt):
     y = y * zi % _P
     b = (y | ((x & 1) << 255)).to_bytes(32, "little")
     return bytes(b)
-
 
 def _add(p1, p2):
     x1, y1, z1, t1 = p1
@@ -172,7 +156,6 @@ def _add(p1, p2):
     e, f, g, h = b - a, d - c, d + c, b + a
     return (e * f % _P, g * h % _P, f * g % _P, e * h % _P)
 
-
 def _mul(s, pt):
     out = (0, 1, 1, 0)
     while s > 0:
@@ -182,11 +165,8 @@ def _mul(s, pt):
         s >>= 1
     return out
 
-
 def _point_equal(a, b):
     return _encode_point(a) == _encode_point(b)
-
-
 
 def sign(secret, message):
     if len(secret) != 32:
@@ -202,7 +182,6 @@ def sign(secret, message):
     k = int.from_bytes(_sha512(R + pub + message), "little") % _L
     S = (r + k * a) % _L
     return R + S.to_bytes(32, "little")
-
 
 def verify(pub, message, sig):
     try:
@@ -271,7 +250,6 @@ ACCENT_PRESETS = {
     "black":  (0.0, 0.0, 30.0),
 }
 
-
 def parse_accent(spec):
     if spec is None:
         return None
@@ -335,7 +313,6 @@ def parse_accent(spec):
 
     return (min(h * 30.0, 179.0), s * 255.0, v * 255.0)
 
-
 def parse_accents(spec):
     if spec is None:
         return []
@@ -383,7 +360,6 @@ def parse_accents(spec):
 
     return out
 
-
 def hsv_to_rgb(h, s, v):
     h = max(0.0, min(359.999, float(h) * 2.0))
     s = max(0.0, min(1.0, float(s) / 255.0))
@@ -407,14 +383,11 @@ def hsv_to_rgb(h, s, v):
             max(0, min(255, int(round((g + m) * 255.0)))),
             max(0, min(255, int(round((b + m) * 255.0)))))
 
-
 def _parse_accent(spec):
     return parse_accent(spec)
 
-
 def _parse_accents(spec):
     return parse_accents(spec)
-
 
 _ACCENT_PRESETS = ACCENT_PRESETS
 
@@ -425,7 +398,6 @@ IS_WINDOWS = sys.platform == "win32"
 _LOG_LOCK = threading.Lock()
 _LOG_FILE = None
 _LOG_PATH = None
-
 
 def attach_log_file(path):
     global _LOG_FILE, _LOG_PATH
@@ -455,10 +427,8 @@ def attach_log_file(path):
             pass
         return _LOG_PATH
 
-
 def log_path():
     return _LOG_PATH
-
 
 def log(message):
     text = str(message)
@@ -477,32 +447,24 @@ def log(message):
             except (OSError, ValueError):
                 pass
 
-
 _LANG = "en"
 _CATALOGS: dict[str, dict[str, str]] = {"en": {}}
 _I18N_LOCK = threading.Lock()
-
 
 def publish(lang, mapping):
     with _I18N_LOCK:
         cat = _CATALOGS.setdefault(str(lang), {})
         cat.update({str(k): str(v) for k, v in dict(mapping).items()})
 
-
 def set_language(lang):
     global _LANG
     with _I18N_LOCK:
         _LANG = str(lang or "en")
 
-
-
-
 _LANG_CODES = ("en",)
-
 
 def codes():
     return _LANG_CODES
-
 
 def L(key, *args):
     with _I18N_LOCK:
@@ -518,7 +480,6 @@ def L(key, *args):
             return text
     return text
 
-
 @dataclass
 class CPU:
     name: str = ""
@@ -526,14 +487,12 @@ class CPU:
     l3_domains: int = 1
     has_p_and_e_cores: bool = False
 
-
 @dataclass
 class GPU:
     name: str = ""
     vendor: Vendor = Vendor.OTHER
     driver_version: str = ""
     hags: bool | None = None
-
 
 @dataclass
 class NIC:
@@ -545,19 +504,16 @@ class NIC:
     allow_turn_off: bool | None = None
     interrupt_moderation: bool | None = None
 
-
 @dataclass
 class DNS:
     server_addresses: list[str] = field(default_factory=list)
     resolve_ms: float | None = None
-
 
 @dataclass
 class Power:
     active_scheme_name: str = ""
     active_scheme_guid: str = ""
     on_battery: bool = False
-
 
 @dataclass
 class Timer:
@@ -566,7 +522,6 @@ class Timer:
     max_period_us: float | None = None
     global_timer_resolution_requests: int = -1
     mmcss_responsiveness: str = ""
-
 
 @dataclass
 class Display:
@@ -581,7 +536,6 @@ class Display:
             return 0.0
         return max(0.0, float(self.max_refresh_hz) - float(self.current_refresh_hz))
 
-
 _WIFI_MARKERS = ("wi-fi", "wifi", "wireless", "wlan", "802.11")
 
 _DISCRETE_GPU_MARKERS = (
@@ -589,7 +543,6 @@ _DISCRETE_GPU_MARKERS = (
     "radeon rx", "rx vega", "radeon pro", "firepro", "vega 56", "vega 64",
     "arc a", "arc b", "arc ",
 )
-
 
 def _gpu_discrete_score(gpu: "GPU") -> int:
     name = (gpu.name or "").lower().replace("(r)", " ").replace("(tm)", " ")
@@ -600,7 +553,6 @@ def _gpu_discrete_score(gpu: "GPU") -> int:
     if gpu.vendor in (Vendor.AMD, Vendor.INTEL):
         return 0
     return 1
-
 
 @dataclass
 class Inventory:
@@ -663,7 +615,6 @@ class Inventory:
             asdict(pn) if (pn := self.primary_nic) is not None else None)
         return data
 
-
 _CONFIDENCE_RANK = {
     Confidence.HIGH: 3,
     Confidence.MEDIUM: 2,
@@ -671,12 +622,10 @@ _CONFIDENCE_RANK = {
     Confidence.UNVERIFIED: 0,
 }
 
-
 @dataclass(slots=True)
 class PolicyDecision:
     allowed: bool
     reason: str = ""
-
 
 @dataclass
 class SafetyPolicy:
@@ -761,28 +710,6 @@ class SafetyPolicy:
                 )
         return PolicyDecision(allowed=True, reason="")
 
-
-class AntiCheatPolicy:
-    _NAMES = (
-        "vgc",
-        "vgk",
-        "easyanticheat",
-        "eac",
-        "battleye",
-        "bedaisy",
-        "faceit",
-    )
-
-    def detect(self, inventory: Any) -> tuple[str, ...]:
-        names = [str(p).lower() for p in getattr(inventory, "top_cpu_processes", [])]
-        names.append(str(getattr(inventory, "foreground_process", "") or "").lower())
-        found = [n for n in names for mark in self._NAMES if mark and mark in n]
-        seen: list[str] = []
-        for n in found:
-            if n not in seen:
-                seen.append(n)
-        return tuple(seen)
-
 """Raising the system clock interrupt frequency from this process.
 
 WHY A RESIDENT HOLDER EXISTS
@@ -815,13 +742,11 @@ TIMER_TARGET_US = 500.0
 _POWER_THROTTLING_CURRENT_VERSION = 1
 _POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4
 
-
 @dataclass
 class TimerResolution:
     min_us: float | None = None
     max_us: float | None = None
     current_us: float | None = None
-
 
 def _ntdll():
     import ctypes
@@ -836,7 +761,6 @@ def _ntdll():
         ntdll.NtSetTimerResolution.restype = ctypes.c_long
         ntdll._snappy_timer_typed = True
     return ntdll
-
 
 def _clear_timer_power_throttling() -> dict[str, Any]:
     import ctypes
@@ -876,7 +800,6 @@ def _clear_timer_power_throttling() -> dict[str, Any]:
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
 
-
 def query_timer_resolution() -> TimerResolution:
     if not IS_WINDOWS:
         return TimerResolution()
@@ -901,7 +824,6 @@ def query_timer_resolution() -> TimerResolution:
         log(f"timer resolution query failed: {exc}")
         return TimerResolution()
 
-
 def clamp_timer_target(want_us: float, res: TimerResolution) -> int:
     want = int(round(float(want_us) * 10.0))
     if want <= 0:
@@ -911,7 +833,6 @@ def clamp_timer_target(want_us: float, res: TimerResolution) -> int:
     if res.max_us:
         want = min(want, int(round(res.max_us * 10.0)))
     return max(1, want)
-
 
 def request_timer_resolution(
     target_us: float = TIMER_TARGET_US, *, power_throttling_optout: bool = True,
@@ -974,7 +895,6 @@ def request_timer_resolution(
         )
         return dict(out)
 
-
 def stop_timer_request() -> dict[str, Any]:
     global _TIMER_STOP, _TIMER_THREAD, _TIMER_STATE
     with _TIMER_LOCK:
@@ -1021,8 +941,5 @@ def stop_timer_request() -> dict[str, Any]:
     return {"ok": True, "was_active": True, "released": released,
             "superseded": superseded, "current_us": after.current_us}
 
-
 def timer_request_active() -> bool:
     return _TIMER_THREAD is not None and _TIMER_THREAD.is_alive()
-
-

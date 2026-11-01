@@ -8,7 +8,6 @@ MODES = ("center", "custom")
 DEFAULT_COLOR = (0, 255, 0)
 _TRANSPARENT = "black"
 
-
 def parse_color(raw):
     try:
         s = str(raw or "").strip()
@@ -30,7 +29,6 @@ def parse_color(raw):
         return DEFAULT_COLOR
     return tuple(min(255, max(0, p)) for p in parts)
 
-
 def to_hex(rgb):
     try:
         r, g, b = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
@@ -39,11 +37,9 @@ def to_hex(rgb):
     return "#%02x%02x%02x" % (
         min(255, max(0, r)), min(255, max(0, g)), min(255, max(0, b)))
 
-
 def _rot(x, y, ang):
     c, s = math.cos(ang), math.sin(ang)
     return (x * c - y * s, x * s + y * c)
-
 
 def shape_geometry(shape, size, gap, thickness, rotation=0):
     try:
@@ -83,7 +79,6 @@ def shape_geometry(shape, size, gap, thickness, rotation=0):
                 lines.append((x1, y1, x2, y2))
     return {"lines": lines, "ovals": ovals}
 
-
 def render(canvas, cx, cy, shape, size, gap, thickness, rotation, hexcolor):
     try:
         width = max(1, int(round(float(thickness))))
@@ -101,7 +96,6 @@ def render(canvas, cx, cy, shape, size, gap, thickness, rotation, hexcolor):
             canvas.create_oval(cx + x0, cy + y0, cx + x1, cy + y1,
                                outline=hexcolor, width=width)
 
-
 def preset_path(config_dir=None):
     if config_dir is None:
         try:
@@ -111,7 +105,6 @@ def preset_path(config_dir=None):
             config_dir = os.path.expanduser("~")
     return os.path.join(config_dir, "reticle_presets.json")
 
-
 def list_presets(config_dir=None):
     try:
         with open(preset_path(config_dir), "r", encoding="utf-8") as fh:
@@ -119,7 +112,6 @@ def list_presets(config_dir=None):
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
-
 
 def save_preset(name, values, config_dir=None):
     name = str(name or "").strip()
@@ -134,10 +126,8 @@ def save_preset(name, values, config_dir=None):
     os.replace(tmp, preset_path(config_dir))
     return True
 
-
 def load_preset(name, config_dir=None):
     return list_presets(config_dir).get(str(name or "").strip())
-
 
 def delete_preset(name, config_dir=None):
     data = list_presets(config_dir)
@@ -149,7 +139,6 @@ def delete_preset(name, config_dir=None):
         json.dump(data, fh, indent=2)
     os.replace(tmp, preset_path(config_dir))
     return True
-
 
 def shape_bounds(shape, size, gap, thickness, rotation=0):
     try:
@@ -164,7 +153,6 @@ def shape_bounds(shape, size, gap, thickness, rotation=0):
         reach = max(reach, abs(x0), abs(y0), abs(x1), abs(y1))
     return int(math.ceil(reach + thick + 4.0))
 
-
 def _click_through_ok(win):
     try:
         import ctypes
@@ -175,7 +163,6 @@ def _click_through_ok(win):
         return bool(user32.GetWindowLongW(hwnd, -20) & 0x20)
     except Exception:
         return False
-
 
 def _apply_layered(win, opacity):
     try:
@@ -190,7 +177,6 @@ def _apply_layered(win, opacity):
                                                       alpha, 0x1 | 0x2))
     except Exception:
         return False
-
 
 class ReticleOverlay(object):
     def __init__(self, root, cfg):
@@ -334,7 +320,7 @@ class ReticleOverlay(object):
             if target_center:
                 tx, ty = target_center
                 lx, ly = tx - vx, ty - vy
-                # draw a green dot at the absolute center of the detected object
+
                 c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4,
                               outline='#00FF00', fill='#00FF00', width=0)
         except Exception:

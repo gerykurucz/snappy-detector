@@ -24,8 +24,6 @@ from config import DEFAULT_CONFIG, _coerce_value
 from system_core import APP_NAME, IS_WINDOWS, log
 try:
 
-
-
     from system_core import APP_VERSION
 except ImportError:
     APP_VERSION = "?"
@@ -40,7 +38,6 @@ try:
     from win32rt import apply_window_theme
 except ImportError:
 
-
     def apply_window_theme(*_args, **_kw):
         pass
     if IS_WINDOWS:
@@ -54,29 +51,15 @@ try:
 except ImportError:
     HAVE_PIL = False
 
-
 def hex2rgb(value):
     value = str(value).lstrip("#")
     return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-
-
-
-
-
-
-
-
-
-
-
-
 
 RETEXT = []
 
 def R(fn):
     RETEXT.append(fn)
     return fn
-
 
 def dispatch_ret():
     for fn in list(RETEXT):
@@ -88,14 +71,11 @@ def dispatch_ret():
             except ValueError:
                 pass
 
-
-
 def _live(w):
     try:
         return bool(w.winfo_exists())
     except (tk.TclError, RuntimeError):
         return False
-
 
 def label_key(key):
     if key.startswith("macro") and key.endswith("_key"):
@@ -105,7 +85,6 @@ def label_key(key):
     if key.startswith("key_play") and key[len("key_play"):].isdigit():
         return "lbl.key_play_n"
     return "lbl." + key
-
 
 def tr_label(key):
     lk = label_key(key)
@@ -122,14 +101,12 @@ def tr_label(key):
             return t
     return t
 
-
 def desc_key(key):
     if key.startswith("macro") and key.endswith(("_key", "_action")):
         return "desc.macro_" + ("key" if key.endswith("_key") else "action")
     if key.startswith("key_play") and key[len("key_play"):].isdigit():
         return "desc.key_play_n"
     return "desc." + key
-
 
 def tr_desc(key):
     dk = desc_key(key)
@@ -143,11 +120,6 @@ def tr_desc(key):
         t = t % int(key[len("key_play"):])
     return t
 
-
-
-
-
-
 THEMES = {
     "light": dict(
         bg="#f4f5f7", card="#ffffff", text="#1b1b1b", muted="#5f6368",
@@ -155,13 +127,6 @@ THEMES = {
         green="#2e7d32", amber="#b26a00",
         tab_bg="#eceef1", desc_bg="#e8eaed", status_bg="#e8eaed",
         light_bg="#dfe2e6",
-
-
-
-
-
-
-
 
         switch_on="#cc2f38",
     ),
@@ -172,17 +137,9 @@ THEMES = {
         tab_bg="#17181d", desc_bg="#17181d", status_bg="#17181d",
         light_bg="#343845",
 
-
-
-
-
         switch_on="#e04a52",
     ),
 }
-
-
-
-
 
 SW_W, SW_H = 46, 22
 SW_KNOB, SW_PAD, SW_RADIUS = 16, 3, 11
@@ -197,73 +154,22 @@ F_ENTRY = ("Segoe UI", 11)
 F_TAB = ("Segoe UI", 12, "bold")
 F_TAB_OFF = ("Segoe UI", 10)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 TOPBAR_H = 74
 TOPBAR_LOGO_PX = 60
 
-
-
-
-
-
-
-
-
 TOPBAR_TEXT_RAISE = 4
-
-
-
-
 
 TOPBAR_TEXT_TOP = max(0, (TOPBAR_H - TOPBAR_LOGO_PX) // 2
                       - TOPBAR_TEXT_RAISE)
 
-
-
-
-
-
-
 F_TOP_H1 = ("Segoe UI", 20, "bold")
 F_TOP_LINE = ("Segoe UI", 10)
 
-
-
-
-
-
-
-
-
-
-
-
 TOPBAR_BUILD_INDENT = 2
-
-
-
 
 ENTITLEMENT_CHECK_MINUTES = 30
 
 META = {
-
 
     "controller_input": ("Enable controller input",
         "Read a gamepad through Windows' own XInput so it can launch, pause, "
@@ -459,7 +365,6 @@ META = {
                         "within this time becomes a double-click on the "
                         "item.", "float", None),
 
-
     "accent_color": ("My colour(s)",
                      "The colours assistance prefers; items containing one "
                      "win ties. Pick a colour below and press 'Add to "
@@ -472,11 +377,6 @@ META = {
     "accent_tolerance": ("Colour match strictness",
                          "How close a colour must be to count as yours "
                          "(4-90). Lower = stricter.", "int", None),
-
-
-
-
-
 
     "accent_soft": ("Accept near-miss shades",
                     "0-100: how much lighter, darker or washed-out "
@@ -665,9 +565,6 @@ META = {
                                  ('Compatible (RDP, VMs)', 'mss'),
                                  ('Windows Graphics Capture', 'wgc'))),
 
-
-
-
     "input_backend": ("Click delivery method",
                       "Standard Windows clicks work everywhere. Driver "
                       "level (Interception) sends real kernel-driver input - "
@@ -677,10 +574,6 @@ META = {
                       "reboot. Applies on restart.",
                       "map", (('Standard Windows', 'win32'),
                                ('Driver level (kernel)', 'driver'))),
-
-
-
-
 
     "contrast_threshold": ("Edge threshold",
                            "Lower finds fainter items (and more noise); "
@@ -719,9 +612,6 @@ META = {
                              "long and any held click is given back to you.",
                              "float", None),
 
-
-
-
     "color_adapt": ("Adapt to screen lighting",
                     "Each item is white-balanced against its own "
                     "background before matching, so night light and "
@@ -743,8 +633,6 @@ META = {
                         "never-click list.",
                         "bool", None),
 
-
-
     "snap_offset_x": ("Click offset X (px)",
                       "Moves the click point sideways from the middle of "
                       "the item (-200 to 200, negative goes left); for "
@@ -762,13 +650,7 @@ META = {
                        "stages, so a very busy frame can overrun slightly.",
                        "int", None),
 
-
-
-
 }
-
-
-
 
 for _i in range(1, MACRO_SLOTS + 1):
     META["macro%d_key" % _i] = (
@@ -821,29 +703,6 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
         "that, nothing happens." % _i,
         "str", None)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 TAB_ASSIST = ["controller_input", "pad_drive",
               "shift_bypass", "subject_priority", "subject_only",
               "debug_visualize",
@@ -889,9 +748,6 @@ TAB_ADV = ["radius", "center_blind_area", "center_max_step", "aim_speed", "aim_y
            "hpose_lead_ms", "hpose_min_conf",
            "snap_offset_x", "snap_offset_y"]
 
-
-
-
 TAB_EXPERIMENTAL = [k for k in META if META[k][2] in ("choice", "map") and k not in TAB_RETICLE]
 
 _CAPTURE_KIND = {}
@@ -917,14 +773,11 @@ for _k, _kind in _CAPTURE_KIND.items():
 def val_slug(value):
     return str(value).replace(".", "_")
 
-
 def val_key(key, value):
     return "val.%s.%s" % (key, val_slug(value))
 
-
 def map_pairs(key):
     return list(META[key][3])
-
 
 def map_pairs_live(key):
     out = []
@@ -932,7 +785,6 @@ def map_pairs_live(key):
         t = i18n.L(val_key(key, val))
         out.append((t if t != val_key(key, val) else disp, val))
     return out
-
 
 def map_display(key, value):
     pairs = map_pairs_live(key)
@@ -948,24 +800,12 @@ def map_display(key, value):
     except (TypeError, ValueError):
         return pairs[0][0]
 
-
 def map_value(key, display):
     for pairs in (map_pairs_live(key), map_pairs(key)):
         for disp, val in pairs:
             if disp == display:
                 return val
     return None
-
-
-
-
-
-
-
-
-
-
-
 
 PROSE = {
     "top.mode1": "MODE 1 - CLASSIC (clicks assisted)",
@@ -1111,9 +951,6 @@ PROSE = {
     "gate.btn.monthly": "Monthly Subscription for 9.99\u20ac",
     "gate.btn.trial": "Trial Purchase for 1.99\u20ac",
 
-
-
-
     "gate.note": "The engine starts as soon as the subscription is "
                  "active - this window re-checks by itself every 30 "
                  "seconds. Closing it returns to sign-in.",
@@ -1151,8 +988,6 @@ PROSE = {
     "gate.msg.no_link": "That payment link is not configured on this "
                         "build.",
 
-
-
     "gate.msg.unreachable": "Auth server unreachable: %s",
     "gate.msg.session_gone": "Session gone - sign in again.",
     "gate.msg.active": "Subscription active - starting Snappy AI...",
@@ -1189,13 +1024,6 @@ PROSE = {
     "st.saved_bad": "Saved, but invalid (old kept): %s",
     "st.saved": "Saved and applied.",
     "st.defaults_restored": "Defaults restored.",
-
-
-
-
-
-
-
 
     "st.exported": "Settings exported to %s",
     "st.export_fail": "Export failed: %r",
@@ -1425,12 +1253,8 @@ PROSE = {
 
 i18n.publish("en", PROSE)
 
-
 i18n.publish("en", {"desc." + k: META[k][1] for k in META
                     if desc_key(k) == "desc." + k})
-
-
-
 
 _VALS = {}
 for _k in META:
@@ -1449,12 +1273,6 @@ i18n.publish("en", {"lbl.macro_key": "Macro %d: press this key",
 
 DESC_DEFAULT = "Hover over a setting name to see what it does."
 
-
-
-
-
-
-
 COLOR_PRESETS = [
     ("red", (229, 57, 53)), ("orange", (255, 152, 0)),
     ("yellow", (253, 216, 53)), ("lime", (192, 202, 51)),
@@ -1466,7 +1284,6 @@ COLOR_PRESETS = [
     ("black", (33, 33, 33)),
 ]
 
-
 def _surf_of_global(widget, fallback="#ffffff"):
     try:
         parent = widget.nametowidget(widget.winfo_parent())
@@ -1474,11 +1291,8 @@ def _surf_of_global(widget, fallback="#ffffff"):
     except Exception:
         return fallback
 
-
 def _surf_of(widget, fallback="#ffffff"):
     return _surf_of_global(widget, fallback)
-
-
 
 HELP_KEYS = [("help.%d.t" % n, "help.%d.b" % n) for n in range(1, 12)]
 
@@ -1487,7 +1301,6 @@ CHOICE_WIDTH = 26
 PAD_CAPTURE_SECONDS = 8.0
 PAD_CAPTURE_W = 84
 
-
 SLIM_SCB_W = 10
 DD_H = 26
 DD_ROW_H = 30
@@ -1495,11 +1308,9 @@ SLIDE_W = 176
 SLIDE_H = 24
 VAL_W = 8
 
-
 def _thumb_hex(kit, active):
     pal = kit.pal
     return pal["accent"] if active else pal["muted"]
-
 
 class _SlimScrollbar(tk.Canvas):
 
@@ -1633,7 +1444,6 @@ class _SlimScrollbar(tk.Canvas):
     def _drop(self, _event):
         self._drag = None
         self._paint()
-
 
 class _ChoiceDropdown(tk.Canvas):
 
@@ -1783,8 +1593,6 @@ class _ChoiceDropdown(tk.Canvas):
             pass
         pop.configure(background=pal["card"], takefocus=1)
 
-        # Match the dropdown's own width (with a 176 px floor) so the popup
-        # never overflows into neighbouring widgets like the scrollbar.
         pop_w = max(self.winfo_width(), 176)
         row_h = DD_ROW_H
         ph = len(pairs) * DD_ROW_H + 2
@@ -1827,7 +1635,6 @@ class _ChoiceDropdown(tk.Canvas):
 
         pop.bind("<Escape>", lambda _e: self.close())
         pop.bind("<Button-1>", lambda _e: self.close())
-        # NO <FocusOut> binding
 
         pop.update_idletasks()
         pop_cvs.configure(width=pop_w, height=ph)
@@ -1881,7 +1688,6 @@ class _ChoiceDropdown(tk.Canvas):
         if self._pop is pop:
             self._pop = None
             self._paint()
-
 
 class _RangeSlider(tk.Canvas):
 
@@ -2063,7 +1869,6 @@ class _RangeSlider(tk.Canvas):
         self._set(self._num() + delta * step)
         return "break"
 
-
 def _scrollable(page, kit, pal, bar=True):
     host = tk.Frame(page, bg=pal["card"])
     kit.reg(host, "card")
@@ -2131,13 +1936,6 @@ def _scrollable(page, kit, pal, bar=True):
     bind_wheel(cvs)
     return inner, bind_wheel
 
-
-
-
-
-
-
-
 def _fill_help(page, kit, pal):
     inner, bind_wheel = _scrollable(page, kit, pal, bar=True)
     bodies = []
@@ -2189,10 +1987,6 @@ def _fill_help(page, kit, pal):
     _rewrap()
     return inner
 
-
-
-
-
 KEY_CAPTURE_SECONDS = 12.0
 MOUSE_CAPTURE_SECONDS = 12.0
 
@@ -2218,7 +2012,6 @@ _TK_MODS = {
     "meta_l": "win", "meta_r": "win",
 }
 
-
 def keysym_to_spec(keysym):
     ks = str(keysym or "").strip()
     low = ks.lower()
@@ -2233,7 +2026,6 @@ def keysym_to_spec(keysym):
         if ("a" <= c <= "z") or ("0" <= c <= "9") or c in _CHAR_TO_SPEC:
             return _CHAR_TO_SPEC.get(c, c)
     return None
-
 
 def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
                         allow_modifier=False, multi=False):
@@ -2460,7 +2252,6 @@ def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
         pass
     return result["spec"]
 
-
 def _pad_capture_dialog(parent, kit, app, initial="", single=False):
     import input_utils as gamepad
     win = tk.Toplevel(parent)
@@ -2587,13 +2378,11 @@ def _pad_capture_dialog(parent, kit, app, initial="", single=False):
         pass
     return result["spec"]
 
-
 _TK_MOUSE_BUTTONS = {1: "mouse1", 2: "mouse3", 3: "mouse2",
                      4: "mouse4", 5: "mouse5"}
 
 MOUSE_BUTTON_NAMES = tuple(_TK_MOUSE_BUTTONS[n]
                            for n in sorted(_TK_MOUSE_BUTTONS))
-
 
 def _mouse_capture_dialog(parent, kit, initial=""):
     win = tk.Toplevel(parent)
@@ -2686,10 +2475,8 @@ def _mouse_capture_dialog(parent, kit, initial=""):
         pass
     return result["spec"]
 
-
 CAPTURE_KINDS = ("key", "keymod", "pad", "padsingle", "padkey", "mouse",
                  "combo")
-
 
 def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
     def _capture(k=key, v=var, kd=kind):
@@ -2729,7 +2516,6 @@ def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
     R(lambda b=btn: kit.set_text(b, i18n.L("cap.btn")) if _live(b) else False)
     return btn
 
-
 def _widget_class(root, widget):
     try:
         if isinstance(widget, str):
@@ -2738,12 +2524,7 @@ def _widget_class(root, widget):
     except Exception:
         return ""
 
-
 class ThemeKit:
-
-
-
-
 
     BTN_H = 31
 
@@ -2753,7 +2534,6 @@ class ThemeKit:
         self.roots = []
         self.repaints = []
         self._img_cache = {}
-
 
     def attach(self, root):
         self.roots.append(root)
@@ -2793,8 +2573,6 @@ class ThemeKit:
             except tk.TclError:
                 pass
 
-
-
         for fn in list(self.repaints):
             try:
                 fn()
@@ -2802,8 +2580,6 @@ class ThemeKit:
                 pass
 
     def _walk(self, w):
-
-
 
         try:
             if not w.winfo_exists():
@@ -2836,10 +2612,6 @@ class ThemeKit:
             w.configure(bg=pal["card"], fg=pal["text"])
         elif role == "entry":
 
-
-
-
-
             w.configure(bg=pal["entry"], fg=pal["text"],
                         insertbackground=pal["text"],
                         readonlybackground=pal["entry"],
@@ -2857,20 +2629,15 @@ class ThemeKit:
             w.configure(bg=pal["desc_bg"], fg=pal["muted"])
         elif role == "desc_frame":
 
-
             w.configure(bg=pal["desc_bg"])
         elif role == "status":
             w.configure(bg=pal["status_bg"], fg=pal["muted"])
         elif role == "status_frame":
 
-
-
-
             w.configure(bg=pal["status_bg"])
         elif role == "canvas_card":
             w.configure(bg=pal["card"])
         elif role == "panel":
-
 
             w.configure(bg=pal["card"],
                         highlightbackground=pal["entry_bd"])
@@ -2899,7 +2666,6 @@ class ThemeKit:
         if role == "btn_amber":
             return pal["amber"], "#ffffff"
         return pal["light_bg"], pal["text"]
-
 
     def rounded(self, width, height, fill_hex, radius=7):
         key = (width, height, fill_hex, radius)
@@ -2965,7 +2731,6 @@ class ThemeKit:
         _t, big, surface, _w, h, role = meta
         bg, _fg = self._btn_colors(role)
         f = tkfont.Font(font=(F_BTN_BIG if big else F_BTN))
-
 
         w = getattr(b, "_fixed_w", None) or \
             int(f.measure(text)) + (44 if big else 30)
@@ -3062,8 +2827,6 @@ class ThemeKit:
         for w in ([cvs, lbl] if lbl is not None else [cvs]):
             w.bind("<Button-1>", toggle)
 
-
-
         cvs.bind("<space>", toggle)
         cvs.bind("<Return>", toggle)
 
@@ -3107,12 +2870,6 @@ class ThemeKit:
                 pass
         root.bind("<ButtonRelease-1>", _defocus)
 
-
-
-
-
-
-
 def registration_line(identity, ent):
     try:
         who = online.identity_label(identity) if identity else ""
@@ -3121,8 +2878,6 @@ def registration_line(identity, ent):
     return i18n.L("st.registered",
                   (who or "").strip() or "unknown",
                   online.entitlement_summary(ent))
-
-
 
 def _login_window(cfg, kit):
     pal = kit.pal
@@ -3178,9 +2933,6 @@ def _login_window(cfg, kit):
                  fg=pal["text"])
     kit.reg(t, "card_text")
     t.pack()
-
-
-
 
     sub = tk.Label(root, font=F_DESC, bg=pal["card"], fg=pal["muted"],
                    text=i18n.L("login.sub"),
@@ -3255,11 +3007,6 @@ def _login_window(cfg, kit):
         threading.Thread(target=worker, daemon=True,
                          name="login-%s" % provider).start()
 
-
-
-
-
-
     def provider_pill(pid, w, h, bg, dark):
         th = max(8, h - 16)
         img = _PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -3316,8 +3063,6 @@ def _login_window(cfg, kit):
         b.pack(fill="x", padx=60, pady=(0, 8))
     if not btns:
 
-
-
         set_msg(i18n.L("login.no_provider"))
     paint_provider_buttons()
     kit.repaint(paint_provider_buttons)
@@ -3344,20 +3089,9 @@ def _login_window(cfg, kit):
     root.mainloop()
     return result.get("identity")
 
-
-
-
-
-
 def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     action = {"now": "quit"}
     pal = kit.pal
-
-
-
-
-
-
 
     aids = []
     AIDS_CAP = 64
@@ -3391,10 +3125,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     root.configure(background=pal["bg"])
     root.update_idletasks()
 
-
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-
 
     gw, gh = min(980, max(640, sw - 24)), min(770, max(480, sh - 24))
     root.geometry("%dx%d" % (gw, gh))
@@ -3409,9 +3141,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.defocus_hook(root)
     kit.titlebar_hook(root)
 
-
-
-
     def _focus_watch(event):
         try:
             app.input_focused = _widget_class(root, event.widget) in (
@@ -3423,7 +3152,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     root.bind_all("<FocusOut>",
                   lambda e: setattr(app, "input_focused", False),
                   add="+")
-
 
     style = ttk.Style(root)
     try:
@@ -3452,30 +3180,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.repaint(restyle_tt)
     restyle_tt()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     topbar = tk.Frame(root, bg=pal["card"])
     kit.reg(topbar, "card")
     topbar.pack(fill="x", padx=10, pady=(0, 6))
-
-
-
 
     topbar.configure(height=TOPBAR_H)
     topbar.pack_propagate(False)
@@ -3498,16 +3205,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     except Exception:
         pass
 
-
-
-
-
-
-
-
-
-
-
     tt = tk.Frame(topbar, bg=pal["card"])
     kit.reg(tt, "card")
     tt.pack(side="left", fill="y")
@@ -3515,11 +3212,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                   fg=pal["text"])
     kit.reg(h1, "card_text")
     h1.pack(anchor="w", pady=(TOPBAR_TEXT_TOP, 0))
-
-
-
-
-
 
     h2 = tk.Label(tt, text=i18n.L("hdr.build", APP_VERSION),
                   font=F_TOP_LINE, bg=pal["card"], fg=pal["muted"])
@@ -3561,9 +3253,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             pass
         close_all("logout")
 
-
-
-
     _mode_lbl = tk.Label(right, text="", font=F_BOLD, bg=pal["card"],
                          fg=pal["text"])
     kit.reg(_mode_lbl, "card_bold")
@@ -3599,16 +3288,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         R(lambda b=_b, k=_k: kit.set_text(b, i18n.L(k)) if _live(b)
           else False)
 
-
     bar = tk.Frame(root, bg=pal["tab_bg"])
     kit.reg(bar, "tab_bg")
     bar.pack(fill="x", padx=10)
-
-
-
-
-
-
 
     tab_names = list(TAB_NAMES)
     tab_btns = {}
@@ -3645,12 +3327,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 pg.pack_forget()
     kit.repaint(lambda: show_tab(current["tab"]))
 
-
-
-
-
-
-
     tab_rows = []
     for _i in range(len(tab_names)):
         fr = tk.Frame(bar, bg=pal["tab_bg"])
@@ -3682,11 +3358,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             b._tmeta = (int(tkfont.Font(font=F_TAB).measure(t)) + 12,)
             layout_tabs()
         R(_retab)
-
-
-
-
-
 
     def layout_tabs(_event=None):
         try:
@@ -3726,20 +3397,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     except Exception:
         pass
 
-
-
-
-
-
     desc_row = tk.Frame(root, bg=pal["desc_bg"])
     kit.reg(desc_row, "desc_frame")
     desc_row.pack(fill="x", padx=10)
 
     desc_var = tk.StringVar(value=i18n.L("desc.default"))
-
-
-
-
 
     desc_bar = tk.Label(desc_row, textvariable=desc_var, font=F_DESC,
                         bg=pal["desc_bg"], fg=pal["muted"], anchor="w",
@@ -3774,11 +3436,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     desc_row.bind("<Configure>", _desc_height)
     _desc_height()
 
-
-
-
-
-
     desc_src = [None]
 
     def set_desc(fn):
@@ -3800,7 +3457,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                            kind="accent", surface="desc_bg")
     R(lambda: kit.set_text(apply_btn, i18n.L("btn.apply"))
       if _live(apply_btn) else False)
-
 
     footer = tk.Frame(root, bg=pal["bg"])
     kit.reg(footer, "bg")
@@ -3938,11 +3594,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             return
         theme = cfg.get("theme")
 
-
-
-
-
-
         cfg.values = dict(DEFAULT_CONFIG)
         cfg.values["theme"] = theme
         cfg.save()
@@ -3969,14 +3620,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     R(lambda: (kit.apply(), True)[1] if _live(root) else False)
 
-
-
-
     R(lambda: (refresh_fields(), True)[1] if _live(root) else False)
-
-
-
-
 
     light_box = tk.Frame(footer, bg=pal["bg"])
     kit.reg(light_box, "bg")
@@ -3992,12 +3636,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     light.pack(side="left", pady=2)
     light_dot = light.create_oval(3, 3, 13, 13, fill=pal["amber"],
                                   outline="")
-
-
-
-
-
-
 
     status_row = tk.Frame(root, bg=pal["status_bg"])
     kit.reg(status_row, "status_frame")
@@ -4052,9 +3690,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         cell.grid(row=row, column=0, sticky="we", padx=10, pady=4)
         cell.columnconfigure(0, weight=1)
 
-
-
-
         lbl = tk.Label(cell, text=tr_label(key), font=F_BOLD,
                        bg=pal["card"], fg=pal["text"], anchor="w")
         kit.reg(lbl, "card_bold")
@@ -4082,13 +3717,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             R(_revals)
 
             if key == "input_backend":
-
-
-
-
-
-
-
 
                 note = tk.Label(cell, text="", font=F_DESC,
                                 bg=pal["card"], fg=pal["muted"],
@@ -4119,15 +3747,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
                 threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
-
-
-
-
-
-
-
-
-
 
             w = tk.Frame(cell, bg=pal["card"])
             kit.reg(w, "card")
@@ -4185,14 +3804,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         _valtext()
         return host
 
-
-
-
-
-
-
-
-
     _chip_strips = {}
     _OFF_WORDS = ("off", "none", "disabled", "false")
     _MAX_CHIPS = 15
@@ -4230,9 +3841,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         shown = [(i, _token_rgb(t)) for i, t in enumerate(toks)]
         shown = [(i, rgb) for i, rgb in shown if rgb is not None]
         if not shown:
-
-
-
 
             off = tk.Canvas(strip, width=CHIP_SW, height=CHIP_SW,
                             bg=pal["light_bg"], highlightthickness=1,
@@ -4309,12 +3917,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         for i, key in enumerate(keys):
             make_row(grid, key, i)
 
-
-
-
     assist_page = pages["assist"]
     fill_list(assist_page, TAB_ASSIST)
-
 
     ch_page = pages["reticle"]
     ch_host, ch_bind = _scrollable(ch_page, kit, pal)
@@ -4546,32 +4150,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
       if _live(_b_del) else False)
     _ch_pre_sync()
 
-
-
-
     chp = pages["handler"]
     chinner, chbind = _scrollable(chp, kit, pal)
     _FIT.append(chinner)
     cp = chinner
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     cgrid = tk.Frame(cp, bg=pal["card"])
     kit.reg(cgrid, "card")
@@ -4579,20 +4161,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     cgrid.columnconfigure(0, weight=1)
     for _ri, _ckey in enumerate(TAB_DETECT):
         make_row(cgrid, _ckey, _ri)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     rgb_vars = {}
     for _ch, _dflt in (("r", "198"), ("g", "40"), ("b", "40")):
@@ -4612,12 +4180,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     rgb_lbl.bind("<Leave>", lambda e: set_desc(None))
     R(lambda l=rgb_lbl: l.configure(text=i18n.L("col.rgb.name"))
       if _live(l) else False)
-
-
-
-
-
-
 
     RGB_SLOT = 5 * (CHIP_SW + 2 + 2 * CHIP_PAD)
     RGB_BW, RGB_BH = RGB_SLOT - 2 * CHIP_PAD - 2, 22
@@ -4658,14 +4220,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.reg(host, "card")
     host.pack(fill="x", padx=6, pady=(0, 8))
 
-
-
-
     host.columnconfigure(0, weight=1)
-
-
-
-
 
     left = tk.Frame(host, bg=pal["card"])
     kit.reg(left, "card")
@@ -4686,35 +4241,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     right = tk.Frame(host, bg=pal["card"])
     kit.reg(right, "card")
     right.grid(row=0, column=1, sticky="ne", padx=(18, 10))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     PRESET_SW, PRESET_PAD = 24, 2
     PRESET_SPAN = (len(COLOR_PRESETS) * (PRESET_SW + 2 + 2 * PRESET_PAD)
@@ -4799,7 +4325,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         _PILImage.fromarray(arr, "RGB").save(buf, format="PNG")
         hue_photo[0] = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
 
-
         hue_canvas.delete("bg")
         hue_canvas.create_image(0, 0, anchor="nw", image=hue_photo[0],
                                 tags="bg")
@@ -4822,8 +4347,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         x = picker["s"] * (SV - 1)
         y = (1.0 - picker["v"]) * (SV - 1)
 
-
-
         sv_canvas.delete("smark")
         sv_mark[0] = sv_canvas.create_oval(x - 5, y - 5, x + 5, y + 5,
                                            outline="#ffffff", width=2,
@@ -4831,12 +4354,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def place_hue_mark():
         x = picker["h"] * (SV - 1)
-
-
-
-
-
-
 
         hue_canvas.delete("hmark")
         hue_mark[0] = hue_canvas.create_rectangle(x - 2, 0, x + 2, 21,
@@ -4856,7 +4373,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             prev.configure(bg=hx)
             prev.delete("all")
             lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-
 
             prev.create_text(int(prev.cget("width")) // 2,
                              int(prev.cget("height")) // 2,
@@ -4889,9 +4405,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         render_sv()
         place_hue_mark()
         paint_preview()
-
-
-
 
     for _v in rgb_vars.values():
         _v.trace_add("write", entries_changed)
@@ -4939,17 +4452,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         sw.bind("<Enter>", lambda e, n=name: set_desc(
             lambda: i18n.L("st.preset_desc", n)))
         sw.bind("<Leave>", lambda e: set_desc(None))
-
-
-
-
-
-
-
-
-
-
-
 
     add_row = tk.Frame(right, bg=pal["card"])
     kit.reg(add_row, "card")
@@ -5005,9 +4507,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: kit.set_text(add_ref_btn, i18n.L("col.add_ref"))
       if _live(add_ref_btn) else False)
 
-
-
-
     auto_row = tk.Frame(right, bg=pal["card"])
     kit.reg(auto_row, "card")
     auto_row.pack(anchor="e", pady=(0, 6))
@@ -5037,13 +4536,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     pick_btn.pack(side="left", padx=(PRESET_PAD, BTN_GAP // 2))
     R(lambda: kit.set_text(pick_btn, i18n.L("col.pick"))
       if _live(pick_btn) else False)
-
-
-
-
-
-
-
 
     SUG_N = 15
     sug_row = tk.Frame(right, bg=pal["card"])
@@ -5084,17 +4576,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
         def work():
 
-
-
-
-
-
-
-
             try:
-
-
-
 
                 time.sleep(3.0)
                 x, y = get_cursor_pos()
@@ -5104,7 +4586,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 top = max(vy, min(y - h // 2, vy + vh - h))
                 img = app._capture.grab(left, top, left + w, top + h)
                 if img is None:
-
 
                     time.sleep(0.3)
                     img = app._capture.grab(left, top, left + w,
@@ -5128,10 +4609,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         threading.Thread(target=work, daemon=True,
                          name="snappy-suggest").start()
 
-
-
-
-
     _b_sug = kit.button(auto_row, i18n.L("col.suggest"),
                         suggest_from_screen, fixed_w=BTN_W)
     _b_sug.pack(side="left", padx=(BTN_GAP // 2, PRESET_PAD))
@@ -5141,13 +4618,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     render_hue()
     render_sv()
     entries_changed()
-
-
-
-
-
-
-
 
     def mac_head(parent, key):
         h = tk.Label(parent, text=i18n.L(key), font=F_BOLD,
@@ -5303,10 +4773,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.reg(rec_box, "panel")
     rec_box.pack(fill="both", expand=True, pady=(6, 6))
 
-
-
-
-
     btn_row = tk.Frame(rec_box, bg=pal["card"])
     kit.reg(btn_row, "card")
     btn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
@@ -5363,7 +4829,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         bg = pal["light_bg"] if rid == selected_rid() else pal["card"]
         fr = tk.Frame(rec_rows, bg=bg, cursor="hand2")
         fr.pack(fill="x", pady=1)
-
 
         var = tk.BooleanVar(value=bool(rec["loop"]))
         sw = kit.bool_switch(fr, var, word=True)
@@ -5459,9 +4924,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         return (safe[:40] or "recording") + ".json"
 
     def do_export_rec():
-
-
-
 
         rid = selected_rid()
         rec = app.rec_store.get(rid) if rid is not None else None
@@ -5599,7 +5061,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         n0 = len(kit.repaints)
         if rec_ids:
 
-
             loop_head.pack(side="top", fill="x", padx=8, pady=(6, 2),
                            before=rec_rows)
             for n, r in enumerate(app.rec_store.recordings, 1):
@@ -5616,7 +5077,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rec_row_paints[:] = kit.repaints[n0:]
         paint_rows()
         return True
-
 
     R(lambda: rebuild_recs() if _live(rec_rows) else False)
     kit.repaint(rebuild_recs)
@@ -5888,25 +5348,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.repaint(rebuild_precs)
     rebuild_precs()
 
-
-
-
-
-
-
     adv = pages["advanced"]
     fill_list(adv, TAB_ADV)
 
-
-
-
-
-
     fill_list(chinner, TAB_COLOR, scroll=False)
-
-
-
-
 
     exp = pages["experimental"]
     fill_list(exp, TAB_EXPERIMENTAL)
@@ -5925,9 +5370,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             latency_tabs.shutdown(lat_handle)
     root.bind("<Destroy>", _on_root_destroy, add="+")
 
-
     _FIT_DOC.append(_fill_help(pages["help"], kit, pal))
-
 
     poll_tick = [0]
     rec_ui = [None]
@@ -6022,7 +5465,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry("%dx%d+%d+%d" % (W2, H2, max(0, (sw - W2) // 2),
                                       max(0, (sh - H2) // 3)))
-
 
         box = tk.Frame(win, bg=pal["card"])
         kit.reg(box, "card")
@@ -6157,27 +5599,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     def entitlement_watch():
         def worker():
 
-
-
-
-
-
-
-
-
-
-
-
             try:
                 ident, ent_now = online.me(cfg)
             except online.OnlineError:
                 log(i18n.L("st.ent_unreachable"))
                 return
-
-
-
-
-
 
             if ident:
                 try:
@@ -6202,8 +5628,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             threading.Thread(target=worker, daemon=True,
                              name="entitlement-watch").start()
             after_ms(check_ms(), entitlement_watch)
-
-
 
     def check_ms():
         return ENTITLEMENT_CHECK_MINUTES * 60000
@@ -6275,7 +5699,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     return action["now"]
 
-
 def _gate_window(cfg, kit, identity, ent):
     pal = kit.pal
     result = {}
@@ -6299,12 +5722,6 @@ def _gate_window(cfg, kit, identity, ent):
     kit.defocus_hook(root)
     kit.titlebar_hook(root)
 
-
-
-
-
-
-
     box = tk.Frame(root, bg=pal["card"])
     kit.reg(box, "card")
     box.place(relx=0.5, rely=0.5, anchor="center")
@@ -6322,11 +5739,6 @@ def _gate_window(cfg, kit, identity, ent):
                                            max(0, (sh - H) // 3)))
         except Exception:
             pass
-
-
-
-
-
 
     lg = tk.Label(box, bg=pal["card"])
     kit.reg(lg, "card")
@@ -6421,7 +5833,6 @@ def _gate_window(cfg, kit, identity, ent):
                 online.nudge_publisher(cfg)
             try:
 
-
                 ident, ent_now = online.me(cfg, fresh=False)
                 err = None
             except online.OnlineError as exc:
@@ -6445,11 +5856,6 @@ def _gate_window(cfg, kit, identity, ent):
         ent_cur[0] = ent_now
         h1.configure(text=title_for(ent_now))
         sum_lbl.configure(text=online.entitlement_summary(ent_now))
-
-
-
-
-
 
         if online.entitlement_active(ent_now) and not ent_now.get("shared"):
             result["ok"] = True
@@ -6486,8 +5892,6 @@ def _gate_window(cfg, kit, identity, ent):
     sub_btn.pack(pady=(0, 6))
     pay_btns.append(sub_btn)
 
-
-
     tri_btn = kit.button(box, i18n.L("gate.btn.trial"),
                          lambda: do_subscribe("trial"),
                          kind="green", big=True)
@@ -6514,11 +5918,6 @@ def _gate_window(cfg, kit, identity, ent):
     kit.reg(note, "card_muted")
     note.pack(pady=(4, 14))
 
-
-
-
-
-
     refit()
 
     R(_gate_retext)
@@ -6527,7 +5926,6 @@ def _gate_window(cfg, kit, identity, ent):
         if result.get("ok") or not root.winfo_exists():
             return
         do_recheck(silent=True)
-
 
         gaids.append(root.after(30000, auto_loop))
         if len(gaids) > 32:
@@ -6538,7 +5936,6 @@ def _gate_window(cfg, kit, identity, ent):
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
     return bool(result.get("ok"))
-
 
 def run_gui(cfg):
     i18n.set_language("en")
@@ -6578,7 +5975,6 @@ def run_gui(cfg):
             if identity is None:
                 return 0
 
-
             try:
                 identity, ent = online.me(cfg, fresh=True)
             except online.OnlineError as exc:
@@ -6589,9 +5985,6 @@ def run_gui(cfg):
             if identity is None:
                 continue
         force_login = False
-
-
-
 
         if not online.entitlement_active(ent) or ent.get("shared"):
             if not _gate_window(cfg, kit, identity, ent):

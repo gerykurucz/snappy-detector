@@ -8,10 +8,9 @@ import numpy as np
 from hpose_keypoints import FACE_IDX, N_KP, Pose, derive_joints
 import hpose_posefit as posefit
 
-FEATURE_VERSION = 5
+FEATURE_VERSION = 6
 
 ANCHOR_IDX = (5, 6, 11, 12)
-
 
 def _angle_at(a, b, c) -> float:
     a = np.asarray(a, dtype=np.float64)
@@ -26,7 +25,6 @@ def _angle_at(a, b, c) -> float:
     cosv = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)
     cosv = max(-1.0, min(1.0, cosv))
     return math.degrees(math.acos(cosv))
-
 
 def fit_similarity(template: np.ndarray, observed: np.ndarray):
     template = np.asarray(template, dtype=np.float64)
@@ -56,11 +54,9 @@ def fit_similarity(template: np.ndarray, observed: np.ndarray):
     trans = mu_o - scale * (rot @ mu_t)
     return scale, rot, trans
 
-
 def apply_similarity(template: np.ndarray, scale: float, rot: np.ndarray,
                      trans: np.ndarray) -> np.ndarray:
     return (scale * (rot @ np.asarray(template, dtype=np.float64).T)).T + trans
-
 
 def impute_missing(kps: np.ndarray, template: np.ndarray = None,
                    threshold: float = 0.2) -> np.ndarray:
@@ -88,7 +84,6 @@ def impute_missing(kps: np.ndarray, template: np.ndarray = None,
             kps[i, 1] = float(filled[i, 1])
     return kps
 
-
 class _Builder(object):
 
     def __init__(self):
@@ -113,9 +108,9 @@ class _Builder(object):
     def vec(self) -> np.ndarray:
         return np.asarray(self.values, dtype=np.float32)
 
+def _fill(b: _Builder, pose: Pose, fit: dict,
+          conf_threshold: float) -> None:
 
-def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.ndarray:
-    b = _Builder()
     raw = np.asarray(pose.kps, dtype=np.float64)
     conf = raw[:N_KP, 2]
     if fit is not None:
@@ -269,13 +264,34 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
         b.add("body_axis_angle_signed", 0.0)
         b.add("body_axis_span", 0.0)
         b.add("body_axis_run", 0.0)
+        axis_dx = axis_dy = 0.0
+
+    spine_axis = math.degrees(math.atan2(abs(spine_dx),
+                                          max(1e-3, abs(spine_dy)))) / 90.0 \
+        if (spine_dx or spine_dy) else 0.0
+    axis = math.degrees(math.atan2(abs(axis_dx),
+                                    max(1e-3, abs(axis_dy)))) / 90.0 \
+        if (axis_dx or axis_dy) else 0.0
+    b.add("spine_x_axis", spine_axis * axis)
+    b.add("spine_minus_axis", spine_axis - axis)
+
     b.add("hip_frac", float(pelvis[1] - y1) / bh)
     b.add("shoulder_frac", float(sh_mid[1] - y1) / bh)
     b.add("neck_frac", float(neck[1] - y1) / bh)
-    axis = b.values[b.names.index("body_axis_angle")]
-    b.add("spine_x_axis", b.values[b.names.index("spine_angle")] * axis)
-    b.add("spine_minus_axis",
-          b.values[b.names.index("spine_angle")] - axis)
+
+    # --- Size and visibility features (crucial for 20-160 px targets) ----
+    b.add("log_box_h", math.log(max(1.0, bh) / 100.0))
+    b.add("log_box_w", math.log(max(1.0, bw) / 100.0))
+    for i in range(N_KP):
+        b.add("vis_%d" % i, 1.0 if conf[i] > conf_threshold else 0.0)
+    vis_conf = np.where(conf > conf_threshold, conf, 0.0)
+    if vis_conf.sum() > 1e-6:
+        cx = float((xy[:, 0] * vis_conf).sum() / vis_conf.sum())
+        cy = float((xy[:, 1] * vis_conf).sum() / vis_conf.sum())
+    else:
+        cx = cy = 0.0
+    b.add("conf_centroid_dx", (cx - (sh_mid[0] + hip_mid[0]) * 0.5) / scale)
+    b.add("conf_centroid_dy", (cy - (sh_mid[1] + hip_mid[1]) * 0.5) / scale)
 
     if fit is not None:
         yaw = float(fit.get("yaw", 0.0))
@@ -294,47 +310,32 @@ def extract(pose: Pose, fit: dict = None, conf_threshold: float = 0.2) -> np.nda
                      "fit_yaw_folded", "fit_quality", "fit_front_branch",
                      "fit_depth_rel", "fit_scale_rel"):
             b.add(name, 0.0)
+
+def extract(pose: Pose, fit: dict = None,
+            conf_threshold: float = 0.2) -> np.ndarray:
+    b = _Builder()
+    _fill(b, pose, fit, conf_threshold)
     return b.vec()
 
+_NAMES = None
 
 def feature_names() -> list:
-    b = _Builder()
-    b.add("visible_span", 0)
-    b.add("legs_seen", 0)
-    b.add_many("rel", [0] * (17 * 2))
-    b.add_many("conf", [0] * 17)
-    b.add_many("reld", [0] * 6)
-    for name in (
-            "sh_w", "hip_w", "sh_over_hip", "torso_len", "head_to_neck",
-            "nose_off_x", "nose_off_y", "pelvis_off_x", "torso_tilt",
-            "face_conf_mean", "face_conf_max", "face_conf_min", "nose_conf",
-            "eye_conf", "ear_conf", "body_conf_mean", "face_over_body",
-            "vis_frac", "vis_count", "face_vis_count",
-            "limb_conf_left", "limb_conf_right", "limb_conf_balance"):
-        b.add(name, 0)
-    for label in ("elbow", "wrist", "knee", "ankle", "hip"):
-        b.add("asym_%s_l" % label, 0)
-        b.add("asym_%s_r" % label, 0)
-        b.add("asym_%s_bal" % label, 0)
-    for name in ("ankle_sep", "wrist_sep", "sh_hip_mid_dx",
-                 "sh_hip_mid_dy", "ankle_dy", "knee_dy", "wrist_dy"):
-        b.add(name, 0)
-    for name in ("knee_angle_l", "knee_angle_r", "elbow_angle_l",
-                 "elbow_angle_r", "hip_angle_l", "hip_angle_r"):
-        b.add(name, 0)
-    for name in ("leg_len", "hip_height", "knee_height", "ankle_height",
-                 "head_height", "box_aspect", "shoulder_aspect",
-                 "ankle_sep_over_sh", "shoulder_pelvis_dy",
-                 "shoulder_pelvis_dx", "tilt_of_body",
-                 "spine_angle", "spine_angle_signed", "body_axis_angle",
-                 "body_axis_angle_signed", "body_axis_span", "body_axis_run",
-                 "hip_frac", "shoulder_frac", "neck_frac",
-                 "spine_x_axis", "spine_minus_axis"):
-        b.add(name, 0)
-    for name in ("fit_yaw_sin", "fit_yaw_cos", "fit_yaw_fold",
-                 "fit_yaw_folded", "fit_quality", "fit_front_branch",
-                 "fit_depth_rel", "fit_scale_rel"):
-        b.add(name, 0)
-    return b.names
 
-
+    global _NAMES
+    if _NAMES is None:
+        b = _Builder()
+        # Dummy pose with some non-zero confidences to match real code paths
+        kps = np.zeros((N_KP, 3), dtype=np.float32)
+        # Set some confidences to trigger the same code paths as real poses
+        kps[5, 2] = 0.8   # left shoulder
+        kps[6, 2] = 0.8   # right shoulder
+        kps[11, 2] = 0.8  # left hip
+        kps[12, 2] = 0.8  # right hip
+        kps[13, 2] = 0.7  # left knee
+        kps[14, 2] = 0.7  # right knee
+        kps[15, 2] = 0.6  # left ankle
+        kps[16, 2] = 0.6  # right ankle
+        dummy = Pose(kps, (0.0, 0.0, 10.0, 10.0), 1.0)
+        _fill(b, dummy, None, 0.2)
+        _NAMES = b.names
+    return list(_NAMES)

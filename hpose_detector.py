@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import urllib.request
 
 import numpy as np
@@ -23,8 +24,6 @@ MODEL_URLS = {
 DEFAULT_POSE_MODEL = "yolo11n-pose.onnx"
 DEFAULT_FACE_MODEL = "face_detection_yunet_2023mar.onnx"
 
-
-
 def _writable(path: str) -> bool:
     try:
         os.makedirs(path, exist_ok=True)
@@ -35,7 +34,6 @@ def _writable(path: str) -> bool:
         return True
     except Exception:
         return False
-
 
 def cache_dir() -> str:
     env = os.environ.get("HPOSE_CACHE")
@@ -54,9 +52,7 @@ def cache_dir() -> str:
         if not _writable(path):
             base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
             path = os.path.join(base, "SnappyAI", "models")
-    os.makedirs(path, exist_ok=True)
     return path
-
 
 def model_path(name: str, download: bool = True) -> str:
     path = os.path.join(cache_dir(), name)
@@ -89,6 +85,34 @@ def model_path(name: str, download: bool = True) -> str:
     return path
 
 
+def _export_small_pose(target_path: str) -> bool:
+    """Export yolo11n-pose.pt to a 320x320 ONNX, once.
+
+    The .pt file auto-downloads from Ultralytics' model hub on first use.
+    Returns True on success.
+    """
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        sys.stderr.write(
+            "hpose: 'ultralytics' is not installed; the 320 ONNX "
+            "variant cannot be created. Install with "
+            "'pip install ultralytics' to enable the 3x ROI speedup.\n")
+        return False
+    try:
+        base = model_path("yolo11n-pose.pt", download=True)
+        m = YOLO(base)
+        exported = m.export(format="onnx", imgsz=320, simplify=True,
+                             dynamic=False)
+        os.replace(exported, target_path)
+        sys.stderr.write("hpose: exported %s (%d bytes)\n"
+                         % (target_path, os.path.getsize(target_path)))
+        return True
+    except Exception as exc:
+        sys.stderr.write("hpose: 320-model export failed (%r)\n" % (exc,))
+        return False
+
+
 def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> list:
     if len(boxes) == 0:
         return []
@@ -116,12 +140,11 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> list:
         order = order[1:][iou <= iou_thr]
     return keep
 
-
 class PoseDetector(object):
 
     def __init__(self, model: str = None, imgsz: int = 640,
                  conf: float = 0.25, iou: float = 0.45,
-                 device: str = "cpu", download: bool = True):
+                 device: str = "auto", download: bool = True):
         self.model_name = model or DEFAULT_POSE_MODEL
         model = self.model_name
         self.imgsz = int(imgsz)
@@ -136,14 +159,94 @@ class PoseDetector(object):
                 "'pip install onnxruntime' (%r)" % (exc,))
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        providers = ["CPUExecutionProvider"]
-        if device == "cuda" and "CUDAExecutionProvider" in \
-                ort.get_available_providers():
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self.session = ort.InferenceSession(self.path, opts, providers=providers)
+
+        # Provider selection: env override > first available GPU > CPU.
+        # The env var lets CI and bench scripts force CPU for reproducibility.
+        device = (device or "auto").strip().lower()
+        want = os.environ.get("HPOSE_ORT_DEVICE", device)
+
+        available = ort.get_available_providers()
+        providers = []
+        provider_options = []
+        if want in ("auto", "gpu"):
+            for ep in ("TensorrtExecutionProvider",
+                       "CUDAExecutionProvider",
+                       "DmlExecutionProvider"):
+                if ep in available:
+                    providers.append(ep)
+                    break
+        elif want == "cuda":
+            if "CUDAExecutionProvider" in available:
+                providers.append("CUDAExecutionProvider")
+        elif want == "dml":
+            if "DmlExecutionProvider" in available:
+                providers.append("DmlExecutionProvider")
+        elif want == "trt":
+            if "TensorrtExecutionProvider" in available:
+                providers.append("TensorrtExecutionProvider")
+        providers.append("CPUExecutionProvider")
+
+        # Provider-specific session tuning.
+        for ep in providers:
+            if ep == "CUDAExecutionProvider":
+                provider_options.append({
+                    "device_id": 0,
+                    "arena_extend_strategy": "kSameAsRequested",
+                    "cudnn_conv_algo_search": "EXHAUSTIVE",
+                    "do_copy_in_default_stream": True,
+                })
+            elif ep == "TensorrtExecutionProvider":
+                provider_options.append({
+                    "device_id": 0,
+                    "trt_fp16_enable": "1",
+                    "trt_engine_cache_enable": "1",
+                    "trt_engine_cache_path": os.path.join(
+                        cache_dir(), "trt_cache"),
+                    "trt_timing_cache_enable": "1",
+                })
+            elif ep == "DmlExecutionProvider":
+                provider_options.append({"device_id": 0})
+            else:
+                provider_options.append({})
+
+        try:
+            self.session = ort.InferenceSession(
+                self.path, opts,
+                providers=list(zip(providers, provider_options)))
+        except Exception as exc:
+            if "TensorrtExecutionProvider" in providers:
+                sys.stderr.write(
+                    "hpose: TensorRT failed (%r); falling back "
+                    "to CUDA/CPU\n" % (exc,))
+                providers = [p for p in providers
+                             if p != "TensorrtExecutionProvider"]
+                provider_options = [po for p, po in zip(providers, provider_options)
+                                    if p != "TensorrtExecutionProvider"]
+                self.session = ort.InferenceSession(
+                    self.path, opts,
+                    providers=list(zip(providers, provider_options)))
+            else:
+                raise
+
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
         self._in_h, self._in_w = self._input_shape()
+        self.active_provider = self.session.get_providers()[0]
+        self.device = str(self.active_provider).lower()
+
+        # First inference on GPU pays CUDA-context init + kernel
+        # compilation (2-5 s). Do that once, here, so the first real
+        # click is fast. _load_in_background already runs in a daemon
+        # thread so this doesn't block startup.
+        try:
+            warm = np.zeros((1, 3, self._in_h, self._in_w),
+                            dtype=np.float32)
+            self.session.run([self.output_name],
+                             {self.input_name: warm})
+            self.session.run([self.output_name],
+                             {self.input_name: warm})
+        except Exception as exc:
+            sys.stderr.write("hpose: warmup failed (%r)\n" % (exc,))
 
     def _input_shape(self):
         shape = self.session.get_inputs()[0].shape
@@ -219,9 +322,22 @@ class PoseDetector(object):
         out = np.asarray(raw, dtype=np.float32)
         if out.ndim == 3:
             out = out[0]
-        if out.shape[0] < out.shape[1]:
+        if out.ndim != 2:
+            return []
+        expected = 5 + N_KP * 3
+        # Accept either layout: (N, expected) or (expected, N).
+        # Also handle 57-column outputs (with objectness column at index 4).
+        if out.shape[1] == expected:
+            pass
+        elif out.shape[0] == expected:
             out = out.T
-        if out.shape[1] < 5 + N_KP * 3:
+        elif out.shape[1] == expected + 1:  # objectness variant
+            out = np.delete(out, 4, axis=1)  # drop objectness
+        elif out.shape[0] == expected + 1:
+            out = np.delete(out, 4, axis=0).T
+        else:
+            return []
+        if out.shape[1] != expected:
             return []
         boxes_c = out[:, :4]
         scores = out[:, 4]
@@ -256,7 +372,6 @@ class PoseDetector(object):
             poses.append(Pose(kp, b, float(scores[i])))
         return poses
 
-
 class FaceDetector(object):
 
     def __init__(self, model: str = None,
@@ -269,6 +384,7 @@ class FaceDetector(object):
             raise RuntimeError("opencv is required for face detection (%r)"
                                % (exc,))
         self.path = model_path(model, download=download)
+        self._lock = threading.Lock()
         self.model = self._create(cv2, self.path, score_threshold,
                                   nms_threshold)
         self.score_threshold = float(score_threshold)
@@ -296,11 +412,12 @@ class FaceDetector(object):
         if img is None or img.size == 0:
             return []
         h, w = img.shape[:2]
-        self.model.setInputSize((w, h))
-        try:
-            ok, faces = self.model.detect(img)
-        except Exception:
-            return []
+        with self._lock:
+            self.model.setInputSize((w, h))
+            try:
+                ok, faces = self.model.detect(img)
+            except Exception:
+                return []
         if not ok or faces is None:
             return []
         out = []
@@ -308,4 +425,3 @@ class FaceDetector(object):
             x, y, fw, fh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
             out.append((x, y, x + fw, y + fh, float(f[-1])))
         return out
-

@@ -40,7 +40,6 @@ _FALLBACK_STYLE = {
     "danger": "Danger.TButton",
 }
 
-# Default fonts used when gui.py's font dict is not provided
 _DEFAULT_FONTS = {
     "base":   ("Segoe UI", 11),
     "bold":   ("Segoe UI", 11, "bold"),
@@ -71,7 +70,6 @@ class _PalTheme:
         self.font_big    = fonts["h1"]
         self.font_entry  = fonts["entry"]
         self.font_mono   = ("Consolas", 10)
-
 
 class DarkCheck(ttk.Frame):
     SIZE = 15
@@ -121,7 +119,6 @@ class DarkCheck(ttk.Frame):
         else:
             c.create_rectangle(1, 1, s - 1, s - 1, fill=t.inset, outline=t.border)
 
-
 class SnappyAIApp:
     def __init__(
         self, root: tk.Tk, controller: GuiController | None = None, *,
@@ -130,7 +127,6 @@ class SnappyAIApp:
         self.root = root
         self.ctl = controller or GuiController()
 
-        # --- styling sources, in priority order ---
         self._kit = (embed.get("kit") if embed else None)
         self._pal = ((embed.get("pal") if embed else None)
                      or (self._kit.pal if self._kit else None))
@@ -148,7 +144,6 @@ class SnappyAIApp:
         self._on_timer_persist = (embed.get("on_timer_persist") if embed else None)
         self.last_script_path = ""
 
-        # For embed mode: trace timer var so on_timer_toggle fires when kit.bool_switch changes it
         self._embed_timer_var_traced = False
 
         if embed is None:
@@ -184,7 +179,7 @@ class SnappyAIApp:
         self, parent, text: str, command: Any = None, kind: str = "plain",
         big: bool = False,
     ):
-        # Map lattool_gui's "danger" kind to kit's "amber"
+
         kit_kind = {"danger": "amber"}.get(kind, kind)
         if self._kit is not None:
             return self._kit.button(parent, text, command, kind=kit_kind, big=big)
@@ -210,10 +205,10 @@ class SnappyAIApp:
                 font=self.theme.font, wraplength=800, cursor="hand2",
             )
             lbl.pack(side="left", padx=(8, 0))
-            # click on the text toggles the switch too
+
             lbl.bind("<Button-1>", lambda _e: variable.set(not variable.get()))
             return row
-        # fallback for standalone mode
+
         dc = DarkCheck(parent, text=text, variable=variable,
                        surface=surface, theme=self.theme)
         return dc
@@ -331,9 +326,7 @@ class SnappyAIApp:
         remap the raw tk widgets that captured colours at build time, and
         redraw the canvases."""
         if self._kit is not None:
-            # kit.switch_to() repaints every registered surface, but the raw
-            # tk.Label/tk.Canvas widgets below are not registered with kit - walk
-            # them explicitly.
+
             theme = _PalTheme(self._kit.pal, self._fonts or _DEFAULT_FONTS)
         old = self.theme
         self.theme = theme
@@ -637,10 +630,7 @@ class SnappyAIApp:
         for i, key in enumerate(("input", "render", "network")):
             cell = ttk.Frame(tiles, style="Raised.TFrame")
             cell.grid(row=0, column=i, sticky="w", padx=(0, 18))
-            # The label names the statistic, because the three legs do not
-            # report the same one: input is a p50 one-way, render and network
-            # are p95. Reading them as one kind of number is what makes the
-            # network tile look like it disagrees with the live watch.
+
             tk.Label(
                 cell, text=CHAIN_TILE_LABELS[key], bg=t.raised, fg=t.muted,
                 font=t.font_bold,
@@ -727,8 +717,14 @@ class SnappyAIApp:
             self.var_timer, surface="card",
         )
         self.chk_timer.pack(side="left")
-        # kit.bool_switch doesn't take command=; trace the variable instead
-        self.var_timer.trace_add("write", lambda *_a: self.on_timer_toggle())
+
+        # Programmatic writes to var_timer (config restore, status sync) must not
+        # re-trigger requests; only genuine user toggles go through the trace.
+        self._timer_trace_guard = False
+        self.var_timer.trace_add(
+            "write", lambda *_a: None if self._timer_trace_guard
+            else self.on_timer_toggle()
+        )
         ttk.Label(
             trow,
             text="Raises the clock interrupt frequency so sub-millisecond waits "
@@ -848,9 +844,7 @@ class SnappyAIApp:
 
     def pump_once(self) -> None:
         events = self.ctl.poll()
-        # The watch ticks ~10x/s; only the NEWEST tick carries information
-        # (its series/stats supersede the older ones), so older ticks in the
-        # same batch are dropped instead of redrawing the spark per event.
+
         last_tick = -1
         for i, ev in enumerate(events):
             if ev.kind is EventType.MONITOR_TICK:
@@ -1370,9 +1364,9 @@ class SnappyAIApp:
             self.timer_result.configure(text="releasing...")
             started = self.ctl.start_timer_stop()
         if not started:
-            # Controller was busy; the request never ran, so put the checkbox
-            # back to the real state instead of leaving a false indicator.
-            self.var_timer.set(self.ctl.timer_active)
+            # Busy: just tell the user. Never write var_timer back here - the
+            # write trace would fire on_timer_toggle again and loop forever,
+            # spamming "another operation is still running" over every task.
             self.timer_result.configure(
                 text="busy - wait for the current operation, then try again"
             )
@@ -1404,9 +1398,15 @@ class SnappyAIApp:
                 "drop the request while this window is minimized"
             )
         self.timer_result.configure(text="\n".join(lines))
-        # The controller reports the authoritative holder state; keep the
-        # checkbox honest even if the async request failed after the click.
-        self.var_timer.set(bool(d.get("active")))
+
+        # Sync the checkbox silently (trace write guard): this runs after every
+        # timer event, so a guarded write keeps it from re-requesting a tick.
+        if self.var_timer.get() != bool(d.get("active")):
+            self._timer_trace_guard = True
+            try:
+                self.var_timer.set(bool(d.get("active")))
+            finally:
+                self._timer_trace_guard = False
 
     def on_gen_cleanup(self) -> None:
         self.ctl.start_generate(kind="cleanup", execute=self.var_del.get())
@@ -1487,13 +1487,11 @@ class SnappyAIApp:
         except Exception as exc:
             messagebox.showerror(self.ctl.brand, f"Could not open {path}: {exc}")
 
-
 def build_app(
     root: tk.Tk, *, backend: str = "auto", out_root: str | Path | None = None
 ) -> SnappyAIApp:
     ctl = GuiController(backend_name=backend, out_root=out_root)
     return SnappyAIApp(root, ctl)
-
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
@@ -1528,7 +1526,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     root.mainloop()
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

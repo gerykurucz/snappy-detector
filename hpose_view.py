@@ -7,7 +7,6 @@ import numpy as np
 
 from hpose_model3d import VIEW_CLASSES, VIEW_CLASS_YAW
 
-
 class ViewResult(object):
 
     __slots__ = ("name", "confidence", "probs", "yaw", "facing_camera",
@@ -36,11 +35,9 @@ class ViewResult(object):
         return "ViewResult(%s, %.2f, yaw %.0f)" % (self.name,
                                                    self.confidence, self.yaw)
 
-
 def _circular_delta(a: float, b: float) -> float:
     d = (float(a) - float(b) + 180.0) % 360.0 - 180.0
     return d
-
 
 def geometric_prior(yaw: float, sigma: float = 32.0) -> np.ndarray:
     out = np.zeros(len(VIEW_CLASSES), dtype=np.float64)
@@ -53,7 +50,6 @@ def geometric_prior(yaw: float, sigma: float = 32.0) -> np.ndarray:
     else:
         out /= total
     return out
-
 
 class ViewClassifier(object):
 
@@ -84,7 +80,7 @@ class ViewClassifier(object):
             return prior
         p = np.asarray(self.head.proba(feats)[0], dtype=np.float64)
         classes = self.classes or list(VIEW_CLASSES)
-        if len(p) != len(VIEW_CLASSES):
+        if list(classes) != list(VIEW_CLASSES):
             out = np.zeros(len(VIEW_CLASSES))
             for i, name in enumerate(classes):
                 if name in VIEW_CLASSES:
@@ -129,10 +125,9 @@ class ViewClassifier(object):
             elif name.startswith("back"):
                 p[i] *= 0.15 if face_visible else 1.0
             elif name.startswith("front"):
-                p[i] *= 1.0 if face_visible else 0.15
+                p[i] *= 1.0 if face_visible else 0.5
         total = p.sum()
         return p / total if total > 1e-9 else p
-
 
 MIRROR = {
     "front": "front",
@@ -144,7 +139,6 @@ MIRROR = {
     "back_right_45": "back_left_45",
     "back": "back",
 }
-
 
 def _symmetrise(p: np.ndarray) -> np.ndarray:
     out = np.array(p, dtype=np.float64, copy=True)
@@ -158,7 +152,6 @@ def _symmetrise(p: np.ndarray) -> np.ndarray:
     total = out.sum()
     return out / total if total > 1e-9 else out
 
-
 def circular_mean_yaw(p: np.ndarray) -> float:
     s = 0.0
     c = 0.0
@@ -170,5 +163,3 @@ def circular_mean_yaw(p: np.ndarray) -> float:
     if abs(s) < 1e-9 and abs(c) < 1e-9:
         return 0.0
     return math.degrees(math.atan2(s, c)) % 360.0
-
-

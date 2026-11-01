@@ -10,14 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-
 @dataclass
 class Diagnosis:
     log_path: Path
     json_path: Path
     failed_sections: list[str] = field(default_factory=list)
     sections: dict[str, Any] = field(default_factory=dict)
-
 
 def _env_section() -> dict[str, Any]:
     enc = locale.getpreferredencoding(False)
@@ -33,7 +31,6 @@ def _env_section() -> dict[str, Any]:
                       "PSModulePath", "TEMP", "TMP")
         },
     }
-
 
 def _parse_ps1(path: Path) -> tuple[bool, str]:
     try:
@@ -73,7 +70,6 @@ def _parse_ps1(path: Path) -> tuple[bool, str]:
     if depth != 0:
         return (False, "unbalanced brackets at end of file")
     return (True, f"balanced ({len(text)} chars, decoded as {enc})")
-
 
 def run_diagnosis(
     backend: Any,
@@ -179,13 +175,11 @@ def run_diagnosis(
 
 import subprocess
 
-
 @dataclass(slots=True)
 class RunResult:
     code: int
     output: str = ""
     log_path: str = ""
-
 
 def is_elevated() -> bool:
     if not sys.platform.startswith("win"):
@@ -196,7 +190,6 @@ def is_elevated() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
-
 
 def silent_kwargs() -> dict:
     if not sys.platform.startswith("win"):
@@ -210,27 +203,22 @@ def silent_kwargs() -> dict:
         "stdin": subprocess.DEVNULL,
     }
 
-
 def console_encoding() -> str:
     return "oem" if sys.platform.startswith("win") else "utf-8"
-
 
 def app_dir() -> str:
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
-
 def system32_dir() -> str:
     root = os.environ.get("SystemRoot") or os.environ.get("windir")
     return os.path.join(root or "C:\\Windows", "System32")
-
 
 def powershell_exe() -> str:
     cand = os.path.join(system32_dir(), "WindowsPowerShell", "v1.0",
                         "powershell.exe")
     return cand if os.path.isfile(cand) else "powershell"
-
 
 def dll_search_paths(names, where: str = "system32") -> list[str]:
     roots = []
@@ -245,7 +233,6 @@ def dll_search_paths(names, where: str = "system32") -> list[str]:
             if os.path.isfile(path) and path not in found:
                 found.append(path)
     return found
-
 
 def dll_pin_ok(path: str) -> bool:
     pin = path + ".sha256"
@@ -262,7 +249,6 @@ def dll_pin_ok(path: str) -> bool:
         return digest.hexdigest().lower() == expected
     except Exception:
         return False
-
 
 def _elevated_hidden(command: str, timeout: float) -> RunResult:
     import ctypes
@@ -312,20 +298,16 @@ def _elevated_hidden(command: str, timeout: float) -> RunResult:
     except Exception as exc:
         return RunResult(code=1, output=f"elevated run failed: {exc}")
 
-
 def _ps_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
-
 _PS_BARE_CHARS = frozenset(" \t'\";|&$`{}()")
-
 
 def _ps_arg(arg: str) -> str:
     s = str(arg)
     if s.startswith("-") and not any(c in s for c in _PS_BARE_CHARS):
         return s
     return _ps_quote(s)
-
 
 def run_ps1(
     script: Path | str,
@@ -397,11 +379,7 @@ def run_ps1(
 import base64
 import hashlib
 
-
-
-
 _KEY = b"SnappyAI/build-secrets/v1"
-
 
 _BLOB = {
     "DISCORD_CLIENT_ID": "mVzqIJpPmEVQ4kbHjPhdEwNvEw==",
@@ -419,7 +397,6 @@ _BLOB = {
     "DISPATCH_PAT": "",
 }
 
-
 _ENV = {
     "ENTITLEMENT_REPO":   "SNAPPYAI_ENT_REPO",
     "ENTITLEMENT_BRANCH": "SNAPPYAI_ENT_BRANCH",
@@ -436,12 +413,10 @@ _ENV = {
 _ks = hashlib.sha256(_KEY).digest()
 _cache = {}
 
-
 def _decode(raw):
     data = base64.b64decode(raw, validate=True)
     return bytes(c ^ _ks[i % len(_ks)]
                  for i, c in enumerate(data)).decode("utf-8")
-
 
 def _get(name):
     if name in _cache:
@@ -462,55 +437,39 @@ def _get(name):
         _cache[name] = value
     return value
 
-
-
-
-
-
 def entitlement_repo():
     return _get("ENTITLEMENT_REPO").strip().strip("/").strip()
-
 
 def entitlement_branch():
     return _get("ENTITLEMENT_BRANCH").strip() or "live"
 
-
 def entitlement_pubkey():
     return _get("ENTITLEMENT_PUBKEY").strip()
-
 
 def stripe_monthly_link():
     return _get("STRIPE_MONTHLY").strip()
 
-
 def stripe_trial_link():
     return _get("STRIPE_TRIAL").strip()
-
 
 def discord_client_id():
     return _get("DISCORD_CLIENT_ID").strip()
 
-
 def discord_client_secret():
     return _get("DISCORD_CLIENT_SEC").strip()
-
 
 def presence_webhook():
     return _get("PRESENCE_WEBHOOK").strip()
 
-
 def row_pepper():
     return _get("ROW_PEPPER").strip()
-
 
 def dispatch_pat():
     return _get("DISPATCH_PAT").strip()
 
-
 def is_test_mode():
     links = stripe_monthly_link() + stripe_trial_link()
     return "buy.stripe.com/test_" in links
-
 
 def describe_readiness():
     fatal = []
@@ -535,13 +494,9 @@ def describe_readiness():
                         "is off")
     return fatal, advisory
 
-
 def is_shippable():
     fatal, advisory = describe_readiness()
     return not fatal and not advisory
-
-
-
 
 SENSITIVE_KEYS = frozenset((
     "entitlement_repo", "entitlement_branch", "entitlement_pubkey",

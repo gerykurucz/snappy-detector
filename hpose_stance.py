@@ -5,7 +5,6 @@ import numpy as np
 
 STANCE_CLASSES = ("standing", "crouch", "prone", "jump", "walk")
 
-
 class StanceResult(object):
 
     __slots__ = ("name", "confidence", "probs", "secondary", "crouched",
@@ -29,7 +28,6 @@ class StanceResult(object):
     def __repr__(self) -> str:
         return "StanceResult(%s, %.2f)" % (self.name, self.confidence)
 
-
 class StanceClassifier(object):
 
     def __init__(self, bundle):
@@ -48,7 +46,7 @@ class StanceClassifier(object):
             return np.full(n, 1.0 / n)
         p = np.asarray(self.head.proba(feats)[0], dtype=np.float64)
         classes = self.classes or list(STANCE_CLASSES)
-        if len(p) != len(STANCE_CLASSES):
+        if list(classes) != list(STANCE_CLASSES):
             out = np.zeros(len(STANCE_CLASSES))
             for i, name in enumerate(classes):
                 if name in STANCE_CLASSES:
@@ -80,27 +78,29 @@ class StanceClassifier(object):
             except (ValueError, IndexError):
                 return 0.0
 
+        # Require both knees to be visible with decent confidence. At 20 px
+        # the leg joints are often below 0.2 confidence, and _angle_at
+        # returns 180 on degenerate vectors, which we would otherwise read
+        # as "perfectly straight legs".
+        knee_conf = 0.5 * (value("vis_13") + value("vis_14"))
         knee = 0.5 * (value("knee_angle_l") + value("knee_angle_r"))
         spine = value("spine_angle")
-        if spine > 0.42:
-            return p
         out = np.array(p, dtype=np.float64, copy=True)
         idx = {name: i for i, name in enumerate(STANCE_CLASSES)}
-        if spine > 0.45:
+
+        if spine > 0.42:
             out[idx["standing"]] *= 0.02
             out[idx["walk"]] *= 0.02
             out[idx["jump"]] *= 0.25
+        elif knee_conf < 0.5:
+            # No reliable knee signal: fall back to the classifier.
+            return p
         elif knee > 0.86:
             out[idx["crouch"]] *= 0.02
             out[idx["prone"]] *= 0.02
             out[idx["jump"]] *= 0.02
-            if value("legs_seen") > 0.5:
-                stride = value("ankle_dy")
-            else:
-                stride = 0.0
-            if stride > 0.09:
-                out[idx["walk"]] *= 1.0
-            else:
+            stride = value("ankle_dy") if value("legs_seen") > 0.5 else 0.0
+            if stride <= 0.09:
                 out[idx["walk"]] *= 0.15
                 out[idx["standing"]] *= 3.0
         elif knee < 0.72:

@@ -6,15 +6,11 @@ if "__compiled__" in globals():
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-
-
 from system_core import (APP_NAME, IS_WINDOWS, attach_log_file, log,
                   log_path)
 from config import DEFAULT_CONFIG, Config
 
-
 _INSTANCE_MUTEX = None
-
 
 def _ensure_single_instance():
     if not IS_WINDOWS:
@@ -50,7 +46,6 @@ def _ensure_single_instance():
             pass
         return True
 
-
 def attach_app_log():
     try:
         import online
@@ -68,11 +63,7 @@ def attach_app_log():
     except Exception:
         return None
 
-
 def apply_cli_overrides(cfg, argv):
-
-
-
 
     if "--mode1" in argv:
         cfg.set("mode", 1, save=False)
@@ -159,11 +150,6 @@ def apply_cli_overrides(cfg, argv):
                 cfg.set("merge_distance", int(float(nxt)), save=False)
             except (ValueError, OverflowError):
 
-
-
-
-
-
                 print("Ignored invalid --merge %r" % (argv[i + 1],))
 
         elif arg == "--accent":
@@ -183,15 +169,11 @@ def apply_cli_overrides(cfg, argv):
             except (ValueError, OverflowError):
                 print("Ignored invalid --glide %r" % (nxt,))
 
-
-
-
 _KNOWN_FLAGS = ("--mode1", "--mode2", "--accent-only",
                 "--follow", "--motion-3d", "--no-adaptive",
                 "--no-lumnorm", "--console", "--reset-config", "--help",
                 "-h", "--repo", "--radius", "--capture", "--merge", "--accent",
                 "--glide", "--controller", "--no-controller-drive")
-
 
 def _announce(title, body, fatal=False):
     text = "%s\n\n%s" % (title, body)
@@ -221,7 +203,6 @@ def _announce(title, body, fatal=False):
             pass
     print(text)
 
-
 def _crash_guard(exc_type, exc, tb):
     import traceback
     text = "".join(traceback.format_exception(exc_type, exc, tb))
@@ -244,12 +225,10 @@ def _crash_guard(exc_type, exc, tb):
                   ""),
               fatal=True)
 
-
 def warn_unknown_flags(argv):
     for arg in argv[1:]:
         if arg.startswith("--") and arg not in _KNOWN_FLAGS:
             print("Ignored unknown option %r (try --help)." % (arg,))
-
 
 def print_usage():
     print("")
@@ -279,7 +258,6 @@ def print_usage():
     print("credentials) are build-time and deliberately not settings.")
     print("")
 
-
 def main():
     sys.excepthook = _crash_guard
     if "--help" in sys.argv or "-h" in sys.argv:
@@ -293,10 +271,8 @@ def main():
         sys.exit(130)
     except BaseException:
 
-
         _crash_guard(*sys.exc_info())
         sys.exit(1)
-
 
 def _run():
     if not _ensure_single_instance():
@@ -339,21 +315,6 @@ def _run():
     apply_cli_overrides(cfg, sys.argv)
     cfg.sanitize()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     try:
         import online
         import general_utils as build_secrets
@@ -361,8 +322,6 @@ def _run():
         for problem in advisory:
             log("BUILD: %s" % problem)
         if not fatal and not build_secrets.is_shippable():
-
-
 
             if getattr(sys, "frozen", False):
                 _announce(
@@ -389,8 +348,6 @@ def _run():
         print("")
         sys.exit(1)
 
-
-
     use_gui = "--console" not in sys.argv
     if use_gui:
         try:
@@ -412,7 +369,6 @@ def _run():
     if identity is None:
         sys.exit(1)
     sys.exit(windows_main(cfg, identity))
-
 
 if __name__ == "__main__":
     main()

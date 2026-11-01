@@ -1,0 +1,23 @@
+{
+  "name": "snappyai-publisher-simple",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stripe webhook -> entitlement state -> signed entitlements.json in the public repo. Storage is one JSON file; there is no database.",
+  "main": "src/worker.js",
+  "comment": "Archive layout: this dev project lives in worker/publisher-simple/source/; the deployable bundle it generates is worker/publisher-simple/worker.js; the tests live in tests/ at the archive root. No RUNTIME dependencies: tweetnacl is vendored as ESM in src/vendor/. `npm test` (from tests/) works without npm install; rebuilding the bundle (`npm run bundle`) or running `npm run typecheck` here needs `npm install` once.",
+  "scripts": {
+    "test": "node --test ../../../tests/",
+    "interop": "node ../../../tests/prove-edsig-interop.mjs && python3 ../../../tests/verify-with-edsig.py /tmp/interop.json",
+    "check": "bash ../../../tests/check-deploy.sh",
+    "typecheck": "tsc -p tsconfig.editorcheck.json && echo 'dashboard editor check: 0 problems'",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "bundle": "node build-bundle.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261003.1",
+    "esbuild": "^0.28.0",
+    "typescript": "^7.0.2"
+  }
+}

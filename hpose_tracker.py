@@ -1,19 +1,18 @@
 
 from __future__ import annotations
 
-
 from hpose_keypoints import box_iou
 from hpose_motion import KalmanBox, MotionModel
 from hpose_model3d import VIEW_CLASSES
 from hpose_stance import STANCE_CLASSES
-
 
 class Track(object):
 
     __slots__ = ("id", "box", "score", "hits", "misses", "age", "kf",
                  "motion", "view_probs", "stance_probs", "view", "stance",
                  "view_history", "stance_history", "last_t", "fit",
-                 "confirmed", "has_face", "kp_conf", "raw_score", "head_kp")
+                 "confirmed", "has_face", "kp_conf", "raw_score", "head_kp",
+                 "kps")
 
     def __init__(self, tid: int, box, score: float, t: float):
         self.id = int(tid)
@@ -26,7 +25,7 @@ class Track(object):
         self.misses = 0
         self.age = 0
         self.kf = KalmanBox(box, t)
-        self.motion = MotionModel()
+        self.motion = MotionModel(body_h_px=max(1.0, box[3] - box[1]))
         cx = (box[0] + box[2]) * 0.5
         cy = (box[1] + box[3]) * 0.5
         self.motion.add(t, cx, cy)
@@ -40,6 +39,7 @@ class Track(object):
         self.fit = None
         self.confirmed = False
         self.has_face = False
+        self.kps = None
 
     @property
     def center(self):
@@ -93,15 +93,29 @@ class Track(object):
             "confirmed": self.confirmed,
         }
 
+def _size_iou_threshold(box_a, box_b, base_thr: float) -> float:
+    """Relax the IoU threshold for small targets.
 
-def _greedy_match(tracks, dets, iou_threshold: float):
+    A 20 px person moving 5 px per frame has IoU 0.6; moving 10 px, 0.33.
+    At 0.30 threshold, that 20 px target loses identity after two frames.
+    For 160 px targets, the original 0.30 is fine.
+    """
+    h = max(box_a[3] - box_a[1], box_b[3] - box_b[1])
+    h = max(1.0, min(400.0, h))
+    scaled = 0.05 + 0.003 * h            # 20 px -> 0.11, 160 px -> 0.53
+    return min(base_thr, max(0.08, scaled))
+
+
+def _greedy_match(tracks, dets, iou_threshold: float, relax: float = 1.0):
     pairs = []
     for ti, tr in enumerate(tracks):
         for di, det in enumerate(dets):
             iou = box_iou(tr.box, det["box"])
-            if iou >= iou_threshold:
+            thr = _size_iou_threshold(tr.box, det["box"],
+                                      iou_threshold) * relax
+            if iou >= thr:
                 pairs.append((iou, ti, di))
-    pairs.sort(reverse=True)
+    pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
     used_t = set()
     used_d = set()
     matches = []
@@ -112,7 +126,6 @@ def _greedy_match(tracks, dets, iou_threshold: float):
         used_d.add(di)
         matches.append((ti, di))
     return matches, used_d
-
 
 class Tracker(object):
 
@@ -158,7 +171,6 @@ class Tracker(object):
             tr.kf.predict(t)
 
         high = [d for d in dets if d.get("score", 1.0) >= self.low_score]
-        low = [d for d in dets if d.get("score", 1.0) < self.low_score]
 
         matches, used = _greedy_match(self.tracks, high, self.iou_threshold)
         matched_det = set(di for _, di in matches)
@@ -170,12 +182,18 @@ class Tracker(object):
             sub_tracks = [self.tracks[i] for i in unmatched]
             sub_dets = [high[i] for i in rest]
             sub_matches, sub_used = _greedy_match(sub_tracks, sub_dets,
-                                                  self.low_iou_threshold)
+                                                  self.low_iou_threshold,
+                                                  relax=0.6)
             for sti, sdi in sub_matches:
                 ti = unmatched[sti]
                 di = rest[sdi]
                 matches.append((ti, di))
                 used.add(di)
+
+        matched_tracks = set(ti for ti, _ in matches)
+        for ti, tr in enumerate(self.tracks):
+            if ti not in matched_tracks:
+                tr.misses += 1
 
         for ti, di in matches:
             det = high[di]
@@ -210,11 +228,19 @@ class Tracker(object):
         hk = det.get("head_kp")
         if hk:
             track.head_kp = hk
+        if det.get("kps") is not None:
+            track.kps = det["kps"]
         track.last_t = float(t)
         track.kf.update(track.box, t)
         cx = (track.box[0] + track.box[2]) * 0.5
         cy = (track.box[1] + track.box[3]) * 0.5
         track.motion.add(t, cx, cy)
+        h_new = max(1.0, track.box[3] - track.box[1])
+        if track.motion.body_h_px is not None:
+            track.motion.body_h_px = (0.85 * track.motion.body_h_px
+                                      + 0.15 * h_new)
+        else:
+            track.motion.body_h_px = h_new
         track.fit = det.get("fit", track.fit)
         if det.get("has_face"):
             track.has_face = True
@@ -225,11 +251,22 @@ class Tracker(object):
                                     det.get("stance_probs"),
                                     self.stance_smoothing, track.stance,
                                     self.switch_margin)
+        override = None
         if track.stance == "standing" and track.motion_state == "fast":
-            track.stance = "walk"
+            override = "walk"
         elif track.stance == "walk" and track.motion_state == "static" \
                 and track.hits > 8:
-            track.stance = "standing"
+            override = "standing"
+        if override is not None:
+            track.stance = override
+            # Keep stance_probs consistent so stance_confidence is meaningful.
+            track.stance_probs[override] = max(
+                0.55, track.stance_probs.get(override, 0.0))
+            total = sum(track.stance_probs.values())
+            if total > 1e-9:
+                for k in track.stance_probs:
+                    track.stance_probs[k] /= total
+
         track.view_history.append(track.view)
         track.stance_history.append(track.stance)
         if len(track.view_history) > 60:

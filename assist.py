@@ -39,18 +39,6 @@ from vision import (FollowMemory, FigureMemory, scan_region, accent_soft_of,
 
 if IS_WINDOWS:
 
-
-
-
-
-
-
-
-
-
-
-
-
     import ctypes
     import ctypes.wintypes as wt
     from win32rt import (
@@ -68,9 +56,6 @@ if IS_WINDOWS:
         get_dpi_scale, inject_combo, inject_mouse, kernel32, move_cursor,
         setup_dpi_awareness, user32,
     )
-
-
-
 
 else:
     WM_LBUTTONDOWN = 0x0201
@@ -90,29 +75,16 @@ else:
 
 MOUSE2_HOLD_SECONDS = 0.45
 
-
+TRIGGER_HOLD_SECONDS = 0.20
 
 MOTION_MAX_OFFSET = 80.0
 
-
-
-
 REC_MOVE_MERGE_S = 0.05
-
-
-
-
-
 
 MOUSE_BUTTON_INDEX = {"mouse1": BTN_LEFT, "mouse2": BTN_RIGHT,
                       "mouse3": BTN_MIDDLE, "mouse4": BTN_X1,
                       "mouse5": BTN_X2}
 
-# A press is classified into a ROLE, not matched against a fixed message: the
-# trigger role is whichever button trigger_button names (left by default) and
-# the extra-options role whichever options_button names (right by default).
-# The two side buttons share one pair of messages and are told apart by
-# mouseData's high word, the only place Windows puts that information.
 ROLE_TRIGGER = 1
 ROLE_OPTIONS = 2
 _MOUSE_BUTTON_MSG = {
@@ -121,7 +93,6 @@ _MOUSE_BUTTON_MSG = {
     WM_MBUTTONDOWN: (BTN_MIDDLE, True), WM_MBUTTONUP: (BTN_MIDDLE, False),
     WM_XBUTTONDOWN: (None, True), WM_XBUTTONUP: (None, False),
 }
-
 
 def mouse_message_button(msg, mouse_data=0):
     """A mouse message -> (button index, down), or None when it is not one.
@@ -137,7 +108,6 @@ def mouse_message_button(msg, mouse_data=0):
     if button is None:
         button = BTN_X1 if (int(mouse_data) >> 16) == XBUTTON1 else BTN_X2
     return button, down
-
 
 _MOUSE_REC_MAP = {
     0x0201: (BTN_LEFT, PHASE_DOWN),
@@ -155,16 +125,11 @@ _MOUSE_REC_MAP = {
 }
 _MOUSE_REC_XBUTTON = (0x020B, 0x020C, 0x020D)
 
-# Controller-initiated record/play actions are posted to the hook thread with
-# this offset added, so handle_hotkey can route them to the controller
-# library instead of the keyboard library. Keyboard hotkeys keep their plain
-# ids; the offset range collides with nothing (plain ids are < 100).
 PAD_HID_OFFSET = 1000
 _PAD_REC_ACTIONS = frozenset((
     "record_macro", "stop_macro", "play_macro",
     "play_macro1", "play_macro2", "play_macro3", "play_macro4",
     "play_macro5"))
-
 
 def _debug_boxes(collect, origin, cx, cy):
     """Absolute screen boxes for the scan candidates the collector saw.
@@ -186,13 +151,10 @@ def _debug_boxes(collect, origin, cx, cy):
             continue
     return out
 
-
 class App(object):
     def __init__(self, cfg, identity=None):
         self.cfg = cfg
         self.identity = identity
-
-
 
         self.running = False
 
@@ -201,17 +163,7 @@ class App(object):
 
         self.click_q = queue.Queue()
 
-
-
-
-
-
-
         self.pending_classics = []
-
-
-
-
 
         self._pending_lock = threading.Lock()
 
@@ -221,14 +173,13 @@ class App(object):
 
         self.pause_until = 0.0
         self._slow_log_at = 0.0
+        self._stats_log_at = 0.0
         self._edge_log_at = 0.0
-
-
-
 
         self._pass_log_at = {}
         self._mouse2_log_at = 0.0
         self._lead_log_at = 0.0
+        self._nudge_fail_log_at = 0.0
         self.rbutton_down_time = 0.0
         self.snap_count = 0
         self.pass_count = 0
@@ -236,17 +187,9 @@ class App(object):
         self.last_snap_time = 0.0
         self.last_snap_pos = None
 
-        #: (centre_x, centre_y, radius, target_box, candidate_boxes)
-        #: in screen coordinates, stashed per scan for the debug
-        #: overlay; None unless debug_visualize is on.
         self._debug_vis = None
 
         self.dpi_scale = 1.0
-
-
-
-
-
 
         self._vs_cache = {"t": 0.0, "v": None}
 
@@ -256,27 +199,25 @@ class App(object):
 
         self._capture = CaptureBackend(cfg.get("capture_backend", "auto"))
 
-
-
-
-
         self._input = make_input_backend(cfg)
         self.follow = FollowMemory()
         self.subject = FigureMemory()
-        self._debug_vis = None
-
-
 
         self._lbtn_down = False
-
-
-
 
         self._rbtn_down = False
         self._rbtn_armed = False
         self._rbtn_hold_done = False
         self._rbtn_press_id = 0
         self._rbtn_lock = threading.Lock()
+
+        # Mode 2 trigger button single-click vs hold detection
+        self._trigger_press_time = 0.0
+        self._trigger_press_id = 0
+        self._trigger_hold_done = False
+        self._trigger_hold_timer = None
+        self._trigger_suppressed_down = None  # (x, y, now, entry) for reinjection
+        self._trigger_lock = threading.Lock()
 
         self._hk_always = []
         self.local_binds = []
@@ -287,11 +228,10 @@ class App(object):
         self.key_hook = None
         self.key_proc_ref = None
 
-
         self.macro_q = queue.Queue()
         self._macros = []
         self._macro_map = {}
-
+        self._macro_trigger_vks = set()
 
         self.rec_store = RecordingStore()
         try:
@@ -307,9 +247,9 @@ class App(object):
         self._rec_last_move = 0.0
         self._rec_combos = set()
         self._rec_full = False
+        self._rec_lock = threading.Lock()
         self.play_target_rid = None
         self.play_target_pad_rid = None
-
 
         self._play_cancel = threading.Event()
         self._play_busy = False
@@ -317,105 +257,43 @@ class App(object):
         self._play_rid = None
         self._play_source = None
 
-
-
-
-
-
-
         self._auto_next = 0.0
         self._auto_lock = threading.Lock()
         self._auto_armed = False
 
-
-
-
-
+        self._bypass_available = True
+        try:
+            hotkeys.parse_bypass_spec(self.cfg.get("bypass_key", "shift"))
+        except Exception as exc:
+            self._bypass_available = False
+            log("bypass spec parse failed: %r" % (exc,))
 
         self._track = deque(maxlen=32)
         self._tracker = vision.MotionTracker(dim=3)
-
+        self._tracker_lock = threading.Lock()
 
         self.follow_lock = None
         self._follow_stable = 0
         self._chase_stable = 0
 
-
-
-
-
-
-
         self._mode_epoch = 0
 
-
-
-
-
-
-
-
         self._state_lock = threading.RLock()
-
-
-
-
-
-
 
         self._center_follow = None
         self._pick_at = None
         self._pick_at_time = 0.0
 
-
-
-
         self._chase_ref = None
-
-
-
-
-
-
-
-
-
-
-
-
-
 
         self._center_hold = None
 
-
-
-
-
         self._center_hold_tomb = 0.0
-
-
-
-
-
 
         self._center_prev = None
         self._view_moved = False
 
-
-
-
-
-
-
-
-
-        self._center_syn_down = False
-
-
-
         self._own_pid = os.getpid()
-
-
 
         self._pad_out = None
         self._pad_bindings = []
@@ -423,7 +301,6 @@ class App(object):
         self._pad_index = None
         self._pad_connected = False
         self._pad_misses = 0
-        self._pad_reader = None
         self._pad_cursor = None
         self._pad_target = None
         self._pad_last_drive = 0.0
@@ -431,11 +308,11 @@ class App(object):
         self._pad_right_down = False
         self._pad_entry = None
         self._pad_raw_down = False
+        self._pad_state_lock = threading.Lock()
         self._pad_prev_buttons = 0
         self._pad_prev_axes = {}
         self._pad_bypass = False
         self._pad_bypass_tracker = None
-        self._pad_note_at = 0.0
         self._pad_emu_warned = False
 
         self._presence_nonce = secrets.token_hex(8)
@@ -446,7 +323,8 @@ class App(object):
         """True while a macro recording is armed (public read-only view of
         the capture buffer, so the GUI poller no longer reaches into
         app._rec_buffer)."""
-        return self._rec_buffer is not None
+        with self._rec_lock:
+            return self._rec_buffer is not None
 
     def presence_hash(self):
         """Row hash of the entitlement key (the e-mail): two machines
@@ -474,9 +352,6 @@ class App(object):
                 if self.stop.wait(30):
                     break
                 continue
-
-
-
 
             if self.running and was_running is not True:
                 if online.post_presence(self.cfg, idh,
@@ -603,6 +478,8 @@ class App(object):
         both and Win has no generic VK at all. A failed read answers False -
         keep assisting rather than silently switch the program off.
         """
+        if not self._bypass_available:
+            return False
         parsed = self._bypass_spec()
         if parsed is None:
             return False
@@ -642,6 +519,8 @@ class App(object):
         middle of a 6 px checkbox is inside the window yet has hit
         nothing, and that is exactly the case snapping exists for.
         """
+        if bw <= 0 or bh <= 0:
+            return False
         return (math.hypot(ax - x, ay - y) <= on_target
                 and abs(ax - x) * 2.0 <= bw
                 and abs(ay - y) * 2.0 <= bh)
@@ -693,11 +572,6 @@ class App(object):
 
         if gw < 40 or gh < 40:
 
-
-
-
-
-
             if time.perf_counter() - self._edge_log_at > 30.0:
                 self._edge_log_at = time.perf_counter()
                 log("Scan skipped: capture region too small at the "
@@ -705,7 +579,6 @@ class App(object):
             return None, None, None, None, None
 
         origin = (int(l), int(t))
-
 
         edges = (l == vx, t == vy, r == vx + vw, b == vy + vh)
 
@@ -813,8 +686,6 @@ class App(object):
         if state is not None and state.get("abandoned"):
             return None
 
-
-
         cap = max(48, half * 2)
         img, cx, cy, origin, edges = self.grab_around(mx, my, cap)
         if img is None:
@@ -823,13 +694,14 @@ class App(object):
             return None
         follow_ctx = None
         if bool(self.cfg.get("follow_enabled")):
+            try:
+                follow_secs = float(self.cfg.get("follow_seconds", 20) or 20)
+            except (TypeError, ValueError):
+                follow_secs = 20.0
             follow_ctx = self.follow.context(
                 origin[0], origin[1],
-                float(self.cfg.get("follow_seconds", 20))
+                follow_secs
             )
-
-
-
 
         blind = 0.0
         flight = self._reticle_active()
@@ -839,11 +711,6 @@ class App(object):
                     self.cfg.get("center_blind_area", 10)))
             except (TypeError, ValueError):
                 blind = 0.0
-
-
-
-
-
 
         motion_ctx = None
         curr_gray = None
@@ -875,6 +742,9 @@ class App(object):
         try:
             subject_priority_on = (bool(self.cfg.get("subject_priority", False))
                                   or bool(self.cfg.get("subject_only", False)))
+        except Exception:
+            subject_priority_on = False
+        try:
             hb = float(self.cfg.get("subject_focus_bias", 0) or 0) / 100.0
         except (TypeError, ValueError):
             hb = 0.0
@@ -911,10 +781,8 @@ class App(object):
                     self._view_moved = False
             return None
         self.fail_count = 0
+        self.scanner_dead = False
 
-        # Debug visualization - stash for the GUI to hand to the reticle
-        # overlay (screen-space centre, scan radius and the absolute box
-        # of the picked target). Never touches the scan-centre cx/cy.
         if bool(self.cfg.get("debug_visualize", False)):
             try:
                 vx, vy, vw, vh = self._virtual_screen()
@@ -929,7 +797,14 @@ class App(object):
                         int(acx + res.target.bw / 2),
                         int(acy + res.target.bh / 2),
                     )
-                self._debug_vis = (dbg_cx, dbg_cy, cap, target_box,
+                # target_box is a box (x1,y1,x2,y2); overlay expects center point
+                target_center = None
+                if target_box:
+                    target_center = (
+                        (target_box[0] + target_box[2]) // 2,
+                        (target_box[1] + target_box[3]) // 2,
+                    )
+                self._debug_vis = (dbg_cx, dbg_cy, cap, target_center,
                                    _debug_boxes(dbg_collect, origin, cx, cy))
             except Exception:
                 pass
@@ -937,9 +812,6 @@ class App(object):
             self._debug_vis = None
 
         if curr_gray is not None:
-
-
-
 
             with self._state_lock:
                 self._center_prev = {"gray": curr_gray,
@@ -950,10 +822,6 @@ class App(object):
             return None
         if res.kind == "target" and res.target is not None:
 
-
-
-
-
             ax = mx + res.target.dx
             ay = my + res.target.dy
             if arm_follow and bool(self.cfg.get("center_follow", False)):
@@ -962,7 +830,6 @@ class App(object):
                     if (prev is not None
                             and math.hypot(ax - prev["x"],
                                            ay - prev["y"]) > 3.0):
-
 
                         self._chase_stable = 0
                     self._center_follow = {
@@ -973,10 +840,6 @@ class App(object):
                         "area": getattr(res.target, "area", 0) or 0,
                     }
 
-
-
-
-
             now = time.perf_counter()
             with self._state_lock:
                 self._track.append((now, ax, ay))
@@ -985,9 +848,8 @@ class App(object):
             try:
                 area = float(getattr(res.target, "area", 0) or 0)
                 if area > 0.0:
-                    with self._state_lock:
-                        self._tracker.update(
-                            now, (ax, ay, math.sqrt(area)))
+                    with self._tracker_lock:
+                        self._tracker.update(now, (ax, ay, math.sqrt(area)))
             except Exception:
                 pass
             try:
@@ -1017,22 +879,9 @@ class App(object):
         if state is not None and state.get("abandoned"):
             return None
 
-
-
-
-
-
-
-
-
         box = self._center_box()
         if box is not None:
             mx, my, half = box
-
-
-
-
-
 
             if (abs(x - mx) > half or abs(y - my) > half) \
                     and not self._reticle_active():
@@ -1040,20 +889,10 @@ class App(object):
                     state["center_pass"] = True
                 return None
 
-
-
             got = self._scan_center(state, arm_follow=(track is not False))
             if got is None:
                 return None
             return got[0]
-
-
-
-
-
-
-
-
 
         radius = self.radius_px()
         cap = max(48, int(radius))
@@ -1068,9 +907,13 @@ class App(object):
 
         follow_ctx = None
         if bool(self.cfg.get("follow_enabled")):
+            try:
+                follow_secs = float(self.cfg.get("follow_seconds", 20) or 20)
+            except (TypeError, ValueError):
+                follow_secs = 20.0
             follow_ctx = self.follow.context(
                 origin[0], origin[1],
-                float(self.cfg.get("follow_seconds", 20))
+                follow_secs
             )
 
         try:
@@ -1097,10 +940,8 @@ class App(object):
             return None
 
         self.fail_count = 0
+        self.scanner_dead = False
 
-        # Debug visualization - the same stash _scan_center keeps, for
-        # the cursor-anchored scan: circle at the cursor, box around
-        # the picked target, boxes around every candidate.
         if dbg_collect is not None:
             try:
                 target_box = None
@@ -1113,7 +954,14 @@ class App(object):
                         int(acx + res.target.bw / 2),
                         int(acy + res.target.bh / 2),
                     )
-                self._debug_vis = (x, y, cap, target_box,
+                # target_box is a box (x1,y1,x2,y2); overlay expects center point
+                target_center = None
+                if target_box:
+                    target_center = (
+                        (target_box[0] + target_box[2]) // 2,
+                        (target_box[1] + target_box[3]) // 2,
+                    )
+                self._debug_vis = (x, y, cap, target_center,
                                    _debug_boxes(dbg_collect, origin, cx, cy))
             except Exception:
                 pass
@@ -1121,9 +969,6 @@ class App(object):
             self._debug_vis = None
 
         if res.ms > 90 and time.perf_counter() - self._slow_log_at > 30.0:
-
-
-
 
             self._slow_log_at = time.perf_counter()
             log("Slow scan: %.0f ms at radius %d px. The full search "
@@ -1141,14 +986,10 @@ class App(object):
                 while track and now - track[0][0] > 0.6:
                     track.popleft()
 
-
-
-
-
                 try:
                     area = float(getattr(res.target, "area", 0) or 0)
                     if area > 0.0:
-                        with self._state_lock:
+                        with self._tracker_lock:
                             self._tracker.update(
                                 now, (ax, ay, math.sqrt(area)))
                 except Exception:
@@ -1188,6 +1029,17 @@ class App(object):
         """
         index = self._role_button("options_button", "mouse2")
         return None if index == self._trigger_button() else index
+
+    def _options_vk(self):
+        """VK code for the physical button currently bound to the options role."""
+        index = self._options_button()
+        return {
+            BTN_LEFT: 0x01,    # VK_LBUTTON
+            BTN_RIGHT: 0x02,   # VK_RBUTTON
+            BTN_MIDDLE: 0x04,  # VK_MBUTTON
+            BTN_X1: 0x05,      # VK_XBUTTON1
+            BTN_X2: 0x06,      # VK_XBUTTON2
+        }.get(index, 0x02)
 
     def _button(self, down, index=None):
         """One transition of the assist button through the active backend.
@@ -1230,13 +1082,24 @@ class App(object):
         so the next centre scan refreshes it instead of comparing.
         Desktop cursor walks never set it (the world didn't move).
         """
+        sent = False
         try:
-            self._input.nudge(dx, dy)
+            sent = bool(self._input.nudge(dx, dy))
         except Exception as exc:
             log("nudge error: %r" % (exc,))
-        if view:
+        if not sent and (dx or dy):
+            # Backend refused - do not fabricate a relative move through
+            # win32rt (inject_mouse takes button/down, not dx/dy).
+            # Log once per 5 seconds so the user sees why steering
+            # silently doesn't rotate.
+            if time.perf_counter() - self._nudge_fail_log_at > 5.0:
+                self._nudge_fail_log_at = time.perf_counter()
+                log("nudge failed: backend refused (dx=%d dy=%d). "
+                    "Check input_backend configuration." % (dx, dy))
+        if view and sent:
             with self._state_lock:
                 self._view_moved = True
+        return sent
 
     def _atomic_click(self, index=0):
         """Try to deliver a whole down+up click as one packet through the
@@ -1287,7 +1150,47 @@ class App(object):
             time.sleep(0.015)
             self._button(False)
 
+    def _nudge_effective(self, before_dx, before_dy, after_dx, after_dy,
+                         expected_dx, expected_dy):
+        """True when the target's pixel offset moved in the direction we
+        nudged, by at least ~30 % of the nudge's magnitude. Deliberately
+        loose: game sensitivity ratios vary, some games clamp deltas, some
+        games clamp deltas, some games clamp deltas, some games clamp deltas."""
+        import math
+        exp_mag = math.hypot(expected_dx, expected_dy)
+        if exp_mag < 2.0:
+            return True                      # nothing requested, trivially OK
+        moved = math.hypot(after_dx - before_dx, after_dy - before_dy)
+        # The nudge should move the sighting by roughly expected_mag; allow
+        # 30 %..300 % to survive sub-pixel rounding and mild sensitivity
+        # differences, and to catch "no move at all" reliably.
+        return moved >= 0.30 * exp_mag
+
+    def _click_at_reticle(self, index=None):
+        """One down+up click at the current reticle position, no warp.
+
+        The flight-mode click: the view rotated to the target, the click
+        goes where the reticle now points.
+        """
+        if index is None:
+            index = self._trigger_button()
+        if not self._atomic_click(index):
+            self._button(True)
+            time.sleep(0.015)
+            self._button(False)
+
     def _follow_may_learn(self, target):
+        """Guarded entry: a raise here must never cost the user's click.
+        Callers may have claimed the delivery already, and the outer error
+        handler would then skip the reinject (the claim is taken) - so
+        every failure degrades to "do not learn", never to a lost click."""
+        try:
+            return self._follow_may_learn_inner(target)
+        except Exception as exc:
+            log("follow learn check error: %r" % (exc,))
+            return False
+
+    def _follow_may_learn_inner(self, target):
         """
         Decide whether a successful snap may be remembered.
 
@@ -1340,9 +1243,6 @@ class App(object):
             accent_matcher_of(self.cfg),
             variants=accent_variants_of(self.cfg),
         )
-
-
-
 
     def glide_cursor(self, nx, ny):
         """
@@ -1451,7 +1351,7 @@ class App(object):
             pending = self.pending_classics
             self.pending_classics = []
         for entry in pending:
-            if entry.get("up"):
+            if entry.get("up") or entry.get("worker_done"):
                 continue
             state = entry.get("state")
             if state is not None:
@@ -1464,28 +1364,11 @@ class App(object):
             self.reinject_click(entry["x"], entry["y"])
             log("Suppressed click returned safely.")
 
-
-
-
-
-
-
-
-
         with self._state_lock:
             had_hold = self._center_hold is not None
             self._center_hold = None
-            self._guide_hold = None
             if had_hold:
                 self._center_hold_tomb = time.perf_counter()
-            need_up = self._center_syn_down
-            if need_up:
-                self._center_syn_down = False
-        if need_up:
-            try:
-                self._button(False)
-            except Exception as exc:
-                log("synthetic release error: %r" % (exc,))
 
     def _drain_queue(self):
         """
@@ -1508,14 +1391,11 @@ class App(object):
                         except ValueError:
                             pass
                     if entry.get("pad"):
-                        # Release ownership so a later _pad_release cannot
-                        # mark an orphaned entry (identity check: a
-                        # concurrent new press already owns a fresh one).
-                        if self._pad_entry is entry:
-                            self._pad_entry = None
                         continue
                 self.reinject_click(item[1], item[2])
                 log("Queued click returned safely.")
+            elif item[0] == "guide":
+                log("Queued guide job dropped.")
 
     def do_classic(self, x, y, out, state):
         """
@@ -1525,10 +1405,6 @@ class App(object):
         """
         try:
             if not self._epoch_alive(state):
-
-
-
-
 
                 if self._claim_delivery(state):
                     self.reinject_click(x, y)
@@ -1542,7 +1418,6 @@ class App(object):
 
             if not self._epoch_alive(state):
 
-
                 if self._claim_delivery(state):
                     self.reinject_click(x, y)
                 out["handled"] = True
@@ -1554,14 +1429,6 @@ class App(object):
             if target is None:
                 self.pass_count += 1
 
-
-
-
-
-
-
-
-
                 if state.get("center_pass"):
                     self._pass_note("outside the watched centre box")
                 elif state.get("abandoned"):
@@ -1572,22 +1439,6 @@ class App(object):
                     self.reinject_click(x, y)
                 out["handled"] = True
                 return
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
             cbox = self._center_box()
             if cbox is not None:
@@ -1603,29 +1454,14 @@ class App(object):
 
             if cbox is not None and self._reticle_active():
 
-
-
-
-
-
-
-
-
                 if not self._claim_delivery(state):
                     out["handled"] = True
                     return
                 if not self._epoch_alive(state):
 
-
                     self.reinject_click(x, y)
                     out["handled"] = True
                     return
-
-
-
-
-
-
 
                 try:
                     _ot = float(self.cfg.get("on_target_dist", 10))
@@ -1634,18 +1470,15 @@ class App(object):
                 if self._hit_test(cbox[0] + target.dx, cbox[1] + target.dy,
                                   cbox[0], cbox[1], target.bw, target.bh,
                                   _ot):
-                    self.send_click(x, y)
+                    # Already on target: click at reticle position
+                    # (no warp - cursor is hidden in flight mode).
+                    # Also move right stick to target for continuous tracking.
+                    self._right_stick_aim(target.dx, target.dy)
+                    self._click_at_reticle()
                     self.snap_count += 1
-                    if self._lbtn_down:
+                    if self._lbtn_down and self._mode_allows_mouse2_follow():
                         with self._state_lock:
-                            hold_now = self._lbtn_down
-                            claim = hold_now and not self._center_syn_down
-                            if claim:
-                                self._center_syn_down = True
-                            if hold_now:
-                                self._center_hold = self._new_hold_session()
-                        if claim:
-                            self._button(True)
+                            self._center_hold = self._new_hold_session()
                     if self._follow_may_learn(target):
                         self.follow.store(ax, ay, target)
                     self.last_snap_time = time.perf_counter()
@@ -1660,34 +1493,35 @@ class App(object):
                     nx, ny = self._apply_motion_lead(nx, ny)
                 nx, ny = self._apply_snap_offset(nx, ny)
 
-
-
-
                 ndx, ndy = self._cap_step(nx - cbox[0], ny - cbox[1],
                                           self._max_step_cfg())
-                self._nudge(ndx, ndy, view=True)
-                self.send_click(x, y)
+                sent = self._nudge(ndx, ndy, view=True)
+                # Also move right stick for continuous aim assist
+                self._right_stick_aim(target.dx, target.dy)
+                if not sent:
+                    # Nudge refused: the click would land at the old reticle
+                    # position, which is where the user aimed (NOT the target).
+                    # Fall back to the classic warp-and-click path so the user
+                    # still gets a snap.
+                    log("Classic assist: nudge refused (%+d, %+d); falling "
+                        "back to warp + click." % (int(ndx), int(ndy)))
+                    self.send_click(ax, ay)
+                    self.snap_count += 1
+                    if self._follow_may_learn(target):
+                        self.follow.store(ax, ay, target)
+                    self.last_snap_time = time.perf_counter()
+                    self.last_snap_pos = (int(ax), int(ay))
+                    out["handled"] = True
+                    return
+                # The game needs ONE frame to consume the move before the
+                # click traces from the new reticle. 20 ms ~= one frame at 50 Hz.
+                time.sleep(0.020)
+                self._click_at_reticle()
                 self.snap_count += 1
-                if self._lbtn_down:
-
-
-
-
-
-
-
+                if self._lbtn_down and self._mode_allows_mouse2_follow():
                     with self._state_lock:
-                        hold_now = self._lbtn_down
-                        claim = hold_now and not self._center_syn_down
-                        if claim:
-                            self._center_syn_down = True
-                        if hold_now:
-                            self._center_hold = self._new_hold_session()
-                    if claim:
-                        self._button(True)
+                        self._center_hold = self._new_hold_session()
                 if self._follow_may_learn(target):
-
-
 
                     self.follow.store(ax, ay, target)
                 self.last_snap_time = time.perf_counter()
@@ -1700,25 +1534,13 @@ class App(object):
 
             if hit:
 
-
-
                 nx, ny = x, y
             else:
                 nx, ny = ax, ay
 
-
-
-
-
-
                 if bool(self.cfg.get("motion_predict", False)) \
                         or bool(self.cfg.get("motion_3d", False)):
                     nx, ny = self._apply_motion_lead(nx, ny)
-
-
-
-
-
 
                 nx, ny = self._apply_snap_offset(nx, ny)
 
@@ -1731,11 +1553,10 @@ class App(object):
                 and now - self.last_snap_time < watcher
             ):
                 lx, ly = self.last_snap_pos
-                if math.hypot(nx - lx, ny - ly) <= 35.0:
+                h = max(1.0, target.bh)
+                double_radius = max(6.0, min(35.0, 1.5 * h))
+                if math.hypot(nx - lx, ny - ly) <= double_radius:
                     double = True
-
-
-
 
             if not self._claim_delivery(state):
                 out["handled"] = True
@@ -1743,47 +1564,18 @@ class App(object):
 
             if not self._epoch_alive(state):
 
-
-
                 self.reinject_click(x, y)
                 out["handled"] = True
                 return
 
             self.snap_count += 1
-            if cbox is not None and self._lbtn_down:
-
-
-
-
-
-
-
-
-
-
-
-
-
+            if cbox is not None and self._lbtn_down \
+                    and self._mode_allows_mouse2_follow():
                 with self._state_lock:
-                    hold_now = self._lbtn_down
-                    claim = hold_now and not self._center_syn_down
-                    if claim:
-                        self._center_syn_down = True
-                    if hold_now:
-                        self._center_hold = self._new_hold_session()
-                if claim:
-                    self._button(True)
+                    self._center_hold = self._new_hold_session()
             if self._follow_may_learn(target):
 
-
-
                 self.follow.store(ax, ay, target)
-
-
-
-
-
-
 
             with self._state_lock:
                 hold_now = self._lbtn_down
@@ -1802,15 +1594,9 @@ class App(object):
                         "misses": 0,
                     }
 
-
-
-
             if hit or self.glide_cursor(nx, ny):
                 self.send_click(nx, ny, double=double)
             else:
-
-
-
 
                 log("Glide aborted by user movement; clicking at current position.")
                 self._click_here()
@@ -1849,8 +1635,6 @@ class App(object):
         try:
             if not self._epoch_alive(state):
 
-
-
                 out["handled"] = True
                 return
             if state.get("abandoned"):
@@ -1869,14 +1653,8 @@ class App(object):
             if target is None:
                 self.pass_count += 1
 
-
-
                 out["handled"] = True
                 return
-
-
-
-
 
             cbox = self._center_box()
             if cbox is not None:
@@ -1888,8 +1666,6 @@ class App(object):
             except (TypeError, ValueError):
                 on_target = 10.0
 
-
-
             if self._hit_test(ax, ay, x, y, target.bw, target.bh,
                               on_target):
                 self.pass_count += 1
@@ -1897,14 +1673,6 @@ class App(object):
                 return
 
             nx, ny = ax, ay
-
-
-
-
-
-
-
-
 
             if cbox is not None and self._reticle_active():
                 if bool(self.cfg.get("motion_predict", False)) \
@@ -1914,7 +1682,8 @@ class App(object):
                 ndx, ndy = self._cap_step(nx - cbox[0], ny - cbox[1],
                                           self._max_step_cfg())
 
-
+                # Move right stick for aim assist in flight mode
+                self._right_stick_aim(target.dx, target.dy)
 
                 if self._hit_test(cbox[0] + target.dx, cbox[1] + target.dy,
                                   cbox[0], cbox[1], target.bw, target.bh,
@@ -1938,7 +1707,6 @@ class App(object):
                 self.snap_count += 1
             if self._follow_may_learn(target):
 
-
                 self.follow.store(ax, ay, target)
             self.last_snap_time = time.perf_counter()
             self.last_snap_pos = (int(nx), int(ny))
@@ -1950,9 +1718,6 @@ class App(object):
                        "" if completed else " (glide aborted: you took over)")
                 )
             else:
-
-
-
 
                 if ndx == 0 and ndy == 0:
                     log("Guide assist: already on it - view untouched.")
@@ -1986,11 +1751,6 @@ class App(object):
                      "lock": threading.Lock(),
                      "epoch": self._mode_epoch}
 
-
-
-
-
-
             if entry is not None:
                 with state["lock"]:
                     entry["state"] = state
@@ -2012,10 +1772,6 @@ class App(object):
             )
             th.start()
 
-
-
-
-
             try:
                 _glide_s = float(self.cfg.get("glide_ms", 0) or 0) / 1000.0
             except (TypeError, ValueError):
@@ -2031,13 +1787,17 @@ class App(object):
 
                 if kind == "classic" and not already:
 
-
                     self.reinject_click(x, y)
-                    log("Assist worker stalled. Suppressed click returned.")
+                    if entry and entry.get("pad"):
+                        log("Pad assist stalled. Click delivered raw.")
+                    else:
+                        log("Assist worker stalled. Suppressed click returned.")
 
-                self.pause_until = time.perf_counter() + float(
-                    self.cfg.get("stall_pause_seconds", 0.25)
-                )
+                try:
+                    _stall = float(self.cfg.get("stall_pause_seconds", 0.25) or 0.25)
+                except (TypeError, ValueError):
+                    _stall = 0.25
+                self.pause_until = time.perf_counter() + _stall
 
             elif kind == "classic" and not out.get("handled"):
 
@@ -2046,12 +1806,13 @@ class App(object):
 
             if kind == "classic" and entry is not None:
 
-
                 with self._pending_lock:
-                    try:
-                        self.pending_classics.remove(entry)
-                    except ValueError:
-                        pass
+                    entry["worker_done"] = True
+                    if entry.get("up"):
+                        try:
+                            self.pending_classics.remove(entry)
+                        except ValueError:
+                            pass
 
     def _arm_hold_follow(self, x, y, now, armed):
         """Lock the follow memory for the duration of a held press.
@@ -2062,9 +1823,7 @@ class App(object):
         whether the user holds a mouse button or a pad trigger.
         """
         pad = vision.FOLLOW_POS_PAD
-        # snapshot() reads under FollowMemory's OWN lock - self._state_lock
-        # does not order these attributes against a concurrent store(), so
-        # reading them under it could tear across two sightings.
+
         _mem_x, _mem_y, _mem_sig, _mem_when = self.follow.snapshot()
         with self._state_lock:
             _locked = bool(self.follow_lock
@@ -2078,7 +1837,7 @@ class App(object):
                 and _mem_sig is not None
                 and _mem_when > 0
                 and (now - _mem_when)
-                <= float(self.cfg.get("follow_seconds", 20))
+                <= float(self.cfg.get("follow_seconds", 20) or 20)
                 and near_memory
                 and not _locked):
             rgb = vision.hsv_to_rgb(*_mem_sig)
@@ -2103,12 +1862,11 @@ class App(object):
         if mode != 2 or not armed:
             return
         cbox = self._center_box()
-        if cbox is None:
-            return
-        if not (self._reticle_active()
-                or (abs(x - cbox[0]) <= cbox[2]
-                    and abs(y - cbox[1]) <= cbox[2])):
-            return
+        if cbox is not None:
+            if not (self._reticle_active()
+                    or (abs(x - cbox[0]) <= cbox[2]
+                        and abs(y - cbox[1]) <= cbox[2])):
+                return
         with self._state_lock:
             self._center_hold = self._new_hold_session()
 
@@ -2128,9 +1886,6 @@ class App(object):
                 was_center = True
             self._center_hold = None
             self._center_hold_tomb = 0.0
-            need_up = self._center_syn_down
-            if need_up:
-                self._center_syn_down = False
             hold_lock = bool(self.follow_lock
                              and self.follow_lock.get("source") == "hold")
             if hold_lock:
@@ -2138,17 +1893,12 @@ class App(object):
             if was_center:
                 self._track.clear()
                 try:
-                    self._tracker.reset()
+                    with self._tracker_lock:
+                        self._tracker.reset()
                 except Exception:
                     pass
                 self._chase_ref = None
                 self._center_prev = None
-                self._cam_prev = None
-        if need_up:
-            try:
-                self._button(False)
-            except Exception as exc:
-                log("synthetic release error: %r" % (exc,))
         return was_center
 
     def _release_bookkeeping(self, role, armed, mode, now, pt):
@@ -2172,16 +1922,7 @@ class App(object):
             self._finish_mouse2(now)
             return None
 
-
-
-
-
-
-
         was_center = self._release_holds(now)
-
-
-
 
         with self._pending_lock:
             for entry in self.pending_classics:
@@ -2189,10 +1930,12 @@ class App(object):
                     continue
                 if not entry.get("up"):
                     entry["up"] = True
+                    if entry.get("worker_done"):
+                        try:
+                            self.pending_classics.remove(entry)
+                        except ValueError:
+                            pass
                     return 1
-
-
-
 
         if mode == 2 and armed and not was_center:
             self.click_q.put(("guide", pt.x, pt.y, now, None))
@@ -2200,34 +1943,12 @@ class App(object):
 
     def make_hook_proc(self):
 
-
-
-
-
-
-
-
-
-
-
-
-
-
         def proc(nCode, wParam, lParam):
             try:
                 if nCode == HC_ACTION and not self.stop.is_set():
                     info = ctypes.cast(
                         lParam, ctypes.POINTER(MSLLHOOKSTRUCT)
                     ).contents
-
-
-
-
-
-
-
-
-
 
                     try:
                         consume = getattr(self._input,
@@ -2238,17 +1959,6 @@ class App(object):
                                 self.hook, nCode, wParam, lParam)
                     except Exception:
                         pass
-
-
-
-
-
-
-
-
-
-
-
 
                     own = None
                     if self._rec_buffer is not None and self.running \
@@ -2267,27 +1977,15 @@ class App(object):
                                                     info.pt.y,
                                                     info.mouseData)
 
-
-
-
-
-
-
                     pair = mouse_message_button(wParam, info.mouseData)
                     if pair is None:
                         return user32.CallNextHookEx(
                             self.hook, nCode, wParam, lParam)
                     btn, btn_down = pair
 
-
                     if not (info.flags & (LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED)):
                         now = time.perf_counter()
 
-                        # The role is decided per event, not when the hook is
-                        # installed: rebinding a button in the GUI takes effect
-                        # on the next press with the hook still in place. A
-                        # button that holds neither role is none of our
-                        # business and goes straight on to Windows.
                         if btn == self._trigger_button():
                             role = ROLE_TRIGGER
                         elif btn == self._options_button():
@@ -2296,15 +1994,6 @@ class App(object):
                             return user32.CallNextHookEx(
                                 self.hook, nCode, wParam, lParam)
 
-
-
-
-
-
-
-
-
-
                         if role == ROLE_TRIGGER:
                             self._lbtn_down = btn_down
                         else:
@@ -2312,12 +2001,11 @@ class App(object):
                             if btn_down:
                                 self.rbutton_down_time = now
 
-
-
                         if own is None:
                             own = self._fg_is_own()
                         if own:
                             if not btn_down:
+
                                 self._release_bookkeeping(role, armed=False,
                                                           mode=2, now=now,
                                                           pt=info.pt)
@@ -2340,19 +2028,11 @@ class App(object):
 
                         if role == ROLE_OPTIONS and btn_down:
 
-
-
-
-
                             if armed:
                                 if self._mouse2_hold_action() == 4:
 
-
-
                                     self._handle_mouse2()
                                 else:
-
-
 
                                     self._rbtn_armed = True
                                     self._start_mouse2_hold_timer()
@@ -2362,40 +2042,18 @@ class App(object):
 
                         if role == ROLE_TRIGGER and btn_down:
 
-
-
-
-
-
-
-
-
                             self._arm_hold_follow(info.pt.x, info.pt.y,
                                                   now, armed)
                             self._arm_center_hold(info.pt.x, info.pt.y,
                                                   mode, armed)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
                             rapid = bool(self.cfg.get("rapid_click_snap",
                                                       False))
                             if mode == 1 and armed:
                                 with self._pending_lock:
                                     un_upped = any(
-                                        not e.get("up")
+                                        (not e.get("up"))
+                                        and (not e.get("worker_done"))
                                         for e in self.pending_classics
                                     )
                                     if not un_upped and (
@@ -2415,17 +2073,64 @@ class App(object):
                                     )
                                     return 1
 
-
-
-
                                 self._pass_note(
                                     "previous click still assisted "
                                     "(rapid off)")
 
-                        elif role == ROLE_TRIGGER:
-                            if self._release_bookkeeping(
-                                    role, armed, mode, now, info.pt) == 1:
+                            # Mode 2: single-click = classic behavior (suppress, detect, snap, click)
+                            #         hold       = pass clicks through, continuous assist while held
+                            elif mode == 2 and armed:
+                                # Tentatively suppress the click; we'll decide on UP or hold timer
+                                with self._trigger_lock:
+                                    self._trigger_press_time = now
+                                    self._trigger_press_id += 1
+                                    pid = self._trigger_press_id
+                                    self._trigger_hold_done = False
+                                    self._trigger_suppressed_down = {
+                                        "x": info.pt.x, "y": info.pt.y, "now": now,
+                                        "entry": {"x": info.pt.x, "y": info.pt.y,
+                                                  "up": False, "state": None}
+                                    }
+                                # Start hold timer - if it fires, this was a hold
+                                t = threading.Timer(TRIGGER_HOLD_SECONDS,
+                                                    self._trigger_hold_check, args=(pid,))
+                                t.daemon = True
+                                t.start()
+                                with self._trigger_lock:
+                                    self._trigger_hold_timer = t
+                                # Queue the classic-style entry but DON'T put in click_q yet
+                                with self._pending_lock:
+                                    self.pending_classics.append(
+                                        self._trigger_suppressed_down["entry"])
+                                # Suppress the DOWN (will reinject if hold, or worker will click if single)
                                 return 1
+
+                        elif role == ROLE_TRIGGER:
+                            # Button UP - check if it was a single click or hold
+                            # Only process if we were armed and in mode 2 when DOWN occurred
+                            with self._trigger_lock:
+                                pid = self._trigger_press_id
+                                was_hold = self._trigger_hold_done
+                                suppressed = self._trigger_suppressed_down
+                                self._trigger_suppressed_down = None
+                                if self._trigger_hold_timer is not None:
+                                    self._trigger_hold_timer.cancel()
+                                    self._trigger_hold_timer = None
+                            if suppressed is not None and mode == 2 and armed:
+                                if was_hold:
+                                    # Was a hold: click already reinjected by timer, just release holds
+                                    self._release_holds(now)
+                                else:
+                                    # Single click: queue the classic job to detect+snap+click
+                                    self.click_q.put(
+                                        ("classic", suppressed["x"], suppressed["y"],
+                                         suppressed["now"], suppressed["entry"])
+                                    )
+                                return 1
+                            else:
+                                # No suppressed click (wasn't armed or not mode 2)
+                                if self._release_bookkeeping(role, armed, mode, now, info.pt) == 1:
+                                    return 1
 
             except Exception as exc:
                 log("hook error: %r" % (exc,))
@@ -2459,22 +2164,16 @@ class App(object):
                             pass
                         else:
                             self._key_held.add(vk)
-                            if not (info.flags & LLKHF_INJECTED) \
-                                    and not self.input_focused:
+                            if info.flags & LLKHF_INJECTED:
 
+                                if vk in self._macro_trigger_vks:
+                                    return 1
+                            elif not self.input_focused:
 
-
-
-
-
-
-
-
-
-
-
-                                self._record_press(vk)
                                 fired, swallow = self._macro_press(vk)
+                                if not fired:
+
+                                    self._record_press(vk)
                                 if swallow:
                                     return 1
                                 if not fired:
@@ -2488,8 +2187,6 @@ class App(object):
         return HOOKPROC(proc)
 
     def _maybe_fire_single_key(self, vk):
-
-
 
         hid = self._local_map.get(vk)
         if hid is None:
@@ -2514,6 +2211,10 @@ class App(object):
         The record-toggle combo itself is never captured, and injected
         events (macro playback) are filtered by the hook already.
         """
+        with self._rec_lock:
+            return self._record_press_inner(vk)
+
+    def _record_press_inner(self, vk):
         if self._rec_buffer is None or not self.running:
             return
 
@@ -2530,7 +2231,6 @@ class App(object):
             return
         if vk in (VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, 0x5C):
             return
-
 
         now = time.perf_counter()
         delay = 0 if not self._rec_buffer else \
@@ -2552,6 +2252,10 @@ class App(object):
         smooth drag costs ~20 steps per second instead of one step per
         hardware event.
         """
+        with self._rec_lock:
+            return self._record_move_inner(x, y)
+
+    def _record_move_inner(self, x, y):
         if self._rec_buffer is None or not self.running:
             return
         now = time.perf_counter()
@@ -2575,6 +2279,10 @@ class App(object):
         """Passive capture of one physical mouse-button transition
         (any of the five buttons, down/up, double-click as a second down).
         The click still reaches the focused app untouched."""
+        with self._rec_lock:
+            return self._record_button_inner(msg, x, y, mouse_data)
+
+    def _record_button_inner(self, msg, x, y, mouse_data=0):
         if self._rec_buffer is None or not self.running:
             return
         pair = _MOUSE_REC_MAP.get(int(msg))
@@ -2610,11 +2318,12 @@ class App(object):
             log("Recording arms while launched - press Launch first "
                 "(paused means the keyboard is entirely yours).")
             return
-        self._rec_buffer = []
-        self._rec_target = source if source == "pad" else "key"
-        self._rec_last_t = time.perf_counter()
-        self._rec_last_move = 0.0
-        self._rec_full = False
+        with self._rec_lock:
+            self._rec_buffer = []
+            self._rec_target = source if source == "pad" else "key"
+            self._rec_last_t = time.perf_counter()
+            self._rec_last_move = 0.0
+            self._rec_full = False
         self._pad_rumble(0.12, 0.7)
         if self._rec_target == "pad":
             log("RECORDING (controller) - every controller button and stick "
@@ -2631,8 +2340,9 @@ class App(object):
         if self._rec_buffer is None:
             log("Not recording - nothing to stop.")
             return
-        steps = self._rec_buffer
-        self._rec_buffer = None
+        with self._rec_lock:
+            steps = self._rec_buffer
+            self._rec_buffer = None
         source = self._rec_target if self._rec_target == "pad" else "key"
         self._rec_target = None
         if not steps:
@@ -2735,16 +2445,6 @@ class App(object):
         if self._play_busy or self._play_looping \
                 or self._play_rid is not None:
             self._play_cancel.set()
-
-
-
-
-
-
-
-
-
-
 
         if self._play_cancel.is_set():
             self.macro_q.put(("flush-cancel", None, None))
@@ -2851,12 +2551,6 @@ class App(object):
 
             if job[0] == "flush-cancel":
 
-
-
-
-
-
-
                 self._play_cancel.clear()
                 continue
 
@@ -2912,14 +2606,8 @@ class App(object):
                 self._play_busy = False
                 self._play_looping = False
 
-
-
                 self._play_rid = None
                 self._play_source = None
-
-
-
-
 
                 if self._play_cancel.is_set():
                     self._play_cancel.clear()
@@ -2974,26 +2662,80 @@ class App(object):
                         or self._rbtn_hold_done):
                     return
 
-
-
             try:
-                still = bool(user32.GetAsyncKeyState(VK_RBUTTON) & 0x8000)                         or self._pad_right_down
+                still = bool(user32.GetAsyncKeyState(self._options_vk()) & 0x8000)
             except Exception:
-                still = True
+                still = False
             if not (still and self._armed_now()):
-
-
-
 
                 return
             with self._rbtn_lock:
                 if pid != self._rbtn_press_id or self._rbtn_hold_done:
                     return
                 self._rbtn_hold_done = True
-            self._handle_mouse2("mouse2_hold_action",
-                                "right-button hold")
+            try:
+                self._handle_mouse2("mouse2_hold_action",
+                                    "right-button hold")
+            except Exception:
+                with self._rbtn_lock:
+                    if pid == self._rbtn_press_id:
+                        self._rbtn_hold_done = False
+                raise
         except Exception as exc:
             log("mouse2 hold error: %r" % (exc,))
+
+    def _trigger_hold_check(self, pid):
+        """Timer callback: still holding the trigger? -> this was a hold.
+        Reinject the suppressed click and start continuous assist."""
+        try:
+            with self._trigger_lock:
+                if (pid != self._trigger_press_id
+                        or not self._lbtn_down
+                        or self._trigger_hold_done):
+                    return
+                suppressed = self._trigger_suppressed_down
+                if suppressed is None:
+                    return
+                self._trigger_hold_done = True
+            # Reinject the suppressed DOWN so the game sees the click
+            try:
+                self._input.button(True)
+            except Exception:
+                pass
+            # Remove the pending entry since we're not doing single-click
+            with self._pending_lock:
+                try:
+                    self.pending_classics.remove(suppressed["entry"])
+                except ValueError:
+                    pass
+            # Start continuous assist loop in background
+            self._start_continuous_assist(suppressed["x"], suppressed["y"])
+        except Exception as exc:
+            log("trigger hold error: %r" % (exc,))
+
+    def _start_continuous_assist(self, x, y):
+        """Start a background loop that continuously detects and nudges
+        while the trigger is held. Runs in a daemon thread."""
+        def loop():
+            try:
+                while True:
+                    # Check if trigger is still held and we're still armed
+                    if not self._lbtn_down or not self._armed_now():
+                        break
+                    # Do a guide-style detection and nudge (no click)
+                    # Use a lightweight state for this iteration
+                    state = {"abandoned": False, "lock": threading.Lock(),
+                             "epoch": self._mode_epoch}
+                    out = {}
+                    self.do_guide(x, y, out, state)
+                    # Update x,y for next iteration (cursor moved)
+                    x, y = self.last_snap_pos if self.last_snap_pos else (x, y)
+                    # Small delay to avoid hammering
+                    time.sleep(0.03)  # ~30 Hz
+            except Exception as exc:
+                log("continuous assist error: %r" % (exc,))
+        t = threading.Thread(target=loop, name="continuous-assist", daemon=True)
+        t.start()
 
     def _finish_mouse2(self, now):
         """Right button released: fire the CLICK action unless the
@@ -3011,7 +2753,6 @@ class App(object):
             if not self._armed_now():
                 return
             if dur >= MOUSE2_HOLD_SECONDS:
-
 
                 self._handle_mouse2("mouse2_hold_action",
                                     "right-button hold")
@@ -3032,10 +2773,6 @@ class App(object):
             action = 4
 
         if action in (2, 3) and not self._mode_allows_mouse2_follow():
-
-
-
-
 
             if time.perf_counter() - self._mouse2_log_at > 5.0:
                 self._mouse2_log_at = time.perf_counter()
@@ -3087,8 +2824,6 @@ class App(object):
             log("Pick window open: place the cursor on the colour "
                 "(2 seconds)...")
 
-
-
     def _sample_cursor_color(self):
         """RGB tuple of the pixel under the cursor, or None."""
         try:
@@ -3133,12 +2868,6 @@ class App(object):
                 return False
             if stale:
                 self._pick_at = None
-
-
-
-
-
-
 
             target = self.scan_near(x, y, None, False)
             if target is not None:
@@ -3191,32 +2920,12 @@ class App(object):
 
         self._pick_at = None
 
-
         if self._lbtn_down or self._rbtn_down or self._pad_click_down or self._pad_raw_down:
             return True
         with self._state_lock:
             lock = self.follow_lock
         if lock and lock.get("active"):
             return True
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
         found = False
         try:
@@ -3238,10 +2947,6 @@ class App(object):
 
         if not found:
 
-
-
-
-
             with self._state_lock:
                 cf["misses"] = cf.get("misses", 0) + 1
                 misses = cf["misses"]
@@ -3260,17 +2965,12 @@ class App(object):
         cx, cy = cf["x"], cf["y"]
         nx, ny = self._apply_motion_lead(cx, cy)
 
-
         nx, ny = self._apply_snap_offset(nx, ny)
         px, py = get_cursor_pos()
         if math.hypot(nx - px, ny - py) <= 2.0:
             with self._state_lock:
                 self._chase_stable += 1
             return True
-
-
-
-
 
         with self._state_lock:
             ref = self._chase_ref
@@ -3300,7 +3000,7 @@ class App(object):
         try:
             area = float(cf.get("area", 0) or 0)
             if area > 0.0:
-                with self._state_lock:
+                with self._tracker_lock:
                     self._tracker.update(now, (cf["x"], cf["y"],
                                                math.sqrt(area)))
         except Exception:
@@ -3356,15 +3056,28 @@ class App(object):
         now = time.perf_counter()
         dt = min(max(now - sess.get("last_t", now), 0.001), 0.1)
         sess["last_t"] = now
-        try:
-            got = self._scan_center(None, arm_follow=False)
-        except Exception as exc:
-            log("centre-hold scan error: %r" % (exc,))
-            got = None
+        cbox = self._center_box()
+        if cbox is not None:
+            try:
+                got = self._scan_center(None, arm_follow=False)
+            except Exception as exc:
+                log("centre-hold scan error: %r" % (exc,))
+                got = None
+            anchor = (cbox[0], cbox[1])
+        else:
+            try:
+                px, py = get_cursor_pos()
+            except RuntimeError:
+                return False
+            try:
+                t = self.scan_near(px, py, None, False)
+            except Exception as exc:
+                log("centre-hold scan error: %r" % (exc,))
+                t = None
+            got = (t, px, py) if t is not None else None
+            anchor = (px, py)
         with self._state_lock:
             if self._center_hold is not sess:
-
-
 
                 return False
         if got is None:
@@ -3387,8 +3100,6 @@ class App(object):
             steer = True
         if not steer:
 
-
-
             k = max(0.0, 1.0 - 8.0 * dt)
             sess["px"] *= k
             sess["py"] *= k
@@ -3396,33 +3107,24 @@ class App(object):
             target, _mx, _my = got
             if self._reticle_active():
 
-
                 tx, ty = float(target.dx), float(target.dy)
             else:
 
-
-
-
-
                 try:
                     _pcx, _pcy = get_cursor_pos()
-                    tx = (_mx + float(target.dx)) - _pcx
-                    ty = (_my + float(target.dy)) - _pcy
+                    tx = (anchor[0] + float(target.dx)) - _pcx
+                    ty = (anchor[1] + float(target.dy)) - _pcy
                 except Exception:
                     tx, ty = float(target.dx), float(target.dy)
-
 
             alpha = 1.0 - math.exp(-dt / 0.05)
             alpha = min(max(alpha, 0.0), 1.0)
             sess["px"] += alpha * (tx - sess["px"])
             sess["py"] += alpha * (ty - sess["py"])
 
-
-
         out_x = sess["px"] + sess.get("cx", 0.0)
         out_y = sess["py"] + sess.get("cy", 0.0)
         ix, iy = int(round(out_x)), int(round(out_y))
-
 
         with self._state_lock:
             if self._center_hold is not sess \
@@ -3430,12 +3132,6 @@ class App(object):
                         and not self._pad_click_down
                         and not self._pad_raw_down):
                 return False
-
-
-
-
-
-
 
         cap = self._max_step_cfg()
         jx, jy = self._cap_step(ix, iy, cap)
@@ -3447,13 +3143,8 @@ class App(object):
         ix, iy = jx, jy
         if ix or iy:
 
-
-
-
             self._nudge(ix, iy, view=True)
         if now - sess.get("last_beat", 0.0) > 2.0:
-
-
 
             sess["last_beat"] = now
             log("Centre hold: steering (%+d,%+d)/frame toward "
@@ -3462,11 +3153,6 @@ class App(object):
                    int(round(sess["py"]))))
         interval = float(getattr(self._input, "tap_interval", 0) or 0)
         if interval > 0:
-
-
-
-
-
 
             if now - sess.get("last_tap", 0.0) >= interval:
                 sess["last_tap"] = now
@@ -3489,23 +3175,40 @@ class App(object):
         button keeps steering alive).
         """
         while not self.stop.is_set():
+            if self.scanner_dead and self.running:
+                try:
+                    warm = np.full((48, 48, 3), 128, dtype=np.uint8)
+                    vision.scan_region(warm, 24, 24, self.cfg.values, 20)
+                    self.scanner_dead = False
+                    self.fail_count = 0
+                    log("Scanner recovered.")
+                except Exception:
+                    pass
+                time.sleep(2.0)
+                continue
             if not self.running \
                     or time.perf_counter() < self.pause_until:
                 time.sleep(0.05)
                 continue
 
-
-
-
-
             if self._bypass_enabled() and self._bypass_held():
                 time.sleep(0.05)
                 continue
 
-
-
-
-
+            # Log hpose hit-rate instrumentation once a minute.
+            if self.running and time.perf_counter() - self._stats_log_at > 60.0:
+                self._stats_log_at = time.perf_counter()
+                try:
+                    import hpose_bridge
+                    st = hpose_bridge.stats()
+                    if st and st["frames"] > 20:
+                        log("hpose: %d frames | hit %.0f%% | avg %.0f ms "
+                            "(hit %.0f / miss %.0f)"
+                            % (st["frames"], 100 * st["hit_rate"],
+                               st["avg_ms"], st["avg_hit_ms"],
+                               st["avg_miss_ms"]))
+                except Exception:
+                    pass
 
             with self._state_lock:
                 _hold = self._center_hold
@@ -3534,9 +3237,6 @@ class App(object):
                 time.sleep(0.05)
                 continue
 
-
-
-
             with self._state_lock:
                 lbtn_down = (self._lbtn_down or self._pad_click_down
                              or self._pad_raw_down)
@@ -3545,12 +3245,6 @@ class App(object):
                     if self.follow_lock is lock:
                         self.follow_lock = None
                 continue
-
-
-
-
-
-
 
             if lock.get("source") == "mouse2" \
                     and not self._mode_allows_mouse2_follow():
@@ -3579,6 +3273,17 @@ class App(object):
                     continue
 
                 accent = lock.get("accent")
+                follow_hint = None
+                if accent:
+                    try:
+                        _parsed = _parse_accents(accent)
+                        if _parsed:
+                            ah, asat, av = _parsed[0]
+                            follow_hint = {"sig": (ah, asat, av),
+                                           "area": float(
+                                               lock.get("last_area", 0) or 0)}
+                    except Exception:
+                        follow_hint = None
 
                 x, y = get_cursor_pos()
                 radius = self.radius_px()
@@ -3591,9 +3296,6 @@ class App(object):
                         cfgv["accent_only"] = True
                     else:
 
-
-
-
                         cfgv["accent_color"] = "off"
                         cfgv["accent_only"] = False
                     try:
@@ -3601,19 +3303,14 @@ class App(object):
                     except Exception:
                         _sctx = None
                     res = vision.scan_region(img, cx, cy, cfgv, radius,
-                                             subject_ctx=_sctx)
+                                             subject_ctx=_sctx,
+                                             follow_hint=follow_hint)
                     with self._state_lock:
                         live = self.follow_lock is lock
                     if not live:
                         continue
                     if res.kind == "target" and res.target is not None:
                         lock["misses"] = 0
-
-
-
-
-
-
 
                         ax = origin[0] + cx + res.target.dx
                         ay = origin[1] + cy + res.target.dy
@@ -3633,18 +3330,9 @@ class App(object):
                                 self._follow_stable = 0
                         else:
 
-
-
-
-
-
-
-
-
                             with self._state_lock:
                                 self._follow_stable += 1
                     else:
-
 
                         lock["misses"] = lock.get("misses", 0) + 1
                         with self._state_lock:
@@ -3660,41 +3348,6 @@ class App(object):
             with self._state_lock:
                 _stable = self._follow_stable
             time.sleep(0.08 if _stable >= 4 else 0.04)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     AUTO_CLICK_INTERVAL = 0.05
     AUTO_CLICK_MIN_CONTRAST = 60.0
@@ -3756,7 +3409,6 @@ class App(object):
         cx = vx + vw // 2
         cy = vy + vh // 2
 
-
         radius = self.radius_px()
 
         img, ix, iy, origin, edges = self.grab_around(cx, cy, radius)
@@ -3764,9 +3416,6 @@ class App(object):
             return None
 
         cfgv = self._auto_scan_config()
-
-
-
 
         strict = bool(self.cfg.get("subject_only", False))
         ranking = strict or bool(self.cfg.get("subject_priority", False))
@@ -3811,9 +3460,6 @@ class App(object):
             lead_ms = 50.0
         tag = ""
 
-
-
-
         if bool(self.cfg.get("motion_3d", False)):
             with self._state_lock:
                 pred = self._tracker.predict(lead_ms, MOTION_MAX_OFFSET)
@@ -3821,8 +3467,6 @@ class App(object):
             if len(pred) > 2:
                 try:
                     ratio = float(pred[2])
-
-
 
                     tag = ", scale x%.2f" % ratio \
                         if abs(ratio - 1.0) >= 0.02 else ""
@@ -3865,7 +3509,6 @@ class App(object):
         """
         if not self.glide_cursor(x, y):
 
-
             log("Auto-click cancelled: you moved the mouse yourself.")
             return False
 
@@ -3880,14 +3523,11 @@ class App(object):
         def _gap():
             return max(0.05, self.AUTO_CLICK_INTERVAL)
 
-
-
         idle = 0.05
 
         while not self.stop.is_set():
             try:
                 if not self._auto_can_arm():
-
 
                     time.sleep(idle)
                     continue
@@ -3897,17 +3537,12 @@ class App(object):
                     time.sleep(idle)
                     continue
 
-
-
-
                 if self._bypass_enabled() and self._bypass_held():
                     time.sleep(idle)
                     continue
 
                 if self.stop.wait(max(0.0, self._auto_next - time.perf_counter())):
                     break
-
-
 
                 if self._fg_is_own():
                     time.sleep(idle)
@@ -3920,20 +3555,10 @@ class App(object):
 
                 x, y = self._apply_snap_offset(*target)
 
-
-
-
                 with self._auto_lock:
                     announced = self._auto_armed
                     self._auto_armed = True
                 if not announced:
-
-
-
-
-
-
-
 
                     if bool(self.cfg.get("subject_priority", False)):
                         what = "figure targets"
@@ -3964,19 +3589,11 @@ class App(object):
         self.local_binds = local
         self._local_map = {vk: hid for hid, vk in local}
 
-
-
-
-
         self._local_combos = {(0, vk) for _hid, vk in local}
 
         self._macros, self._macro_map = build_macro_table(self.cfg)
+        self._macro_trigger_vks = {vk for _held, vk in self._macro_map}
         self._rec_combos = set()
-
-
-
-
-
 
         _CONTROL_IDS = tuple(hid for hid, name in ACTION_IDS.items()
                              if name in _CONTROL_NAMES)
@@ -3987,7 +3604,9 @@ class App(object):
             if hid in _CONTROL_IDS:
                 self._rec_combos.add((0, vk))
         for m in self._macros:
-            k = (m[0] & 0x000F, m[1])
+            if not m[1]:
+                continue
+            k = (m[0] & 0x000F, m[1][0])
             if k in self._local_combos or k in self._rec_combos or any(
                     (mm & 0x000F, vv) == k for _h, mm, vv in always):
                 log("Macro trigger shares a key with an action or "
@@ -4000,10 +3619,7 @@ class App(object):
         try:
             bound, macros = self._pad_rebind()
         except Exception as exc:
-            # This runs on the hook thread, which owns the message loop and
-            # therefore the low-level hooks: an exception here would kill the
-            # engine outright. A bad controller table must never be able to do
-            # that, so it is reported and the keyboard keeps working.
+
             log("Controller: the binding tables could not be built (%r); "
                 "controller actions stay as they were." % (exc,))
         else:
@@ -4031,20 +3647,18 @@ class App(object):
         self._drain_queue()
         self._emergency_release()
         self._pad_release_all()
-        # _pad_release (inside _pad_release_all) may have queued one
-        # last OLD-mode guide job while running was still True; drop it
-        # so nothing from the dead mode moves the cursor in the new one.
-        self._drain_queue()
+
         self.stop_playback()
         with self._state_lock:
             self.follow_lock = None
             self._center_follow = None
-            self._guide_hold = None
+            self._center_hold_tomb = 0.0
             self._pick_at = None
             self._chase_ref = None
             self._track.clear()
             try:
-                self._tracker.reset()
+                with self._tracker_lock:
+                    self._tracker.reset()
             except Exception:
                 pass
             try:
@@ -4077,9 +3691,8 @@ class App(object):
         if action == "launch":
             if not self.running:
                 self.running = True
-
-
-
+                self.scanner_dead = False
+                self.fail_count = 0
                 self._auto_reset_session()
                 log(
                     "LAUNCHED - assist active, mode %s "
@@ -4092,10 +3705,7 @@ class App(object):
 
         elif action == "pause":
             if self.running:
-                # running goes down FIRST: the pad teardown below calls
-                # _pad_release, whose mode-2 guide enqueue is gated on
-                # _armed_now() - with running still True it could queue
-                # one last cursor move that lands AFTER "PAUSED".
+
                 self.running = False
                 self._drain_queue()
                 self._emergency_release()
@@ -4103,10 +3713,9 @@ class App(object):
                 with self._state_lock:
                     self.follow_lock = None
                     self._center_follow = None
+                    self._center_hold_tomb = 0.0
                     self._pick_at = None
                     self._chase_ref = None
-
-
 
                 self.stop_playback()
                 log("PAUSED - your mouse and keyboard are entirely yours.")
@@ -4114,9 +3723,11 @@ class App(object):
         elif action == "reload":
             self._drain_queue()
             self._emergency_release()
+            self._pad_release_all()
             with self._state_lock:
                 self.follow_lock = None
                 self._center_follow = None
+                self._center_hold_tomb = 0.0
                 self._pick_at = None
                 self._chase_ref = None
             self.cfg.reload()
@@ -4157,13 +3768,11 @@ class App(object):
 
         elif action.startswith("play_macro") and action[-1].isdigit():
 
-
             digits = action[len("play_macro"):]
             self._play_slot(int(digits) if digits else 0, source=source)
 
     def request_quit(self):
-        # running down first: the pad release below must not queue a
-        # final guide job into a scanner that is about to be stopped.
+
         self.running = False
         self._drain_queue()
         self._emergency_release()
@@ -4200,9 +3809,19 @@ class App(object):
                 pass
 
     def run_hook_thread(self):
+        """Hook-thread entry. A raise here used to leave the app "ready"
+        with no hooks installed and start_app none the wiser: any failure
+        marks the app stopped and ready so startup reports it and exits."""
+        try:
+            self._run_hook_thread_inner()
+        except Exception as exc:
+            log("FATAL: the hook thread died: %r" % (exc,))
+            self.stop.set()
+            self.ready.set()
+
+    def _run_hook_thread_inner(self):
         self.thread_id = kernel32.GetCurrentThreadId()
         self.dpi_scale = get_dpi_scale()
-
 
         try:
             warm = np.full((64, 64, 3), 128, dtype=np.uint8)
@@ -4281,9 +3900,6 @@ class App(object):
 
             self.key_hook = None
 
-
-    # ---- controller (XInput) ------------------------------------------
-
     PAD_SPEED = 900.0
     PAD_MISS_LIMIT = 3
 
@@ -4296,8 +3912,6 @@ class App(object):
                 return False
         except (TypeError, ValueError):
             return False
-        if self._pad_reader is not None:
-            return True
         if not gamepad.available():
             return False
         return True
@@ -4337,6 +3951,54 @@ class App(object):
         if index is None:
             index = gamepad.parse_token(fallback)
         return index
+
+    def _right_stick_aim(self, target_dx, target_dy, max_radius=None):
+        """Move the virtual right stick to aim at a target offset.
+
+        Args:
+            target_dx: Horizontal offset from screen center to target (pixels)
+            target_dy: Vertical offset from screen center to target (pixels)
+            max_radius: Maximum radius to consider (optional, for sensitivity scaling)
+
+        Returns True if the right stick was moved, False if ViGEm not available.
+        """
+        backend = self._pad_output()
+        if backend is None or not getattr(backend, 'ok_for_pad', lambda: False)():
+            return False
+
+        # Screen center is the reticle position in flight mode
+        # Map pixel offset to right stick range (-32768 to 32767)
+        # Typical sensitivity: 1 pixel ≈ 100 stick units (adjustable via config)
+        sensitivity = float(self.cfg.get("aim_stick_sensitivity", 100.0))
+        max_stick = 32767
+
+        # Calculate stick values
+        rx = int(round(target_dx * sensitivity))
+        ry = int(round(-target_dy * sensitivity))  # Invert Y (screen coords)
+
+        # Clamp to valid range
+        rx = max(-32768, min(32767, rx))
+        ry = max(-32768, min(32767, ry))
+
+        # Optional: limit max deflection if max_radius specified
+        if max_radius is not None:
+            mag = math.hypot(target_dx, target_dy)
+            if mag > max_radius:
+                scale = max_radius / mag
+                rx = int(round(rx * scale))
+                ry = int(round(ry * scale))
+
+        try:
+            backend = self._pad_output()
+            if backend is None:
+                return False
+            backend.axis("rx", rx)
+            backend.axis("ry", ry)
+            backend.flush()
+            return True
+        except Exception as exc:
+            log("Right stick aim error: %r" % (exc,))
+            return False
 
     def _pad_output(self):
         """The controller OUTPUT door, built on first use and kept.
@@ -4414,10 +4076,7 @@ class App(object):
 
     def _pad_resolve_index(self, settings):
         """Which pad to read: the pinned one, or the first that answers."""
-        if self._pad_reader is not None:
-            return settings["index"] if settings["index"] >= 0 else 0
-        index = gamepad.first_connected(settings["index"],
-                                        reader=self._pad_reader)
+        index = gamepad.first_connected(settings["index"])
         if index is None:
             return None
         if self._pad_index != index:
@@ -4458,14 +4117,9 @@ class App(object):
                     if self.stop.wait(0.5):
                         return
                     continue
-                state = gamepad.read(index, settings["threshold"],
-                                     reader=self._pad_reader)
+                state = gamepad.read(index, settings["threshold"])
                 if not state.connected:
-                    # One failed read is a glitch, not an unplug: XInput
-                    # hiccups, and a reader that raises is answered with the
-                    # empty state. Declaring a disconnect on the first miss
-                    # released every held button and logged a teardown/reconnect
-                    # pair per hiccup, so it takes PAD_MISS_LIMIT in a row.
+
                     self._pad_misses += 1
                     if self._pad_connected:
                         if self._pad_misses >= self.PAD_MISS_LIMIT:
@@ -4500,13 +4154,23 @@ class App(object):
 
     def _pad_teardown(self, why):
         """The pad went away or was switched off: let go of everything it was
-        holding, so nothing can stay stuck down."""
+        holding, so nothing can stay stuck down. The output backend is
+        closed and dropped too - leaving it built made the pad worker's
+        `connected or output` guard tear down again every 0.5 s forever."""
         self._pad_connected = False
         self._pad_index = None
         self._pad_cursor = None
         self._pad_target = None
         self._pad_bypass = False
+        self._pad_emu_warned = False
         self._pad_release_all()
+        backend = self._pad_out
+        self._pad_out = None
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:
+                pass
         log("Controller: %s - controller input is idle." % (why,))
 
     def _pad_poll(self, state, index, now, settings):
@@ -4664,16 +4328,23 @@ class App(object):
         return True
 
     def _pad_release_all(self):
-        """Let go of everything the controller path could be holding."""
-        if self._pad_click_down:
+        """Let go of everything the controller path could be holding.
+
+        The flags are snapshot and cleared under _pad_state_lock; the
+        releases themselves run OUTSIDE it - _pad_release takes that same
+        lock, and it is not reentrant."""
+        with self._pad_state_lock:
+            click_down = self._pad_click_down
             self._pad_click_down = False
+            right_down = self._pad_right_down
+            self._pad_right_down = False
+        if click_down:
             try:
                 x, y = get_cursor_pos()
-                self._pad_release(int(x), int(y), time.perf_counter())
+                self._pad_release(int(x), int(y), time.perf_counter(), queue_guide=False)
             except Exception as exc:
                 log("controller release error: %r" % (exc,))
-        if self._pad_right_down:
-            self._pad_right_down = False
+        if right_down:
             try:
                 inject_mouse(BTN_RIGHT, False)
             except Exception:
@@ -4702,18 +4373,13 @@ class App(object):
         fx, fy = gamepad.apply_deadzone(state.lx, state.ly,
                                         settings["deadzone"])
         if fx or fy:
-            real = get_cursor_pos()
             if self._pad_cursor is None:
-                self._pad_cursor = real
-            elif self._pad_target is not None \
-                    and (abs(real[0] - self._pad_target[0]) > 3
-                         or abs(real[1] - self._pad_target[1]) > 3):
-                # Somebody else moved the pointer since our last frame - the
-                # assistance snapped it onto a target, or the user has a mouse
-                # as well. Adopt where it actually is instead of yanking it
-                # back: fighting a snap would undo the very thing the assist
-                # just did, and fighting a mouse makes both unusable.
-                self._pad_cursor = real
+                self._pad_cursor = get_cursor_pos()
+            elif self._pad_target is not None:
+                real = get_cursor_pos()
+                if (abs(real[0] - self._pad_target[0]) > 3
+                        or abs(real[1] - self._pad_target[1]) > 3):
+                    self._pad_cursor = real
             cx = self._pad_cursor[0] + fx * settings["speed"] * dt
             cy = self._pad_cursor[1] - fy * settings["speed"] * dt
             cx = min(vx + vw - 1, max(vx, cx))
@@ -4732,8 +4398,16 @@ class App(object):
         rx, ry = gamepad.apply_deadzone(state.rx, state.ry,
                                         settings["deadzone"])
         if (rx or ry) and self._pad_click_down:
-            self._nudge(int(round(rx * 24.0)), int(round(-ry * 24.0)),
-                        view=True)
+            if not self._nudge(int(round(rx * 24.0)), int(round(-ry * 24.0)),
+                               view=True):
+                # Nudge refused: fall back to absolute cursor move.
+                try:
+                    x, y = get_cursor_pos()
+                    self._input.move(int(x + rx * 24.0), int(y - ry * 24.0))
+                except Exception:
+                    pass
+
+        click_index = settings["click"]
 
         click_index = settings["click"]
         right_index = settings["right"]
@@ -4743,27 +4417,29 @@ class App(object):
             right_index = gamepad.parse_token("lt")
 
         click_down = state.down(click_index) if click_index is not None else False
-        if click_down and not self._pad_click_down:
-            self._pad_click_down = True
-            x, y = get_cursor_pos()
-            self._pad_press(int(x), int(y), now)
-        elif not click_down and self._pad_click_down:
-            self._pad_click_down = False
-            x, y = get_cursor_pos()
-            self._pad_release(int(x), int(y), now)
+        with self._pad_state_lock:
+            edge = click_down != self._pad_click_down
+            if edge:
+                self._pad_click_down = click_down
+        if edge:
+            if self._pad_target is not None:
+                x, y = self._pad_target
+            else:
+                x, y = get_cursor_pos()
+            if click_down:
+                self._pad_press(int(x), int(y), now)
+            else:
+                self._pad_release(int(x), int(y), now)
 
         if right_index is not None and right_index != click_index:
             right_down = state.down(right_index)
-            if right_down and not self._pad_right_down:
-                self._pad_right_down = True
+            with self._pad_state_lock:
+                edge = right_down != self._pad_right_down
+                if edge:
+                    self._pad_right_down = right_down
+            if edge:
                 try:
-                    inject_mouse(BTN_RIGHT, True)
-                except Exception:
-                    pass
-            elif not right_down and self._pad_right_down:
-                self._pad_right_down = False
-                try:
-                    inject_mouse(BTN_RIGHT, False)
+                    inject_mouse(BTN_RIGHT, right_down)
                 except Exception:
                     pass
 
@@ -4775,18 +4451,23 @@ class App(object):
         """
         if armed is None:
             armed = self._armed_now()
+        if not armed:
+            return
         own = self._fg_is_own()
         try:
             mode = int(self.cfg.get("mode", 2))
         except (TypeError, ValueError):
             mode = 2
-        if armed and not own:
+        if not own:
             self._arm_hold_follow(x, y, now, armed)
             self._arm_center_hold(x, y, mode, armed)
-        if mode == 1 and armed and not own:
+        if mode == 1 and not own:
             rapid = bool(self.cfg.get("rapid_click_snap", False))
             with self._pending_lock:
-                un_upped = any(not e.get("up") for e in self.pending_classics)
+                un_upped = any(
+                    (not e.get("up")) and (not e.get("worker_done"))
+                    for e in self.pending_classics
+                )
                 if not un_upped and (rapid or (self.click_q.qsize() == 0
                                                and not self.worker_active)):
                     entry = {"x": x, "y": y, "up": False, "state": None,
@@ -4795,22 +4476,27 @@ class App(object):
                 else:
                     entry = None
             if entry is not None:
-                self._pad_entry = entry
+                with self._pad_state_lock:
+                    self._pad_entry = entry
                 self.click_q.put(("classic", x, y, now, entry))
                 return
             self._pass_note("previous click still assisted (rapid off)")
-        self._pad_raw_down = True
+        with self._pad_state_lock:
+            self._pad_raw_down = True
         self._button(True)
 
-    def _pad_release(self, x, y, now):
-        entry = self._pad_entry
-        self._pad_entry = None
+    def _pad_release(self, x, y, now, queue_guide=True):
+        with self._pad_state_lock:
+            entry = self._pad_entry
+            self._pad_entry = None
+            raw = self._pad_raw_down
+            if raw:
+                self._pad_raw_down = False
         if entry is not None:
             with self._pending_lock:
                 entry["up"] = True
             return
-        if self._pad_raw_down:
-            self._pad_raw_down = False
+        if raw:
             self._button(False)
         armed = self._armed_now()
         try:
@@ -4818,7 +4504,7 @@ class App(object):
         except (TypeError, ValueError):
             mode = 2
         was_center = self._release_holds(now)
-        if mode == 2 and armed and not was_center and not self._fg_is_own():
+        if queue_guide and mode == 2 and armed and not was_center and not self._fg_is_own():
             self.click_q.put(("guide", x, y, now, None))
 
     def _pad_sync_axes(self, state):
@@ -4867,6 +4553,10 @@ class App(object):
                                   gamepad.normalise_axis(index, value))
 
     def _record_pad_step(self, tag, index, value):
+        with self._rec_lock:
+            return self._record_pad_step_inner(tag, index, value)
+
+    def _record_pad_step_inner(self, tag, index, value):
         if self._rec_buffer is None or not self.running:
             return
         now = time.perf_counter()
@@ -4897,7 +4587,7 @@ class App(object):
 
     def pad_status(self):
         """One-paragraph status for the console `gamepad` command."""
-        lines = [gamepad.describe(self._pad_index, reader=self._pad_reader)]
+        lines = [gamepad.describe(self._pad_index)]
         backend = self._pad_out
         lines.append("  output: %s" % (backend.name if backend else
                                        "not built yet"))
@@ -4911,7 +4601,6 @@ class App(object):
                            for b in self._pad_macros) or "none"
         lines.append("  macros: %s" % macros)
         return "\n".join(lines)
-
 
 def start_app(cfg, identity=None):
     """Create the App and start its threads. Returns (app, hook_thread)."""
@@ -4932,9 +4621,6 @@ def start_app(cfg, identity=None):
 
     app = App(cfg, identity)
 
-    # Get the human detector ready in the background when it is
-    # switched on, so the first scan does not pay for loading the
-    # models and blow its budget.
     try:
         import hpose_bridge
         if hpose_bridge.mode_of(cfg.values) == "on":
@@ -4987,10 +4673,9 @@ def start_app(cfg, identity=None):
 
     app.ready.wait(timeout=10)
 
-    if app.stop.is_set():
+    if app.stop.is_set() or not hook_thread.is_alive():
         print("")
         print("Snappy AI could not start. See messages above.")
         return None, None
 
     return app, hook_thread
-

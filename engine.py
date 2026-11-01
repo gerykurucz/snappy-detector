@@ -17,7 +17,7 @@ from general_utils import console_encoding, powershell_exe, silent_kwargs
 from maintenance_utils import applicable_tweaks, refused_tweaks
 from measurement_utils import build_fake_inventory
 from models import Step, StepKind, Tweak
-from system_core import (CPU, DNS, GPU, NIC, AntiCheatPolicy, BudgetComponent,
+from system_core import (CPU, DNS, GPU, NIC, BudgetComponent,
                          Display, Inventory, OSFamily, PolicyDecision, Power,
                          RefusedTweakError, SafetyPolicy, Timer,
                          TweakValidationError, Vendor, Verdict,
@@ -37,7 +37,6 @@ _SCHEME_RE = re.compile(r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})
 _AC_INDEX_RE = re.compile(r"Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)")
 _DC_INDEX_RE = re.compile(r"Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)")
 
-
 def _maybe_float(value):
     try:
         if value is None or value == "":
@@ -46,11 +45,9 @@ def _maybe_float(value):
     except (TypeError, ValueError):
         return None
 
-
 def _maybe_int(value):
     f = _maybe_float(value)
     return None if f is None else int(f)
-
 
 def _as_rows(value):
     if value is None or value == "":
@@ -61,13 +58,11 @@ def _as_rows(value):
         return [value]
     return []
 
-
 def parse_scheme(text):
     m = _SCHEME_RE.search(str(text or ""))
     if not m:
         return "", ""
     return m.group(1), m.group(2).strip()
-
 
 def parse_powercfg_index(text, which="AC"):
     rx = _AC_INDEX_RE if str(which).upper() == "AC" else _DC_INDEX_RE
@@ -78,7 +73,6 @@ def parse_powercfg_index(text, which="AC"):
         return int(m.group(1), 16)
     except ValueError:
         return None
-
 
 def parse_nics(payload):
     adapters = _as_rows(payload.get("a") if isinstance(payload, dict) else payload)
@@ -116,7 +110,6 @@ def parse_nics(payload):
         ))
     return nics
 
-
 def parse_gpus_displays(rows, hags=None):
     gpus = []
     displays = []
@@ -144,14 +137,12 @@ def parse_gpus_displays(rows, hags=None):
         ))
     return gpus, displays
 
-
 @dataclass(slots=True)
 class BackendResult:
     ok: bool
     stdout: str = ""
     stderr: str = ""
     code: int = 0
-
 
 class Backend:
     def fixture_inventory(self) -> Inventory | None:
@@ -177,7 +168,6 @@ class Backend:
 
     def read_anti_cheat(self, inv: Inventory) -> None:
         raise NotImplementedError
-
 
 class RealBackend(Backend):
     def powershell(self, script: str, timeout: float = 60.0) -> BackendResult:
@@ -567,12 +557,6 @@ class RealBackend(Backend):
             out.append((str(row["Name"]), "", pct))
         return out
 
-    def read_anti_cheat(self, inv: Inventory) -> None:
-        from system_core import AntiCheatPolicy
-
-        inv.running_anti_cheat = AntiCheatPolicy().detect(inv)
-
-
 class FakeBackend(Backend):
     def fixture_inventory(self) -> Inventory | None:
         return build_fake_inventory()
@@ -599,7 +583,6 @@ class FakeBackend(Backend):
     def read_anti_cheat(self, inv: Inventory) -> None:
         _ = inv
 
-
 def _vendor_of(name: str) -> Vendor:
     low = name.lower()
     if "nvidia" in low or "geforce" in low:
@@ -610,7 +593,6 @@ def _vendor_of(name: str) -> Vendor:
         return Vendor.INTEL
     return Vendor.OTHER
 
-
 def make_backend(name: str | None) -> Backend:
     if name == "fake":
         return FakeBackend()
@@ -618,18 +600,15 @@ def make_backend(name: str | None) -> Backend:
         return RealBackend()
     return FakeBackend()
 
-
 def _exit_name(brand: str) -> str:
     clean = "".join(c for c in brand if c.isalnum()) or "SnappyAI"
     return f"Exit-{clean}"
-
 
 def write_powershell(path: str | Path, text: str) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
     return p
-
 
 _HEADER = """<#
 .SYNOPSIS
@@ -933,13 +912,11 @@ if (@($changes | Where-Object { $_.requiresReboot }).Count -gt 0) {
 Exit-@@EXIT@@ 0
 """
 
-
 def _fill(template: str, **kw: str) -> str:
     out = template
     for key, val in kw.items():
         out = out.replace(f"@@{key.upper()}@@", val)
     return out
-
 
 @dataclass(slots=True)
 class PlannedChange:
@@ -959,7 +936,6 @@ class PlannedChange:
     @property
     def automated_step_count(self) -> int:
         return sum(1 for s in self.steps if not s.is_manual)
-
 
 @dataclass(slots=True)
 class ScriptBundle:
@@ -993,7 +969,6 @@ class ScriptBundle:
         os.replace(tmp, paths["manifest"])
         return paths
 
-
 def _ps_string(value: Any) -> str:
     if value is None:
         return "$null"
@@ -1008,7 +983,6 @@ def _ps_string(value: Any) -> str:
     s = str(value).replace("'", "''")
     return f"'{s}'"
 
-
 def _hive_to_ps(hive: str) -> str:
     return {
         "HKLM": "HKLM:",
@@ -1017,14 +991,11 @@ def _hive_to_ps(hive: str) -> str:
         "HKEY_CURRENT_USER": "HKCU:",
     }.get(hive.upper(), hive)
 
-
 _PS_VALUE_TYPES = ("DWord", "String", "QWord", "Binary", "MultiString",
                    "ExpandString")
 
-
 def _ps_lit(value: Any) -> str:
     return str(value).replace("'", "''")
-
 
 def _step_apply_block(step: Step) -> str:
     if step.kind == StepKind.REGISTRY_SET:
@@ -1064,7 +1035,6 @@ def _step_apply_block(step: Step) -> str:
         return step.command or ""
     raise ValueError(f"cannot render step kind {step.kind!r}")
 
-
 def _registry_restore_block(
     hive: str | None, path: str | None, name: str | None
 ) -> str:
@@ -1092,7 +1062,6 @@ def _registry_restore_block(
         }}"""
     ).strip()
 
-
 def _step_undo_block(step: Step) -> str:
     if step.kind in (StepKind.REGISTRY_SET, StepKind.REGISTRY_DELETE):
         return _registry_restore_block(step.hive, step.path, step.value_name)
@@ -1116,7 +1085,6 @@ def _step_undo_block(step: Step) -> str:
         )
     return "\n".join(parts)
 
-
 def _is_disruptive(step: Step) -> bool:
     cmd = (step.command or "").lower()
     return (
@@ -1130,7 +1098,6 @@ def _is_disruptive(step: Step) -> bool:
         or "stop-service" in cmd
     )
 
-
 def indent_body(body: str, prefix: str) -> str:
     out = []
     for ln in body.split("\n"):
@@ -1139,7 +1106,6 @@ def indent_body(body: str, prefix: str) -> str:
         else:
             out.append(prefix + ln)
     return "\n".join(out)
-
 
 def _plan_needs_admin(changes: Iterable[PlannedChange]) -> bool:
     admin_tokens = (
@@ -1164,7 +1130,6 @@ def _plan_needs_admin(changes: Iterable[PlannedChange]) -> bool:
             if any(tok in cmd for tok in admin_tokens):
                 return True
     return False
-
 
 def render_bundle(
     changes: Iterable[PlannedChange],
@@ -1362,7 +1327,6 @@ def render_bundle(
         changes=changes,
         manifest=manifest,
     )
-
 
 def render_maintenance_script(
     steps: list[Step], *, title: str, generated_at: str, brand: str = "latency"
@@ -1595,7 +1559,6 @@ def render_maintenance_script(
     out.append("Exit-@@EXIT@@ 0")
     return _fill("\n".join(out), brand=brand, exit=exit_name)
 
-
 def _wrap_preserving(text: str, width: int = 76) -> list[str]:
     out: list[str] = []
     for line in text.split("\n"):
@@ -1613,7 +1576,6 @@ def _wrap_preserving(text: str, width: int = 76) -> list[str]:
         )
         out.extend(chunks or [line])
     return out
-
 
 def _render_manual_block(tweak_id: str, step: Step, skip_var: str = "") -> str:
     body = step.text or step.notes or step.description
@@ -1639,7 +1601,6 @@ def _render_manual_block(tweak_id: str, step: Step, skip_var: str = "") -> str:
     out.append("}")
     return "\n".join(out)
 
-
 _VERDICT_ICON = {
     Verdict.PROBLEM: "PROBLEM",
     Verdict.NO_PROBLEM: "ok",
@@ -1653,7 +1614,6 @@ _COMPONENT_ORDER = (
     BudgetComponent.HOST_PROCESSING,
     BudgetComponent.RENDER_INPUT,
 )
-
 
 @dataclass(slots=True)
 class TweakOutcome:
@@ -1675,7 +1635,6 @@ class TweakOutcome:
             and (self.policy is None or self.policy.allowed)
             and (self.verdict is Verdict.PROBLEM or self.requested_explicitly)
         )
-
 
 @dataclass
 class Report:
@@ -1760,7 +1719,6 @@ class Report:
                 for o in self.outcomes
             ],
         }
-
 
 def render_markdown(report: Report, brand: str = "latency") -> str:
     inv = report.inventory
@@ -2014,7 +1972,6 @@ def render_markdown(report: Report, brand: str = "latency") -> str:
     )
     return "\n".join(parts)
 
-
 def _f(v: Any, nd: int = 2) -> str:
     if v is None:
         return "—"
@@ -2025,7 +1982,6 @@ def _f(v: Any, nd: int = 2) -> str:
     if f != f:
         return "—"
     return f"{f:.{nd}f}"
-
 
 _CSS = """
 :root { color-scheme: light dark; }
@@ -2076,7 +2032,6 @@ _CARD_CLASS = {
     Verdict.NOT_APPLICABLE: "na",
     Verdict.UNKNOWN: "unk",
 }
-
 
 def render_html(report: Report, brand: str = "latency") -> str:
     inv = report.inventory
@@ -2276,7 +2231,6 @@ def render_html(report: Report, brand: str = "latency") -> str:
     out.append("</body></html>")
     return "\n".join(out)
 
-
 def _card(o: TweakOutcome, e) -> str:
     t = o.tweak
     v = o.verdict
@@ -2321,9 +2275,6 @@ def _card(o: TweakOutcome, e) -> str:
     bits.append("</div>")
     return "\n".join(bits)
 
-
-
-
 @dataclass
 class PlanResult:
     inventory: Inventory
@@ -2366,7 +2317,6 @@ class PlanResult:
             lines.append(f"  errors: {len(self.errors)}")
         return lines
 
-
 def evaluate_all(
     inv: Inventory,
     policy: SafetyPolicy | None = None,
@@ -2376,7 +2326,9 @@ def evaluate_all(
     force_ids: Iterable[str] = (),
 ) -> tuple[list[TweakOutcome], list[str]]:
     policy = policy or SafetyPolicy()
-    detected = list(inv.running_anti_cheat) or AntiCheatPolicy().detect(inv)
+    detected = getattr(inv, "running_anti_cheat", [])
+    if not detected:
+        detected = []
     notes: list[str] = []
     if detected:
         notes.append(
@@ -2407,7 +2359,6 @@ def evaluate_all(
             outcome.skipped_reason = decision.reason
         outcomes.append(outcome)
     return outcomes, notes
-
 
 def build_plan(
     inv: Inventory,
@@ -2502,7 +2453,6 @@ def build_plan(
         )
     return result
 
-
 def render(
     result: PlanResult,
     *,
@@ -2525,13 +2475,11 @@ def render(
         warnings=len(result.inventory.warnings),
     )
 
-
 def save_baseline(path: str | Path, payload: dict[str, Any]) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, indent=1, default=str), encoding="utf-8")
     return p
-
 
 def load_baseline(path: str | Path) -> dict[str, Any]:
     p = Path(path)
@@ -2541,7 +2489,6 @@ def load_baseline(path: str | Path) -> dict[str, Any]:
             f"improvement would be unfounded"
         )
     return json.loads(p.read_text(encoding="utf-8"))
-
 
 def build_report(
     result: PlanResult,

@@ -24,7 +24,6 @@ _DEPTH_FACTORS = (0.4, 0.65, 1.0, 1.6, 2.6)
 
 BODY_HEIGHT_M = 1.72
 
-
 def _normalise(tpl: np.ndarray) -> np.ndarray:
     tpl = np.asarray(tpl, dtype=np.float64)
     h = float(tpl[:, 1].max() - tpl[:, 1].min())
@@ -32,9 +31,7 @@ def _normalise(tpl: np.ndarray) -> np.ndarray:
         return tpl
     return tpl / h
 
-
 CANON_N = _normalise(CANON)
-
 
 def _batch_solve(fx: np.ndarray, fy: np.ndarray, obs: np.ndarray,
                  w: np.ndarray):
@@ -60,14 +57,13 @@ def _batch_solve(fx: np.ndarray, fy: np.ndarray, obs: np.ndarray,
     resid = np.sum(diff * diff, axis=1)
     return theta[:, 0], theta[:, 1], theta[:, 2], resid
 
-
 def _projectors(yaws: np.ndarray, inv_depth: float,
                  template: np.ndarray):
     pts = model3d.body_to_camera_batch(template, yaws)
     den = 1.0 + inv_depth * pts[:, :, 2]
+
     den = np.where(np.abs(den) < 1e-3, 1e-3, den)
     return pts[:, :, 0] / den, pts[:, :, 1] / den
-
 
 def personalise(obs: np.ndarray, w: np.ndarray, template: np.ndarray):
     tpl = np.asarray(template, dtype=np.float64)
@@ -89,7 +85,6 @@ def personalise(obs: np.ndarray, w: np.ndarray, template: np.ndarray):
     out[:, 1] *= f_y
     return out
 
-
 def _leaned(template: np.ndarray, lean_deg: float) -> np.ndarray:
     lean_deg = float(lean_deg)
     if abs(lean_deg) < 1e-6:
@@ -103,7 +98,6 @@ def _leaned(template: np.ndarray, lean_deg: float) -> np.ndarray:
         v = t[i] - pivot
         t[i] = np.array([v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]) + pivot
     return t
-
 
 def _search(obs, weights, yaws, mask, depths, template, leans=LEAN_VALUES):
     best = None
@@ -124,11 +118,15 @@ def _search(obs, weights, yaws, mask, depths, template, leans=LEAN_VALUES):
                         float(lean))
     return best
 
-
 def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         personalise_shape: bool = True, focal_px: float = 960.0,
-        body_height_m: float = BODY_HEIGHT_M, depths=None):
+        body_height_m: float = BODY_HEIGHT_M, depths=None,
+        box_h_px: float = None):
     kps = np.asarray(kps, dtype=np.float64)
+    if box_h_px is not None and box_h_px < 60.0:
+        conf_threshold = max(0.10,
+                             conf_threshold * max(float(box_h_px), 20.0)
+                             / 60.0)
     obs = kps[:N_KP, :2]
     conf = kps[:N_KP, 2]
     base_w = np.where(conf >= conf_threshold, 1.0, 0.0)
@@ -138,12 +136,13 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
 
     face_conf = float(np.mean(conf[list(FACE_JOINTS)]))
     out = {"yaw": 0.0, "yaw_body": 0.0, "residual": float("inf"),
-           "residual_body": float("inf"), "face_conf": face_conf,
+           "face_conf": face_conf,
            "ambiguity": 0.0, "scale": 0.0, "u0": 0.0, "v0": 0.0,
            "depth": 0.0, "filled": obs.copy(), "branch": "none",
-           "stage": 0}
+           "stage": 0, "n_active": 0.0}
 
-    if base_w.sum() < 4:
+    torso_ok = (base_w[5] + base_w[6] >= 1) and (base_w[11] + base_w[12] >= 1)
+    if base_w.sum() < 3 or not torso_ok:
         return out
 
     if face_visible is None:
@@ -167,12 +166,23 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
 
     weights = base_w if face_visible else body_w
     branch = "front" if face_visible else "back"
+    n_active = float(np.sum(weights > 0))
+    h_px_for_shape = float(obs[weights > 0][:, 1].max()
+                            - obs[weights > 0][:, 1].min()) \
+        if (weights > 0).any() else 0.0
 
-    coarse = np.linspace(0.0, 360.0, _COARSE_STEPS, endpoint=False)
+    # Halve the coarse resolution for small targets: the fit's angular
+    # error is dominated by keypoint noise, not by the search step, so
+    # 12 coarse steps (~30°) is as good as 24 (~15°) for a 20 px target
+    # — and halves the search cost.
+    _box_h = box_h_px if box_h_px else h_px_for_shape
+    coarse_steps = _COARSE_STEPS if _box_h >= 40.0 \
+        else max(8, _COARSE_STEPS // 2)
+    coarse = np.linspace(0.0, 360.0, coarse_steps, endpoint=False)
     if face_visible:
         mask = np.ones_like(coarse, dtype=bool)
     else:
-        mask = np.array([math.cos(math.radians(y)) < 0.0 for y in coarse])
+        mask = np.array([math.cos(math.radians(y)) <= 0.4 for y in coarse])
         if not mask.any():
             mask = np.ones_like(coarse, dtype=bool)
 
@@ -181,22 +191,31 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
         return out
     out["stage"] = 1
 
-    fine = np.linspace(best[1] - _FINE_SPAN, best[1] + _FINE_SPAN,
-                       _FINE_STEPS)
-    if face_visible:
-        fmask = np.ones_like(fine, dtype=bool)
-    else:
-        fmask = np.array([math.cos(math.radians(y)) < 0.0 for y in fine])
-        if not fmask.any():
+    # Fine refinement is only meaningful when the target's keypoint
+    # jitter is small compared to the fine step (~2.3°). A 20 px target
+    # has ±10–20° of angular noise per keypoint — the coarse pass is
+    # already as accurate as the fit can be, and the fine pass costs
+    # another ~5 ms with no accuracy benefit.
+    fine = None
+    fmask = None
+    if _box_h >= 40.0:
+        fine = np.linspace(best[1] - _FINE_SPAN, best[1] + _FINE_SPAN,
+                           _FINE_STEPS)
+        if face_visible:
             fmask = np.ones_like(fine, dtype=bool)
-    refined = _search(obs, weights, fine, fmask, depths, CANON_N)
-    if refined is not None and refined[0] <= best[0]:
-        best = refined
-        out["stage"] = 2
+        else:
+            fmask = np.array([math.cos(math.radians(y)) <= 0.4
+                              for y in fine])
+            if not fmask.any():
+                fmask = np.ones_like(fine, dtype=bool)
+        refined = _search(obs, weights, fine, fmask, depths, CANON_N)
+        if refined is not None and refined[0] <= best[0]:
+            best = refined
+            out["stage"] = 2
 
     template = CANON_N
-    lean = best[6] if len(best) > 6 else 0.0
-    if personalise_shape:
+    lean = best[6]
+    if personalise_shape and _box_h >= 40.0:
         raw = personalise(obs, weights, CANON)
         tpl = _normalise(raw)
         if np.all(np.isfinite(tpl)):
@@ -208,10 +227,8 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
                 lean = second[6]
                 out["stage"] = 3
 
-    resid, yaw, depth, scale, u0, v0 = best[0], best[1], best[2], \
-        best[3], best[4], best[5]
-    if len(best) > 6:
-        lean = best[6]
+    resid, yaw, depth, scale, u0, v0, lean = best[0], best[1], best[2], \
+        best[3], best[4], best[5], best[6]
     yaw = float(yaw) % 360.0
     inv = 1.0 / max(1e-3, depth)
     tpl = _leaned(template, lean)
@@ -220,10 +237,10 @@ def fit(kps: np.ndarray, conf_threshold: float = 0.25, face_visible=None,
     out.update({"yaw": yaw, "yaw_body": yaw, "residual": float(resid),
                 "scale": float(scale), "u0": float(u0), "v0": float(v0),
                 "depth": float(depth), "filled": filled,
-                "lean": float(lean), "branch": branch})
+                "lean": float(lean), "branch": branch,
+                "n_active": n_active})
     out["ambiguity"] = float(resid)
     return out
-
 
 def repair(kps: np.ndarray, result: dict, conf_threshold: float = 0.25):
     kps = np.array(kps, dtype=np.float32, copy=True)
@@ -237,7 +254,6 @@ def repair(kps: np.ndarray, result: dict, conf_threshold: float = 0.25):
             kps[i, 1] = float(filled[i, 1])
     return kps
 
-
 def fold_yaw(yaw: float) -> float:
     y = abs(float(yaw)) % 360.0
     if y > 180.0:
@@ -246,12 +262,13 @@ def fold_yaw(yaw: float) -> float:
         y = 180.0 - y
     return y
 
-
 def fit_quality(result: dict) -> float:
     scale = float(result.get("scale") or 0.0)
     if scale <= 1e-6:
         return 0.0
     resid = float(result.get("residual") or 0.0)
-    rms = math.sqrt(max(0.0, resid) / max(1.0, 2 * N_KP))
+    n_active = max(1.0, float(result.get("n_active") or N_KP))
+    rms = math.sqrt(max(0.0, resid) / (2.0 * n_active))
     rel = rms / max(1e-6, scale)
-    return float(max(0.0, 1.0 - rel / 0.12))
+    # Soft size-aware falloff: quality 0.5 at rel = 0.12, floor at rel = 0.5.
+    return float(max(0.0, min(1.0, 1.0 - rel / (0.12 + 0.3 * rel))))

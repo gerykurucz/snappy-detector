@@ -12,31 +12,40 @@ FAST = "fast"
 FAST_SPEED = 260.0
 SLOW_SPEED = 60.0
 
-
 class KalmanBox(object):
 
-    __slots__ = ("x", "p", "last_t", "accel")
+    __slots__ = ("x", "p", "last_t", "accel", "_h0", "_r_var")
 
     def __init__(self, box, t: float = 0.0, accel: float = 1.0,
-                 meas_var: float = 12.0):
+                 meas_var: float = None):
+        h = max(1.0, float(box[3]) - float(box[1]))
+        if meas_var is None:
+            meas_var = max(1.0, (0.05 * h) ** 2)
+        vel_var = max(4.0, (2.0 * h) ** 2)
         self.x = np.zeros(6, dtype=np.float64)
         self.x[0] = (box[0] + box[2]) * 0.5
         self.x[1] = (box[1] + box[3]) * 0.5
         self.x[2] = math.log(max(1.0, box[2] - box[0]))
         self.x[3] = math.log(max(1.0, box[3] - box[1]))
-        self.p = np.diag([meas_var, meas_var, 0.25, 0.25, 400.0, 400.0])
+        self.p = np.diag([meas_var, meas_var, 0.25, 0.25, vel_var, vel_var])
         self.last_t = float(t)
         self.accel = float(accel)
+        self._h0 = h
+        self._r_var = float(meas_var)
 
     def predict(self, t: float) -> np.ndarray:
-        dt = max(1e-3, float(t) - self.last_t)
-        self.last_t = float(t)
+        t = max(float(t), self.last_t)             # monotonic guard
+        dt = max(1e-3, min(0.5, t - self.last_t))
+        self.last_t = t
+        h = self._h0
+        vel_noise = max(2.0, 0.05 * h) ** 2        # px^2/s^2, size scaled
         f = np.eye(6)
         f[0, 4] = dt
         f[1, 5] = dt
         self.x = f @ self.x
         q = np.diag([0.35, 0.35, 0.02, 0.02,
-                     120.0 * self.accel, 120.0 * self.accel]) * dt
+                     vel_noise * self.accel,
+                     vel_noise * self.accel]) * dt
         self.p = f @ self.p @ f.T + q
         return self.x.copy()
 
@@ -53,7 +62,11 @@ class KalmanBox(object):
         hmat[1, 1] = 1.0
         hmat[2, 2] = 1.0
         hmat[3, 3] = 1.0
-        r = np.eye(4) * 9.0
+        h_box = max(1.0, box[3] - box[1])
+        r_var = max(1.0, (0.05 * h_box) ** 2)
+        r_var = 0.8 * self._r_var + 0.2 * r_var
+        self._r_var = r_var
+        r = np.eye(4) * r_var
         y = z - hmat @ self.x
         s = hmat @ self.p @ hmat.T + r
         try:
@@ -62,7 +75,8 @@ class KalmanBox(object):
             return
         self.x = self.x + k @ y
         eye = np.eye(6)
-        self.p = (eye - k @ hmat) @ self.p
+        I_kh = eye - k @ hmat
+        self.p = I_kh @ self.p @ I_kh.T + k @ r @ k.T
 
     @property
     def velocity(self):
@@ -83,16 +97,17 @@ class KalmanBox(object):
         cy = self.x[1] + offset[1]
         return (cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5)
 
-
 class MotionModel(object):
 
-    def __init__(self, smoothing: float = 0.45, max_history: int = 90):
+    def __init__(self, smoothing: float = 0.45, max_history: int = 90,
+                 body_h_px: float = None):
         self.smoothing = float(smoothing)
         self.max_history = int(max_history)
         self.samples = []
         self.vel = (0.0, 0.0)
         self.accel = (0.0, 0.0)
         self.vel_raw = (0.0, 0.0)
+        self.body_h_px = float(body_h_px) if body_h_px else None
 
     def reset(self) -> None:
         self.samples = []
@@ -143,10 +158,15 @@ class MotionModel(object):
         return math.hypot(self.vel[0], self.vel[1])
 
     def state(self) -> str:
+        # Thresholds are scaled by the target's body height, so the state
+        # depends on "how many body-lengths per second", not absolute px/s.
+        h = self.body_h_px or 100.0
+        fast = 2.0 * h          # adults: 200 px/s approx walk
+        slow = 0.5 * h          # adults: 50 px/s approx sway
         s = self.speed
-        if s >= FAST_SPEED:
+        if s >= fast:
             return FAST
-        if s >= SLOW_SPEED:
+        if s >= slow:
             return SLOW
         return STATIC
 
@@ -160,7 +180,9 @@ class MotionModel(object):
         t = max(0.0, float(seconds))
         ox = self.vel[0] * t
         oy = self.vel[1] * t
-        if use_acceleration and t > 0.0:
+        # Acceleration is only meaningful after 6+ samples; otherwise it
+        # is measurement jitter and leads to over-extrapolation.
+        if (use_acceleration and t > 0.0 and len(self.samples) >= 6):
             ox += 0.5 * self.accel[0] * t * t
             oy += 0.5 * self.accel[1] * t * t
         if self.samples:
@@ -170,4 +192,3 @@ class MotionModel(object):
             x = ox
             y = oy
         return x, y, ox, oy
-

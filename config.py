@@ -1,5 +1,6 @@
 
 import json
+import math
 import os
 import sys
 import threading
@@ -11,8 +12,6 @@ import input_utils as hotkeys
 import system_core as i18n
 from system_core import log
 from system_core import parse_accents
-
-
 
 MOUSE_BUTTONS = ("mouse1", "mouse2", "mouse3", "mouse4", "mouse5")
 
@@ -27,69 +26,18 @@ i18n.publish("en", {
 
 DEFAULT_CONFIG = {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     "mode": 2,
-
 
     "radius": 150,
 
     "unibot_aim": True,
     "aim_speed": 1.0,
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     "theme": "light",
-
-
 
     "watcher_seconds": 0.45,
 
-
     "stall_pause_seconds": 0.25,
-
 
     "contrast_threshold": 38,
     "min_contrast": 48,
@@ -98,106 +46,27 @@ DEFAULT_CONFIG = {
     "max_dim": 300,
     "on_target_dist": 10,
 
-
-
-
-
-
-
     "adaptive_threshold": True,
     "luminance_norm": True,
 
-
-
-
-
-
-
-
-
-
     "capture_backend": "auto",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     "input_backend": "win32",
 
     "timer_resolution_us": 0,
 
-
-
-
-
-
-
-
     "merge_distance": 18,
-
-
-
-
-
-
-
-
 
     "accent_color": "off",
     "accent_tolerance": 26,
 
-
-
-
-
-
-
-
-
     "accent_soft": 60,
-
-
-
-
-
-
-
-
-
-
-
 
     "accent_matcher": "oklab",
 
     "accent_boost": 0.9,
 
-
-
-
-
-
-
-
     "exclude_color": "off",
-
-
-
-
-
-
-
 
     "motion_predict": False,
     "motion_lead_ms": 50,
@@ -207,140 +76,36 @@ DEFAULT_CONFIG = {
     "hpose_stance": "any",
     "hpose_aim": "center",
     "hpose_lead_ms": 60,
-    "hpose_min_conf": 35,
+    "hpose_min_conf": 12,
     "hpose_model": "yolo26n-pose.onnx",
     "blob_watch": True,
 
-
-
-
-
-
-
-
     "watch_center_only": False,
-
-
-
-
-
-
-
-
 
     "center_follow": False,
 
-
-
-
-
-
     "scan_budget_ms": 350,
-
-
-
-
-
-
-
 
     "motion_3d": False,
 
-
-
-
-
-
-
-
     "accent_only": False,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     "follow_enabled": False,
     "follow_boost": 1.0,
     "follow_seconds": 20,
 
-
-
-
-
-
     "glide_ms": 0,
-
-
-
-
-
-
-
 
     "snap_offset_x": 0,
     "snap_offset_y": 0,
 
-
-
-
-
-
-
-
-
-
     "color_adapt": True,
-
-
 
     "accent_variants": True,
 
-
-
     "accent_coherent": True,
 
-
-
-
-
-
     "language": "en",
-
-
-
-
-
-
-
-
-
-
-
-
 
     "trigger_button": "mouse1",
     "options_button": "mouse2",
@@ -348,61 +113,15 @@ DEFAULT_CONFIG = {
     "bypass_key": "shift",
     "bypass_pad": "",
 
-
-
-
-
     "hold_follow": True,
-
-
-
-
-
-
-
-
-
-
 
     "center_blind_area": 10,
 
-
-
-
-
-
-
     "center_max_step": 160,
-
-
-
-
-
 
     "subject_focus_bias": 0,
 
-
-
-
-
-
-
-
-
     "motion_sense": 0,
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     "motion_priority": True,
     "motion_camera_comp": True,
@@ -423,48 +142,13 @@ DEFAULT_CONFIG = {
     "reticle_x": 0,
     "reticle_y": 0,
 
-
-
-
-
-
-
-
-
     "rapid_click_snap": False,
-
-
-
-
-
-
-
-
-
 
     "mouse2_action": 4,
 
-
-
-
-
-
-
-
-
     "mouse2_hold_action": 4,
 
-
-
-
-
-
     "follow_learn": "accent",
-
-
-
-
-
 
     "key_launch": "ctrl+l",
     "key_pause": "ctrl+p",
@@ -478,11 +162,6 @@ DEFAULT_CONFIG = {
     "key_play3": "ctrl+3",
     "key_play4": "ctrl+4",
     "key_play5": "ctrl+5",
-
-
-
-
-
 
     "macro1_key": "",       "macro1_action": "",
     "macro2_key": "",       "macro2_action": "",
@@ -522,13 +201,10 @@ DEFAULT_CONFIG = {
     "pad_macro4_key": "",   "pad_macro4_action": "",
     "pad_macro5_key": "",   "pad_macro5_action": "",
 
-
-
     "config_version": 8,
 }
 
 RADIUS_STEPS = [(80, "small"), (150, "medium"), (250, "large")]
-
 
 def config_dir():
     if getattr(sys, "frozen", False):
@@ -554,7 +230,6 @@ def config_dir():
             pass
         return d
 
-
 class SafeConfigReader:
 
     def __init__(self, path):
@@ -573,14 +248,6 @@ class SafeConfigReader:
             parser.read(self.path, encoding="utf-8")
         except Exception:
             return overrides
-
-
-
-
-
-
-
-
 
         sections = [s for s in ("accessibility", "snappyai")
                     if parser.has_section(s)]
@@ -611,7 +278,6 @@ class SafeConfigReader:
                      lambda k: k in defaults,
                      lambda k: defaults[k])
 
-
         if "input_backend" in overrides:
             val = str(overrides["input_backend"]).strip().lower()
             if val == "interception":
@@ -637,8 +303,6 @@ class SafeConfigReader:
 
         if isinstance(default, int):
 
-
-
             val = float(raw)
             rounded = int(round(val))
             if rounded != val:
@@ -650,7 +314,6 @@ class SafeConfigReader:
             return float(raw)
 
         return raw
-
 
 def _coerce_value(raw, default, key=None):
     try:
@@ -683,7 +346,6 @@ def _coerce_value(raw, default, key=None):
                 return True, float(raw.strip())
             return False, None
 
-
         if isinstance(raw, str):
             return True, raw
         if isinstance(raw, (list, tuple)):
@@ -694,10 +356,7 @@ def _coerce_value(raw, default, key=None):
         return False, None
     except (ValueError, TypeError, OverflowError):
 
-
         return False, None
-
-
 
 class Config:
     def __init__(self):
@@ -738,28 +397,15 @@ class Config:
                             log("config.json: ignored invalid %s = %r"
                                 % (key, data[key]))
 
-
-
-
-
-
                 stale = [k for k in build_secrets.SENSITIVE_KEYS
                          if k in data]
                 if stale:
                     for k in stale:
                         self.values.pop(k, None)
-                    log("config.json: removed %d deployment key(s) left by "
+                    log("config.json: ignored %d deployment key(s) left by "
                         "an older version (%s); these now come from the "
                         "build, not from settings."
                         % (len(stale), ", ".join(sorted(stale))))
-
-
-
-
-
-
-
-
 
                 retired = ("auto_click",
                            "auto_click_interval",
@@ -774,12 +420,10 @@ class Config:
                 if dropped:
                     for k in dropped:
                         self.values.pop(k, None)
-                    log("config.json: removed %d retired setting(s) "
+                    log("config.json: ignored %d retired setting(s) "
                         "(%s); these are fixed behaviour now, not "
                         "settings." % (len(dropped),
                                        ", ".join(sorted(dropped))))
-
-
 
                 if str(data.get("macro6_key") or "").strip() \
                         or str(data.get("macro6_action") or "").strip():
@@ -794,9 +438,6 @@ class Config:
 
                 if version < 8:
 
-
-
-
                     self.values["config_version"] = 8
         except (OSError, ValueError):
             pass
@@ -810,16 +451,9 @@ class Config:
 
         self._sanitize()
 
-
-
-
     _RANGES = {
         "radius": (40, 400),
         "mode": (1, 2),
-
-
-
-
 
         "contrast_threshold": (1, 200),
         "min_contrast": (1, 200),
@@ -847,8 +481,6 @@ class Config:
         "hpose_lead_ms": (0, 300),
         "hpose_min_conf": (0, 99),
         "scan_budget_ms": (60, 2000),
-
-
 
         "snap_offset_x": (-200, 200),
         "snap_offset_y": (-200, 200),
@@ -921,28 +553,23 @@ class Config:
                     clamped = min(hi, max(lo, int(round(clamped))))
                 else:
                     clamped = type(lo)(clamped)
+                if (not math.isfinite(clamped)) or math.isnan(value):
+                    clamped = DEFAULT_CONFIG[key]
                 if clamped != value:
                     log("config: %s %r clamped to %r" % (key, value, clamped))
                 self.values[key] = clamped
             except (KeyError, TypeError, ValueError):
-
-
 
                 if key in DEFAULT_CONFIG:
                     self.values[key] = DEFAULT_CONFIG[key]
                 else:
                     self.values.pop(key, None)
 
-
-
         if self.values.get("min_area", 0) > self.values.get("max_area", 0):
             log("config: min_area %r is above max_area %r - nothing could "
                 "match; using max_area for both."
                 % (self.values.get("min_area"), self.values.get("max_area")))
             self.values["min_area"] = self.values["max_area"]
-
-
-
 
         for key in self._CHOICES:
             raw = self.values.get(key, DEFAULT_CONFIG[key])
@@ -952,28 +579,17 @@ class Config:
                     % (key, raw, DEFAULT_CONFIG[key]))
             self.values[key] = value
 
-
-
-
-
-
-
-
-
         if self.values.get("accent_only") \
                 and not parse_accents(self.values.get("accent_color")):
             log("config: accent_only is on but accent_color is off - "
                 "it stays on and simply does nothing until a colour "
                 "is set again.")
 
-
-
         lang = str(self.values.get("language", "en")).strip().lower()
         if lang not in i18n.codes():
             log("config: unknown language %r, defaulting to en" % (lang,))
             lang = "en"
         self.values["language"] = lang
-
 
         for key in self._PAD_SPECS:
             raw = str(self.values.get(key, "") or "").strip()
@@ -1150,6 +766,8 @@ class Config:
                         clamped = min(hi, max(lo, int(round(clamped))))
                     else:
                         clamped = type(lo)(clamped)
+                    if (not math.isfinite(clamped)) or math.isnan(value):
+                        clamped = DEFAULT_CONFIG[key]
                     value = clamped
                 except (TypeError, ValueError):
                     log("config: %s %r invalid; using %r"
@@ -1165,11 +783,11 @@ class Config:
 
     def cycle(self, key, steps):
         current = self.get(key)
-        values = [v for v, _ in steps]
 
         if not steps:
             return current, ""
 
+        values = [v for v, _ in steps]
         if current in values:
             idx = values.index(current)
         else:
@@ -1179,5 +797,3 @@ class Config:
         value, label = steps[idx]
         self.set(key, value)
         return value, label
-
-

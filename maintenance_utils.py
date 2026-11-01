@@ -4,14 +4,11 @@ from dataclasses import dataclass
 
 from models import Step, StepKind
 
-
 def _ps_name(value):
     return str(value).replace("'", "''")
 
-
 def _rx_lit(value):
     return str(value).replace("\\", "\\\\").replace(".", "\\.")
-
 
 @dataclass(slots=True)
 class CleanupOp:
@@ -21,7 +18,6 @@ class CleanupOp:
     group: str = "standard"
     safety: str = ""
     targets: tuple[str, ...] = ()
-
 
 CLEANUP_OPERATIONS: tuple[CleanupOp, ...] = (
     CleanupOp(
@@ -87,7 +83,6 @@ NOT_DONE: dict[str, str] = {
 
 _CLEANUP_BY_ID: dict[str, CleanupOp] = {o.id: o for o in CLEANUP_OPERATIONS}
 
-
 def _survey_command(op: CleanupOp) -> str:
     if op.id == "recycle-bin":
         return (
@@ -108,7 +103,6 @@ def _survey_command(op: CleanupOp) -> str:
         f"Write-Host ('[{op.id}] reclaimable older than 7 days: ' + "
         "[math]::Round($total / 1MB, 1) + ' MB') -ForegroundColor Cyan"
     )
-
 
 def _delete_command(op: CleanupOp) -> str:
     if op.id == "recycle-bin":
@@ -131,7 +125,6 @@ def _delete_command(op: CleanupOp) -> str:
         "| Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } "
         "| Remove-Item -Force -ErrorAction Stop } }"
     )
-
 
 def build_cleanup_steps(
     selected: tuple[str, ...] | None = None,
@@ -173,7 +166,6 @@ def build_cleanup_steps(
             )
     return steps
 
-
 def cleanup_report() -> list[dict]:
     return [
         {
@@ -193,7 +185,6 @@ def cleanup_report() -> list[dict]:
         }
     ]
 
-
 @dataclass(slots=True)
 class MemoryOp:
     id: str
@@ -203,7 +194,6 @@ class MemoryOp:
     safety: str = ""
     schedulable: bool = False
     needs_process_arg: bool = False
-
 
 MEMORY_OPERATIONS: tuple[MemoryOp, ...] = (
     MemoryOp(
@@ -275,7 +265,6 @@ _PREAMBLE = (
     "Add-Type -TypeDefinition $sig -ErrorAction Stop"
 )
 
-
 def build_memory_steps(
     selected: tuple[str, ...] = ("memory.measure",),
     process_names: tuple[str, ...] = (),
@@ -333,7 +322,6 @@ def build_memory_steps(
             )
     return steps
 
-
 def memory_report() -> list[dict]:
     return [
         {
@@ -356,14 +344,12 @@ def memory_report() -> list[dict]:
         }
     ]
 
-
 @dataclass(slots=True)
 class PowerOp:
     id: str
     title: str
     summary: str
     survey: bool = False
-
 
 POWER_OPERATIONS: tuple[PowerOp, ...] = (
     PowerOp(
@@ -396,7 +382,6 @@ _SURVEY_COMMAND = (
     "powercfg /query SCHEME_CURRENT SUB_PROCESSOR CPMINCORES; "
     "powercfg /query SCHEME_CURRENT SUB_PROCESSOR PERFEPP"
 )
-
 
 def build_power_steps(
     selected: tuple[str, ...] | None = None,
@@ -509,7 +494,6 @@ _ROOT_NAMES = {
 
 _FIELDS = {"hive", "key_path", "name", "value_type", "value"}
 
-
 @dataclass(slots=True)
 class RegistryChange:
     hive: str
@@ -517,7 +501,6 @@ class RegistryChange:
     name: str
     value_type: str
     value: Any
-
 
 def normalize_registry_changes(payload: Any) -> list[RegistryChange]:
     if isinstance(payload, str):
@@ -599,7 +582,6 @@ def normalize_registry_changes(payload: Any) -> list[RegistryChange]:
         raise TweakValidationError("registry payload is empty")
     return out
 
-
 def load_registry_payload(path: str | Path) -> list[RegistryChange]:
     p = Path(path)
     try:
@@ -611,7 +593,6 @@ def load_registry_payload(path: str | Path) -> list[RegistryChange]:
     except ValueError as exc:
         raise TweakValidationError(f"registry payload {p} is not JSON: {exc}") from exc
     return normalize_registry_changes(data)
-
 
 def registry_steps(changes: list[RegistryChange]) -> list[Step]:
     steps: list[Step] = []
@@ -639,7 +620,6 @@ _TIMER_RUN_NAME = "SnappyAI Timer Resolution"
 _TIMER_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _TIMER_MIN_UNITS = 100
 _TIMER_MAX_UNITS = 200000
-
 
 def resident_timer_command(units: int) -> str:
     units = int(units)
@@ -684,7 +664,6 @@ def resident_timer_command(units: int) -> str:
     )
     encoded = base64.b64encode(body.encode("utf-16-le")).decode("ascii")
     return f"powershell -NoProfile -WindowStyle Hidden -EncodedCommand {encoded}"
-
 
 def _timer_probe(inv: Any) -> Finding:
     tick = inv.timer.current_period_us
@@ -732,7 +711,6 @@ def _timer_probe(inv: Any) -> Finding:
                 f"{floor / 1000.0:.3f} ms",
         measured=measured,
     )
-
 
 def _timer_plan(inv: Any) -> list[Step]:
     floor = getattr(inv.timer, "min_period_us", None) if inv is not None else None
@@ -800,10 +778,8 @@ def _usb_probe(inv: Any) -> Finding:
         summary="USB selective suspend is already disabled",
     )
 
-
 _USB_SUBGROUP = "2a737441-1930-4402-8d77-b2bebba308a3"
 _USB_SUSPEND_SETTING = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
-
 
 def _usb_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -834,14 +810,12 @@ def _usb_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _aspm_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
         verdict=Verdict.UNKNOWN,
         summary="PCIe link power state cannot be read without elevated ACPI queries",
     )
-
 
 def _aspm_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -856,7 +830,6 @@ def _aspm_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _mmcss_probe(inv: Any) -> Finding:
     if not inv.timer.mmcss_responsiveness:
         return Finding(
@@ -866,7 +839,6 @@ def _mmcss_probe(inv: Any) -> Finding:
     return Finding(
         verdict=Verdict.NO_PROBLEM, summary="multimedia scheduling profile present"
     )
-
 
 def _mmcss_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -895,7 +867,6 @@ def _mmcss_plan(inv: Any) -> list[Step]:
         ),
     ]
 
-
 def _background_probe(inv: Any) -> Finding:
     hot = [
         (n, c)
@@ -917,7 +888,6 @@ def _background_probe(inv: Any) -> Finding:
         verdict=Verdict.NO_PROBLEM, summary="no heavy background competitor seen"
     )
 
-
 def _background_plan(inv: Any) -> list[Step]:
     hot = [
         n
@@ -938,14 +908,12 @@ def _background_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _affinity_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
         verdict=Verdict.UNKNOWN,
         summary="interrupt-to-core routing cannot be read without elevated queries",
     )
-
 
 def _affinity_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -960,7 +928,6 @@ def _affinity_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _cpusets_probe(inv: Any) -> Finding:
     if inv.cpu.l3_domains > 1:
         return Finding(
@@ -971,7 +938,6 @@ def _cpusets_probe(inv: Any) -> Finding:
     return Finding(
         verdict=Verdict.NO_PROBLEM, summary="single cache domain; roaming is cheap"
     )
-
 
 def _cpusets_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -985,7 +951,6 @@ def _cpusets_plan(inv: Any) -> list[Step]:
             notes="Cross-domain hops turn cache hits into memory fetches.",
         )
     ]
-
 
 HOST_TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -1097,7 +1062,6 @@ def _wifi_probe(inv: Any) -> Finding:
         )
     return Finding(verdict=Verdict.NO_PROBLEM, summary="primary adapter is wired")
 
-
 def _wifi_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1110,7 +1074,6 @@ def _wifi_plan(inv: Any) -> list[Step]:
             notes="No registry value reproduces a cable; the medium itself is the fix.",
         )
     ]
-
 
 def _power_probe(inv: Any) -> Finding:
     if not inv.nics:
@@ -1136,7 +1099,6 @@ def _power_probe(inv: Any) -> Finding:
         summary="adapter power management is already disabled",
     )
 
-
 def _power_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1147,7 +1109,6 @@ def _power_plan(inv: Any) -> list[Step]:
             notes="Prevents the NIC from sleeping between packet bursts.",
         )
     ]
-
 
 def _moderation_probe(inv: Any) -> Finding:
     if not inv.nics:
@@ -1174,7 +1135,6 @@ def _moderation_probe(inv: Any) -> Finding:
         summary="interrupt moderation is already disabled",
     )
 
-
 def _moderation_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1187,7 +1147,6 @@ def _moderation_plan(inv: Any) -> list[Step]:
             notes="If the driver has no such property the step reports the failure openly.",
         )
     ]
-
 
 def _dns_probe(inv: Any) -> Finding:
     servers = list(inv.dns.server_addresses)
@@ -1205,7 +1164,6 @@ def _dns_probe(inv: Any) -> Finding:
         )
     return Finding(verdict=Verdict.NO_PROBLEM, summary="resolver answers quickly")
 
-
 def _dns_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1218,14 +1176,12 @@ def _dns_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 def _mtu_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
         verdict=Verdict.UNKNOWN,
         summary="path MTU was not measured; fragmentation cannot be judged yet",
     )
-
 
 def _mtu_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -1239,7 +1195,6 @@ def _mtu_plan(inv: Any) -> list[Step]:
             notes="A wrong MTU causes fragmentation or drops, both of which look like lag.",
         )
     ]
-
 
 def _upload_cap_probe(inv: Any) -> Finding:
     bloat = inv.bloat or {}
@@ -1257,7 +1212,6 @@ def _upload_cap_probe(inv: Any) -> Finding:
         )
     return Finding(verdict=Verdict.NO_PROBLEM, summary="loaded latency stays flat")
 
-
 def _upload_cap_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1270,7 +1224,6 @@ def _upload_cap_plan(inv: Any) -> list[Step]:
             notes="The queue that holds game packets hostage lives outside the PC.",
         )
     ]
-
 
 def _sqm_probe(inv: Any) -> Finding:
     bloat = inv.bloat or {}
@@ -1290,7 +1243,6 @@ def _sqm_probe(inv: Any) -> Finding:
         verdict=Verdict.NO_PROBLEM, summary=f"bufferbloat grade {grade} is fine"
     )
 
-
 def _sqm_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1303,7 +1255,6 @@ def _sqm_plan(inv: Any) -> list[Step]:
             notes="SQM keeps the queue shallow even when the link is saturated.",
         )
     ]
-
 
 NETWORK_TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -1480,7 +1431,6 @@ DEBLOAT_OPERATIONS: tuple[DebloatOp, ...] = (
 
 _DEBLOAT_BY_ID: dict[str, DebloatOp] = {o.id: o for o in DEBLOAT_OPERATIONS}
 
-
 def validate_policy_path(hive: str, path: str) -> None:
     if hive.upper() not in ("HKLM", "HKCU"):
         raise ValueError(f"policy writes are confined to HKLM/HKCU, got {hive!r}")
@@ -1492,14 +1442,12 @@ def validate_policy_path(hive: str, path: str) -> None:
             f"policy writes are confined to {', '.join(POLICY_ROOTS)}, got {path!r}"
         )
 
-
 def _reg(
     hive: str, path: str, name: str, value: object, value_type: str = "DWord",
     notes: str = "",
 ) -> Step:
     validate_policy_path(hive, path)
     return reg_set(hive, path, name, value, value_type=value_type, notes=notes)
-
 
 def _registry_for(op_id: str, inv: Any = None) -> list[Step]:
     if op_id == "policy.game_dvr_capture":
@@ -1545,7 +1493,6 @@ def _registry_for(op_id: str, inv: Any = None) -> list[Step]:
     if op_id == "policy.update_deferral":
         return _deferral_steps(inv)
     raise ValueError(f"no registry mapping for {op_id}")
-
 
 def _deferral_steps(inv: Any) -> list[Step]:
     supported = bool(inv is not None and inv.supports_update_policy)
@@ -1648,7 +1595,6 @@ def _deferral_steps(inv: Any) -> list[Step]:
     )
     return steps
 
-
 def _edge_policy_step(inv: Any) -> Step:
     if inv is not None and inv.domain_joined is True:
         return _reg(
@@ -1667,7 +1613,6 @@ def _edge_policy_step(inv: Any) -> Step:
         "an update, remove it again or join a domain to enforce the block.",
         notes="A policy that cannot take effect is not written.",
     )
-
 
 _EDGE_UNINSTALL = (
     "$roots = @(); "
@@ -1717,7 +1662,6 @@ _EDGE_UNINSTALL = (
     "Remove-Item \"$env:PUBLIC\\Desktop\\*Edge*.lnk\" -Force -ErrorAction SilentlyContinue; "
     "Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue"
 )
-
 
 def _removal_for(op_id: str, inv: Any = None) -> list[Step]:
     if op_id == "app.xbox_overlay":
@@ -1826,7 +1770,6 @@ def _removal_for(op_id: str, inv: Any = None) -> list[Step]:
         ]
     raise ValueError(f"no removal mapping for {op_id}")
 
-
 def build_selected(
     selected: tuple[str, ...] | None, inv: Any = None
 ) -> list[Step]:
@@ -1861,14 +1804,12 @@ def build_selected(
         )
     return steps
 
-
 def _platform_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
         verdict=Verdict.UNKNOWN,
         summary="boot timer platform was not inspected; changing it is opt-in only",
     )
-
 
 def _platform_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -1889,10 +1830,8 @@ def _platform_plan(inv: Any) -> list[Step]:
         )
     ]
 
-
 _GTRR_PATH = r"SYSTEM\CurrentControlSet\Control\Session Manager\kernel"
 _GTRR_MIN_BUILD = 19041
-
 
 def _gtrr_probe(inv: Any) -> Finding:
     build = getattr(inv, "windows_build", 0) or 0
@@ -1918,7 +1857,6 @@ def _gtrr_probe(inv: Any) -> Finding:
         measured={"global_timer_requests": state},
     )
 
-
 def _gtrr_plan(inv: Any) -> list[Step]:
     _ = inv
     return [
@@ -1935,7 +1873,6 @@ def _gtrr_plan(inv: Any) -> list[Step]:
             ),
         )
     ]
-
 
 EXPERIMENTAL_TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -1976,14 +1913,12 @@ EXPERIMENTAL_TWEAKS: tuple[Tweak, ...] = (
     ),
 )
 
-
 def _game_mode_probe(inv: Any) -> Finding:
     _ = inv
     return Finding(
         verdict=Verdict.UNKNOWN,
         summary="Game Mode effect cannot be read; only an A/B measurement decides",
     )
-
 
 def _game_mode_plan(inv: Any) -> list[Step]:
     _ = inv
@@ -1997,7 +1932,6 @@ def _game_mode_plan(inv: Any) -> list[Step]:
             notes="Both features reroute the frame path; the winner differs per machine.",
         )
     ]
-
 
 GAMING_TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -2015,7 +1949,6 @@ GAMING_TWEAKS: tuple[Tweak, ...] = (
     ),
 )
 
-
 @dataclass(slots=True)
 class RedistOp:
     id: str
@@ -2026,7 +1959,6 @@ class RedistOp:
     search: str = ""
     whitelist: tuple[str, ...] = ()
     blacklist: tuple[str, ...] = ()
-
 
 REDIST_OPERATIONS: tuple[RedistOp, ...] = (
     RedistOp(
@@ -2061,7 +1993,6 @@ REDIST_OPERATIONS: tuple[RedistOp, ...] = (
 
 _REDIST_BY_ID: dict[str, RedistOp] = {r.id: r for r in REDIST_OPERATIONS}
 
-
 def _redist_discovery_cmd(op):
     white = "|".join(_rx_lit(w) for w in op.whitelist) or _rx_lit(op.search)
     cmd = (f"$found = winget search --exact '{_ps_name(op.search)}' | "
@@ -2071,7 +2002,6 @@ def _redist_discovery_cmd(op):
                 % "|".join(_rx_lit(b) for b in op.blacklist))
     return (cmd + "; if (-not $found) { throw 'no whitelisted package found' }; "
             "Write-Host $found -ForegroundColor Cyan")
-
 
 def build_redist_steps(
     selected: tuple[str, ...] | None = None,
@@ -2128,7 +2058,6 @@ def build_redist_steps(
             )
     return steps
 
-
 def redist_report() -> list[dict]:
     return [
         {
@@ -2150,7 +2079,6 @@ def redist_report() -> list[dict]:
 
 from system_core import RefusedTweakError
 
-
 def _refused_probe(summary: str):
     def probe(inv: Any) -> Finding:
         _ = inv
@@ -2158,11 +2086,9 @@ def _refused_probe(summary: str):
 
     return probe
 
-
 def _refused_plan(inv: Any) -> list[Step]:
     _ = inv
     raise RefusedTweakError("refused tweaks never produce a plan")
-
 
 REFUSED_TWEAKS: tuple[Tweak, ...] = (
     Tweak(
@@ -2218,7 +2144,6 @@ REFUSED_TWEAKS: tuple[Tweak, ...] = (
 from models import validate_catalog
 from input_utils import TWEAKS as _DISPLAY_TWEAKS
 
-
 def _build() -> tuple[Tweak, ...]:
     return validate_catalog(
         (
@@ -2231,29 +2156,20 @@ def _build() -> tuple[Tweak, ...]:
         )
     )
 
-
 _ALL: tuple[Tweak, ...] = _build()
 
 _TWEAK_BY_ID: dict[str, Tweak] = {t.id: t for t in _ALL}
 
-
 def all_tweaks() -> tuple[Tweak, ...]:
     return _ALL
-
 
 def applicable_tweaks(include_experimental: bool = False) -> tuple[Tweak, ...]:
     return tuple(
         t for t in _ALL if not t.is_refused and (include_experimental or not t.experimental)
     )
 
-
 def experimental_tweaks() -> tuple[Tweak, ...]:
     return tuple(t for t in _ALL if t.experimental and not t.is_refused)
 
-
 def refused_tweaks() -> tuple[Tweak, ...]:
     return tuple(t for t in _ALL if t.is_refused)
-
-
-
-

@@ -9,15 +9,22 @@ import time
 import numpy as np
 
 import hpose_classifier as classifier
+import hpose_features as features
+
+try:
+    from system_core import log
+except Exception:
+    def log(_text):
+        pass
 
 BUNDLE_VERSION = 3
 DEFAULT_BUNDLE_NAME = "hpose_bundle.npz"
 
-
 class Bundle(object):
 
     def __init__(self, template=None, view_head=None, stance_head=None,
-                 view_classes=None, stance_classes=None, meta=None):
+                 view_classes=None, stance_classes=None, meta=None,
+                 feature_version=None):
         self.template = (np.zeros((17, 2), dtype=np.float32)
                          if template is None
                          else np.asarray(template, dtype=np.float32))
@@ -26,6 +33,7 @@ class Bundle(object):
         self.view_classes = list(view_classes or [])
         self.stance_classes = list(stance_classes or [])
         self.meta = dict(meta or {})
+        self.feature_version = feature_version
 
     def save(self, path: str) -> str:
         arrays = {"template": self.template}
@@ -37,6 +45,7 @@ class Bundle(object):
                 arrays["stance_" + k] = v
         arrays["meta_json"] = np.asarray(json.dumps({
             "version": BUNDLE_VERSION,
+            "feature_version": features.FEATURE_VERSION,
             "view_classes": self.view_classes,
             "stance_classes": self.stance_classes,
             "meta": self.meta,
@@ -51,23 +60,25 @@ class Bundle(object):
     def load(cls, path: str) -> "Bundle":
         with np.load(path, allow_pickle=False) as z:
             arrays = {k: z[k] for k in z.files}
-        meta_blob = json.loads(str(arrays.pop("meta_json")))
+        meta_blob = json.loads(arrays.pop("meta_json").item())
+        fv = meta_blob.get("feature_version")
         template = arrays.pop("template", None)
         view_arrays = {k[5:]: v for k, v in arrays.items()
                        if k.startswith("view_")}
         stance_arrays = {k[7:]: v for k, v in arrays.items()
                          if k.startswith("stance_")}
         view_head = (classifier.head_from_arrays(
-            view_arrays, meta_blob.get("view_classes"))
+            view_arrays, meta_blob.get("view_classes"), fv)
             if view_arrays else None)
         stance_head = (classifier.head_from_arrays(
-            stance_arrays, meta_blob.get("stance_classes"))
+            stance_arrays, meta_blob.get("stance_classes"), fv)
             if stance_arrays else None)
         return cls(template=template, view_head=view_head,
                    stance_head=stance_head,
                    view_classes=meta_blob.get("view_classes") or [],
                    stance_classes=meta_blob.get("stance_classes") or [],
-                   meta=meta_blob.get("meta") or {})
+                   meta=meta_blob.get("meta") or {},
+                   feature_version=fv)
 
     def has_view(self) -> bool:
         return self.view_head is not None
@@ -87,7 +98,6 @@ class Bundle(object):
         lines.append("  stance classes: %s" % (", ".join(self.stance_classes),))
         return "\n".join(lines)
 
-
 def default_bundle_path() -> str:
     env = os.environ.get("HPOSE_BUNDLE")
     if env:
@@ -105,12 +115,17 @@ def default_bundle_path() -> str:
             return path
     return candidates[-1]
 
-
 def load_bundle(path: str = None) -> Bundle:
     path = path or default_bundle_path()
     if not os.path.isfile(path):
         return Bundle()
     try:
-        return Bundle.load(path)
-    except Exception:
+        bundle = Bundle.load(path)
+    except (OSError, ValueError, EOFError, pickle.UnpicklingError) as exc:
+        log("hpose: bundle %s corrupt (%r)" % (path, exc))
         return Bundle()
+    fv = bundle.feature_version
+    if fv is not None and fv != features.FEATURE_VERSION:
+        log("hpose: bundle %s trained on features v%s, runtime v%s - "
+            "retrain the bundle" % (path, fv, features.FEATURE_VERSION))
+    return bundle

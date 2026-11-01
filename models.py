@@ -4,7 +4,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-
 from system_core import (BudgetComponent, Confidence,
                           RefusedTweakError, Risk,
                           TweakValidationError, Verdict)
@@ -16,7 +15,6 @@ _VAGUE_MECHANISM = re.compile(
     r"ultimate|turbo|snappy|responsiv)\w*\b",
     re.IGNORECASE,
 )
-
 
 class StepKind:
     REGISTRY_SET = "registry_set"
@@ -31,7 +29,6 @@ class StepKind:
     FILE_DELETE = "file_delete"
     WINGET_INSTALL = "winget_install"
     MEMORY_ACTION = "memory_action"
-
 
 @dataclass(slots=True)
 class Step:
@@ -110,7 +107,6 @@ class Step:
             out.extend(u.undo_chain())
         return out
 
-
 @dataclass(slots=True)
 class Finding:
     verdict: Verdict
@@ -121,7 +117,6 @@ class Finding:
     @property
     def actionable(self) -> bool:
         return self.verdict.actionable
-
 
 @dataclass
 class Tweak:
@@ -241,7 +236,6 @@ class Tweak:
     def needs_load_measurement(self) -> bool:
         return self.measure_needs_load or self.component is BudgetComponent.LOCAL_QUEUE
 
-
 def validate_catalog(tweaks: Iterable[Tweak]) -> list[Tweak]:
     seen: dict[str, Tweak] = {}
     out: list[Tweak] = []
@@ -260,7 +254,6 @@ def validate_catalog(tweaks: Iterable[Tweak]) -> list[Tweak]:
                     f"{t.id} declares conflict with unknown tweak {dep!r}"
                 )
     return out
-
 
 @dataclass
 class DebloatOp:
@@ -304,7 +297,6 @@ def manual(description: str, text: str, notes: str = "") -> Step:
         notes=notes,
     )
 
-
 def reg_set(
     hive: str, path: str, value_name: str, value: Any,
     value_type: str = "DWord", notes: str = "",
@@ -320,8 +312,6 @@ def reg_set(
         terminal=True,
         notes=notes or "Snapshot-restored on undo.",
     )
-
-
 
 def ps_step(
     description: str, command: str, undo_command: str = "",
