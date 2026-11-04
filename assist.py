@@ -180,12 +180,16 @@ class App(object):
         self._mouse2_log_at = 0.0
         self._lead_log_at = 0.0
         self._nudge_fail_log_at = 0.0
+        self._yolo_log_at = 0.0
         self.rbutton_down_time = 0.0
         self.snap_count = 0
         self.pass_count = 0
 
         self.last_snap_time = 0.0
         self.last_snap_pos = None
+
+        self._continuous_lock = threading.Lock()
+        self._continuous_active = False
 
         self._debug_vis = None
 
@@ -198,6 +202,33 @@ class App(object):
         self.thread_id = None
 
         self._capture = CaptureBackend(cfg.get("capture_backend", "auto"))
+
+        # YOLO26n 2D person detector (fast, no pose)
+        self._yolo26n = None
+        # Per-thread sequence of the last YOLO frame consumed: each worker
+        # gets every sighting at most once, so one detection can never be
+        # replayed as several identical nudges.
+        self._yolo_local = threading.local()
+        if bool(cfg.get("yolo26n_enabled", True)):
+            try:
+                from yolo26n_backend import YOLO26nBackend, YOLOConfig
+                yolo_cfg = YOLOConfig(
+                    model_path="models/" + str(cfg.get("yolo26n_model", "yolo26n.onnx")),
+                    capture_radius=45,
+                    conf_threshold=float(cfg.get("yolo26n_conf", 0.35)),
+                    input_size=int(cfg.get("yolo26n_input_size", 224)),
+                    target_fps=120,
+                    capture_backend=str(cfg.get("capture_backend", "auto")),
+                )
+                self._yolo26n = YOLO26nBackend(yolo_cfg)
+                if not self._yolo26n.start():
+                    log("YOLO26n backend failed to start, disabling")
+                    self._yolo26n = None
+                else:
+                    log("YOLO26n backend started (input_size=%d)" % yolo_cfg.input_size)
+            except Exception as exc:
+                log("YOLO26n backend init failed: %r" % (exc,))
+                self._yolo26n = None
 
         self._input = make_input_backend(cfg)
         self.follow = FollowMemory()
@@ -614,16 +645,16 @@ class App(object):
         "Watch the screen centre only" is off.
 
         The GATE square is fixed at the middle of the virtual screen,
-        `half` each way (75 px at defaults, so a 150x150 gate), DPI-
-        scaled like every other distance here. The SCAN is wider: the
-        centre scan analyses cap = half * 2 around the middle, so items
-        straddling the gate boundary are measured whole instead of
-        clipped. A press outside the gate is not assistance territory
-        (it passes through) even though an item there is within scan
-        reach - territory is the gate, reach is the scan. The cursor
-        position is irrelevant to the geometry: with the switch on, the
-        product treats the screen centre as the reticle even when the
-        pointer sits elsewhere.
+        `half` = the configured search distance each way (a 40 px
+        setting means +/-40 px, an 80x80 gate), DPI-scaled like every
+        other distance here. The SCAN is wider: the centre scan analyses
+        cap = half * 2 around the middle, so items straddling the gate
+        boundary are measured whole instead of clipped. A press outside
+        the gate is not assistance territory (it passes through) even
+        though an item there is within scan reach - territory is the
+        gate, reach is the scan. The cursor position is irrelevant to
+        the geometry: with the switch on, the product treats the screen
+        centre as the reticle even when the pointer sits elsewhere.
         """
         try:
             if not bool(self.cfg.get("watch_center_only", False)):
@@ -633,9 +664,9 @@ class App(object):
         vx, vy, vw, vh = self._virtual_screen()
         try:
             half = max(24, int(round(
-                float(self.cfg.get("radius", 150)) * self.dpi_scale))) // 2
+                float(self.cfg.get("radius", 150)) * self.dpi_scale)))
         except (TypeError, ValueError):
-            half = 75
+            half = 150
         return (vx + vw // 2, vy + vh // 2, half)
 
     def _subject_context(self, origin):
@@ -668,6 +699,48 @@ class App(object):
         except Exception:
             pass
 
+    def _yolo26n_to_scan_result(self, yolo_det, mx, my, cap, origin, img, cx, cy):
+        """Convert YOLO26n detection to ScanResult format."""
+        try:
+            from vision import ScanResult
+
+            # YOLO26n gives absolute screen coordinates
+            # Convert to center-relative (dx, dy from center)
+            dx = yolo_det.x - mx
+            dy = yolo_det.y - my
+            # Defensive: the backend capture is +/-45 px around the screen
+            # centre, so anything farther is a mapping error, not a target.
+            # Keep the accepted radius tied to the user's search distance
+            # (plus the backend's 5 px margin) instead of the wider scan.
+            limit = max(1, min(int(cap), self.radius_px() + 10))
+            if abs(dx) > limit or abs(dy) > limit:
+                return None
+
+            class _Target:
+                __slots__ = ("dx", "dy", "bw", "bh", "hscore", "sig",
+                             "area", "dist", "contrast")
+                def __init__(self, dx, dy, bw, bh, hscore, sig=None):
+                    self.dx = dx
+                    self.dy = dy
+                    self.bw = bw
+                    self.bh = bh
+                    self.hscore = hscore
+                    self.sig = sig
+                    self.area = max(1, int(bw) * int(bh))
+                    self.dist = math.hypot(dx, dy)
+                    self.contrast = 0.0
+
+            # YOLO26n doesn't have color signature, use None
+            target = _Target(
+                dx=dx, dy=dy,
+                bw=yolo_det.w, bh=yolo_det.h,
+                hscore=yolo_det.conf,
+                sig=None
+            )
+            return ScanResult("target", target, ms=0.0)
+        except Exception:
+            return None
+
     def _scan_center(self, state=None, arm_follow=True):
         """Scan the watched centre square; return (target, mx, my).
 
@@ -679,6 +752,7 @@ class App(object):
         accent_only, filters). None when the switch is off, the frame
         is stale, or nothing is inside.
         """
+        res = None
         box = self._center_box()
         if box is None:
             return None
@@ -687,13 +761,43 @@ class App(object):
             return None
 
         cap = max(48, half * 2)
-        img, cx, cy, origin, edges = self.grab_around(mx, my, cap)
-        if img is None:
-            return None
-        if state is not None and state.get("abandoned"):
-            return None
+        fallback_on = (bool(self.cfg.get("yolo26n_fallback_to_hpose", True))
+                       or self._yolo26n is None)
+
+        # Consume at most one fresh YOLO sighting per worker thread.  The
+        # backend runs asynchronously; replaying the same detection for
+        # several corrections would rotate the view past the target.
+        yolo_det = None
+        if self._yolo26n is not None \
+                and bool(self.cfg.get("yolo26n_enabled", True)):
+            try:
+                last_seq = getattr(self._yolo_local, "seq", 0)
+                yolo_det = self._yolo26n.get_latest_detection(
+                    after_seq=last_seq, max_age=0.25)
+                if yolo_det is not None:
+                    self._yolo_local.seq = yolo_det.seq
+            except Exception as exc:
+                log("YOLO26n read error: %r" % (exc,))
+                yolo_det = None
+
+        # The local grab is only needed for the classical fallback.  With
+        # a fresh YOLO sighting the backend already did the capture, so
+        # skipping it keeps the scan inside the inference budget.
+        need_img = yolo_det is None and fallback_on
+        if need_img:
+            img, cx, cy, origin, edges = self.grab_around(mx, my, cap)
+            if img is None:
+                return None
+            if state is not None and state.get("abandoned"):
+                return None
+        else:
+            img = None
+            cx = cy = 0
+            origin = None
+            edges = None
+
         follow_ctx = None
-        if bool(self.cfg.get("follow_enabled")):
+        if origin is not None and bool(self.cfg.get("follow_enabled")):
             try:
                 follow_secs = float(self.cfg.get("follow_seconds", 20) or 20)
             except (TypeError, ValueError):
@@ -714,16 +818,18 @@ class App(object):
 
         motion_ctx = None
         curr_gray = None
-        try:
-            sense = vision.motion_sense_of(self.cfg.values)
-        except Exception:
-            sense = 0.0
-        if flight and sense > 0 \
-                and bool(self.cfg.get("subject_priority", False)):
+        if img is not None:
             try:
-                curr_gray = img.mean(axis=2).astype(np.float32)
+                sense = vision.motion_sense_of(self.cfg.values)
             except Exception:
-                curr_gray = None
+                sense = 0.0
+            flight = self._reticle_active()
+            if flight and sense > 0 \
+                    and bool(self.cfg.get("subject_priority", False)):
+                try:
+                    curr_gray = img.mean(axis=2).astype(np.float32)
+                except Exception:
+                    curr_gray = None
             with self._state_lock:
                 prev = self._center_prev
                 dirty = self._view_moved
@@ -741,7 +847,7 @@ class App(object):
                     motion_ctx = None
         try:
             subject_priority_on = (bool(self.cfg.get("subject_priority", False))
-                                  or bool(self.cfg.get("subject_only", False)))
+                                   or bool(self.cfg.get("subject_only", False)))
         except Exception:
             subject_priority_on = False
         try:
@@ -751,77 +857,113 @@ class App(object):
         if not subject_priority_on:
             hb = 0.0
         try:
-            subject_ctx = self._subject_context(origin)
+            subject_ctx = self._subject_context(origin) \
+                if origin is not None else None
         except Exception:
             subject_ctx = None
         dbg_collect = [] if bool(self.cfg.get("debug_visualize", False)) \
             else None
-        try:
-            res = scan_region(img, cx, cy, self.cfg.values, cap,
-                              follow_ctx=follow_ctx,
-                              edge_flags=edges,
-                              anchor_blind_area=blind,
-                              motion_ctx=motion_ctx,
-                              focus_bias=min(1.0, max(0.0, hb)),
-                              subject_ctx=subject_ctx,
-                              origin=origin,
-                              collect=dbg_collect)
-        except Exception as exc:
-            self.fail_count += 1
-            log("scan error: %r" % (exc,))
-            if self.fail_count >= 5:
-                self.scanner_dead = True
-                log("Scanner disabled after repeated errors. "
-                    "Clicks pass through.")
-            if curr_gray is not None:
-                with self._state_lock:
-                    self._center_prev = {"gray": curr_gray,
-                                         "t": time.perf_counter(),
-                                         "cap": cap}
+
+        # Prefer the YOLO26n person detector.
+        if yolo_det is not None:
+            try:
+                res = self._yolo26n_to_scan_result(
+                    yolo_det, mx, my, cap, origin, img, cx, cy)
+                if res is not None and res.kind == "target":
+                    now_l = time.perf_counter()
+                    if now_l - self._yolo_log_at >= 1.0:
+                        self._yolo_log_at = now_l
+                        log("YOLO26n: found person at dx=%d, dy=%d, "
+                            "conf=%.2f" % (res.target.dx, res.target.dy,
+                                           res.target.hscore))
+                else:
+                    res = None
+            except Exception as exc:
+                log("YOLO26n scan error: %r" % (exc,))
+                res = None
+
+        # Fall back to the classical / hpose scan when YOLO missed and
+        # the fallback is enabled.
+        if (res is None or res.kind != "target") and fallback_on:
+            if img is None:
+                img, cx, cy, origin, edges = self.grab_around(mx, my, cap)
+                if img is None:
+                    return None
+            try:
+                res = scan_region(img, cx, cy, self.cfg.values, cap,
+                                  follow_ctx=follow_ctx,
+                                  edge_flags=edges,
+                                  anchor_blind_area=blind,
+                                  motion_ctx=motion_ctx,
+                                  focus_bias=min(1.0, max(0.0, hb)),
+                                  subject_ctx=subject_ctx,
+                                  origin=origin,
+                                  collect=dbg_collect)
+            except Exception as exc:
+                self.fail_count += 1
+                log("scan error: %r" % (exc,))
+                if self.fail_count >= 5:
+                    self.scanner_dead = True
+                    log("Scanner disabled after repeated errors. "
+                        "Clicks pass through.")
+                if curr_gray is not None:
+                    with self._state_lock:
+                        self._center_prev = {
+                            "gray": curr_gray,
+                            "t": time.perf_counter(),
+                            "cap": cap,
+                        }
                     self._view_moved = False
-            return None
-        self.fail_count = 0
-        self.scanner_dead = False
+                return None
+            self.fail_count = 0
+            self.scanner_dead = False
+
+        # Nothing whose centre is far outside the configured search
+        # distance may steer.  The scan is deliberately wider than the
+        # gate, but a sighting out there is another object (or a mapping
+        # error), not the target the user asked to watch.
+        if res is not None and res.kind == "target" \
+                and res.target is not None:
+            limit = self.radius_px() + 10
+            if abs(res.target.dx) > limit or abs(res.target.dy) > limit:
+                res = None
 
         if bool(self.cfg.get("debug_visualize", False)):
             try:
                 vx, vy, vw, vh = self._virtual_screen()
                 dbg_cx, dbg_cy = vx + vw // 2, vy + vh // 2
-                target_box = None
-                if res.kind == "target" and res.target is not None:
-                    acx = origin[0] + cx + res.target.dx
-                    acy = origin[1] + cy + res.target.dy
-                    target_box = (
-                        int(acx - res.target.bw / 2),
-                        int(acy - res.target.bh / 2),
-                        int(acx + res.target.bw / 2),
-                        int(acy + res.target.bh / 2),
-                    )
-                # target_box is a box (x1,y1,x2,y2); overlay expects center point
                 target_center = None
-                if target_box:
-                    target_center = (
-                        (target_box[0] + target_box[2]) // 2,
-                        (target_box[1] + target_box[3]) // 2,
-                    )
-                self._debug_vis = (dbg_cx, dbg_cy, cap, target_center,
-                                   _debug_boxes(dbg_collect, origin, cx, cy))
+                if res is not None and res.kind == "target" \
+                        and res.target is not None:
+                    if origin is None and yolo_det is not None:
+                        target_center = (int(yolo_det.x), int(yolo_det.y))
+                    elif origin is not None:
+                        acx = origin[0] + cx + res.target.dx
+                        acy = origin[1] + cy + res.target.dy
+                        target_center = (int(acx), int(acy))
+                candidates = _debug_boxes(dbg_collect, origin, cx, cy) \
+                    if origin is not None else []
+                self._debug_vis = (
+                    dbg_cx, dbg_cy,
+                    half,
+                    target_center,
+                    candidates,
+                )
             except Exception:
                 pass
         else:
             self._debug_vis = None
 
         if curr_gray is not None:
-
             with self._state_lock:
                 self._center_prev = {"gray": curr_gray,
                                      "t": time.perf_counter(),
                                      "cap": cap}
-                self._view_moved = False
+            self._view_moved = False
         if state is not None and state.get("abandoned"):
             return None
-        if res.kind == "target" and res.target is not None:
-
+        if res is not None and res.kind == "target" \
+                and res.target is not None:
             ax = mx + res.target.dx
             ay = my + res.target.dy
             if arm_follow and bool(self.cfg.get("center_follow", False)):
@@ -830,7 +972,6 @@ class App(object):
                     if (prev is not None
                             and math.hypot(ax - prev["x"],
                                            ay - prev["y"]) > 3.0):
-
                         self._chase_stable = 0
                     self._center_follow = {
                         "x": ax, "y": ay,
@@ -849,11 +990,8 @@ class App(object):
                 area = float(getattr(res.target, "area", 0) or 0)
                 if area > 0.0:
                     with self._tracker_lock:
-                        self._tracker.update(now, (ax, ay, math.sqrt(area)))
-            except Exception:
-                pass
-            try:
-                self._subject_store(ax, ay, res.target)
+                        self._tracker.update(now, (ax, ay),
+                                             math.sqrt(area))
             except Exception:
                 pass
             return (res.target, mx, my)
@@ -945,7 +1083,7 @@ class App(object):
         if dbg_collect is not None:
             try:
                 target_box = None
-                if res.kind == "target" and res.target is not None:
+                if res is not None and res.kind == "target" and res.target is not None:
                     acx = origin[0] + cx + res.target.dx
                     acy = origin[1] + cy + res.target.dy
                     target_box = (
@@ -961,7 +1099,7 @@ class App(object):
                         (target_box[0] + target_box[2]) // 2,
                         (target_box[1] + target_box[3]) // 2,
                     )
-                self._debug_vis = (x, y, cap, target_center,
+                self._debug_vis = (x, y, self.cfg.get("radius", 150), target_center,
                                    _debug_boxes(dbg_collect, origin, cx, cy))
             except Exception:
                 pass
@@ -978,7 +1116,7 @@ class App(object):
         if state is not None and state.get("abandoned"):
             return None
 
-        if res.kind == "target" and res.target is not None:
+        if res is not None and res.kind == "target" and res.target is not None:
             if track is not None and track is not False:
                 now = time.perf_counter()
                 ax, ay = x + res.target.dx, y + res.target.dy
@@ -1117,10 +1255,32 @@ class App(object):
         except Exception:
             return False
 
-    def send_click(self, x, y, double=False, index=None):
+    def send_click(self, x, y, double=False, index=None, move=True):
         if index is None:
             index = self._trigger_button()
-        self._warp(x, y)
+
+        # For game mode (reticle active): use relative nudge to rotate view
+        # For desktop: absolute warp.  move=False is the reinjection path:
+        # a suppressed click must be returned where the user aimed, never
+        # steered toward a stale desktop cursor position.
+        if self._reticle_active():
+            if move:
+                vx, vy, vw, vh = self._virtual_screen()
+                cx = vx + vw // 2
+                cy = vy + vh // 2
+                dx = x - cx
+                dy = y - cy
+                # Only steer for a target inside the watched area.  The
+                # hidden OS cursor can sit anywhere; using its position as
+                # a delta is how a single click used to spin the view.
+                limit = 2.0 * max(1, self.radius_px())
+                if math.hypot(dx, dy) <= limit:
+                    ndx, ndy = self._cap_step(dx, dy, limit)
+                    if ndx or ndy:
+                        self._nudge(ndx, ndy, view=True)
+        else:
+            if move:
+                self._warp(x, y)
         time.sleep(0.012)
 
         if not self._atomic_click(index):
@@ -1284,7 +1444,7 @@ class App(object):
         Give back a click that classic mode suppressed but did not assist.
         """
         try:
-            self.send_click(x, y, double=False)
+            self.send_click(x, y, double=False, move=False)
         except Exception as exc:
             log("reinject error: %r" % (exc,))
 
@@ -1493,24 +1653,28 @@ class App(object):
                     nx, ny = self._apply_motion_lead(nx, ny)
                 nx, ny = self._apply_snap_offset(nx, ny)
 
+                step_cap = self._max_step_cfg()
+                area_cap = 2.0 * max(1, self.radius_px())
+                if step_cap <= 0 or step_cap > area_cap:
+                    step_cap = area_cap
                 ndx, ndy = self._cap_step(nx - cbox[0], ny - cbox[1],
-                                          self._max_step_cfg())
+                                          step_cap)
+                if abs(target.dx) <= 2 and abs(target.dy) <= 2:
+                    ndx = ndy = 0
                 sent = self._nudge(ndx, ndy, view=True)
                 # Also move right stick for continuous aim assist
                 self._right_stick_aim(target.dx, target.dy)
                 if not sent:
-                    # Nudge refused: the click would land at the old reticle
-                    # position, which is where the user aimed (NOT the target).
-                    # Fall back to the classic warp-and-click path so the user
-                    # still gets a snap.
-                    log("Classic assist: nudge refused (%+d, %+d); falling "
-                        "back to warp + click." % (int(ndx), int(ndy)))
-                    self.send_click(ax, ay)
+                    # Nudge refused: the reticle did not move, so click
+                    # where it still points.  Never warp in flight.
+                    log("Classic assist: nudge refused (%+d, %+d); "
+                        "clicking at the reticle." % (int(ndx), int(ndy)))
+                    self._click_at_reticle()
                     self.snap_count += 1
                     if self._follow_may_learn(target):
                         self.follow.store(ax, ay, target)
                     self.last_snap_time = time.perf_counter()
-                    self.last_snap_pos = (int(ax), int(ay))
+                    self.last_snap_pos = (int(cbox[0]), int(cbox[1]))
                     out["handled"] = True
                     return
                 # The game needs ONE frame to consume the move before the
@@ -1657,6 +1821,7 @@ class App(object):
                 return
 
             cbox = self._center_box()
+            flight = self._reticle_active()
             if cbox is not None:
                 ax, ay = (cbox[0] + target.dx, cbox[1] + target.dy)
             else:
@@ -1666,7 +1831,15 @@ class App(object):
             except (TypeError, ValueError):
                 on_target = 10.0
 
-            if self._hit_test(ax, ay, x, y, target.bw, target.bh,
+            # In reticle flight the aim point is the screen centre, not
+            # the hidden OS cursor: hit-testing against the cursor would
+            # either skip a needed correction or repeat one forever.
+            if cbox is not None and flight:
+                aim_x, aim_y = cbox[0], cbox[1]
+            else:
+                aim_x, aim_y = x, y
+
+            if self._hit_test(ax, ay, aim_x, aim_y, target.bw, target.bh,
                               on_target):
                 self.pass_count += 1
                 out["handled"] = True
@@ -1674,24 +1847,37 @@ class App(object):
 
             nx, ny = ax, ay
 
-            if cbox is not None and self._reticle_active():
+            if cbox is not None and flight:
                 if bool(self.cfg.get("motion_predict", False)) \
                         or bool(self.cfg.get("motion_3d", False)):
                     nx, ny = self._apply_motion_lead(nx, ny)
                 nx, ny = self._apply_snap_offset(nx, ny)
+                # A correction can never be larger than the watched area:
+                # the sighting is inside it by definition, and the old
+                # 500 px cap let one bad reading spin the whole view.
+                step_cap = self._max_step_cfg()
+                area_cap = 2.0 * max(1, self.radius_px())
+                if step_cap <= 0 or step_cap > area_cap:
+                    step_cap = area_cap
                 ndx, ndy = self._cap_step(nx - cbox[0], ny - cbox[1],
-                                          self._max_step_cfg())
+                                          step_cap)
 
                 # Move right stick for aim assist in flight mode
                 self._right_stick_aim(target.dx, target.dy)
 
-                if self._hit_test(cbox[0] + target.dx, cbox[1] + target.dy,
-                                  cbox[0], cbox[1], target.bw, target.bh,
-                                  on_target):
+                if abs(target.dx) <= 2 and abs(target.dy) <= 2:
+                    ndx = ndy = 0
+                elif self._hit_test(cbox[0] + target.dx,
+                                    cbox[1] + target.dy,
+                                    cbox[0], cbox[1], target.bw, target.bh,
+                                    on_target):
                     ndx = ndy = 0
                 else:
                     self._nudge(ndx, ndy, view=True)
                 completed = True
+                # The continuous loop feeds last_snap_pos back as its
+                # next click point; in flight that point is the reticle.
+                self.last_snap_pos = (int(cbox[0]), int(cbox[1]))
             else:
 
                 if bool(self.cfg.get("motion_predict", False)) \
@@ -1709,7 +1895,8 @@ class App(object):
 
                 self.follow.store(ax, ay, target)
             self.last_snap_time = time.perf_counter()
-            self.last_snap_pos = (int(nx), int(ny))
+            if not (cbox is not None and flight):
+                self.last_snap_pos = (int(nx), int(ny))
 
             if ndx is None:
                 log(
@@ -1860,6 +2047,13 @@ class App(object):
         watched centre square".
         """
         if mode != 2 or not armed:
+            return
+        # In reticle flight the held-trigger continuous loop owns steering.
+        # Arming here as well would steer during the 200 ms short-press
+        # window and then let the snap steer again: two corrections for
+        # one sighting.  A snap that lands while the button is still down
+        # arms its own hold session directly in do_classic.
+        if self._reticle_active():
             return
         cbox = self._center_box()
         if cbox is not None:
@@ -2708,17 +2902,29 @@ class App(object):
                     self.pending_classics.remove(suppressed["entry"])
                 except ValueError:
                     pass
+            # Hand steering over to the continuous loop: the centre-hold
+            # EMA loop would otherwise nudge for the same sighting too.
+            with self._state_lock:
+                self._center_hold = None
+                self._center_hold_tomb = 0.0
             # Start continuous assist loop in background
             self._start_continuous_assist(suppressed["x"], suppressed["y"])
         except Exception as exc:
             log("trigger hold error: %r" % (exc,))
 
-    def _start_continuous_assist(self, x, y):
+    def _start_continuous_assist(self, start_x, start_y):
         """Start a background loop that continuously detects and nudges
         while the trigger is held. Runs in a daemon thread."""
+        # One loop at a time: a second hold timer must not double-steer.
+        with self._continuous_lock:
+            if self._continuous_active:
+                return
+            self._continuous_active = True
+        # Use a list to hold mutable coordinates (avoids closure capture issues)
+        coords = [start_x, start_y]
         def loop():
             try:
-                while True:
+                while not self.stop.is_set():
                     # Check if trigger is still held and we're still armed
                     if not self._lbtn_down or not self._armed_now():
                         break
@@ -2727,13 +2933,17 @@ class App(object):
                     state = {"abandoned": False, "lock": threading.Lock(),
                              "epoch": self._mode_epoch}
                     out = {}
-                    self.do_guide(x, y, out, state)
-                    # Update x,y for next iteration (cursor moved)
-                    x, y = self.last_snap_pos if self.last_snap_pos else (x, y)
+                    self.do_guide(coords[0], coords[1], out, state)
+                    # Update coords for next iteration (cursor moved)
+                    if self.last_snap_pos:
+                        coords[0], coords[1] = self.last_snap_pos
                     # Small delay to avoid hammering
                     time.sleep(0.03)  # ~30 Hz
             except Exception as exc:
                 log("continuous assist error: %r" % (exc,))
+            finally:
+                with self._continuous_lock:
+                    self._continuous_active = False
         t = threading.Thread(target=loop, name="continuous-assist", daemon=True)
         t.start()
 
@@ -2839,6 +3049,15 @@ class App(object):
     def _center_follow_cycle(self):
         """One pass of "Keep the cursor on it" (centre-watch follow)."""
         if not bool(self.cfg.get("watch_center_only", False)):
+            return False
+
+        # Reticle flight has no OS cursor to keep on anything.  Steering
+        # there belongs to the held-trigger continuous loop; running this
+        # loop too would double-apply every sighting.
+        if self._reticle_active():
+            with self._state_lock:
+                self._center_follow = None
+                self._pick_at = None
             return False
 
         motion_on = (bool(self.cfg.get("motion_predict", False))
@@ -2966,6 +3185,27 @@ class App(object):
         nx, ny = self._apply_motion_lead(cx, cy)
 
         nx, ny = self._apply_snap_offset(nx, ny)
+
+        # Reticle flight: the OS cursor is hidden and parked, so every
+        # cursor-based guard below would be meaningless (and could skip
+        # corrections forever).  Steer relatively from the screen centre.
+        if self._reticle_active():
+            box = self._center_box()
+            if box is None:
+                return True
+            mx, my, _half = box
+            step_cap = self._max_step_cfg()
+            area_cap = 2.0 * max(1, self.radius_px())
+            if step_cap <= 0 or step_cap > area_cap:
+                step_cap = area_cap
+            ndx, ndy = self._cap_step(nx - mx, ny - my, step_cap)
+            if ndx or ndy:
+                self._nudge(ndx, ndy, view=True)
+                with self._state_lock:
+                    self._chase_stable = 0
+                    self._chase_ref = (nx, ny)
+            return True
+
         px, py = get_cursor_pos()
         if math.hypot(nx - px, ny - py) <= 2.0:
             with self._state_lock:
@@ -2979,6 +3219,7 @@ class App(object):
             with self._state_lock:
                 self._chase_ref = (px, py)
             return True
+
         self._warp(nx, ny)
         with self._state_lock:
             self._chase_stable = 0
@@ -3134,6 +3375,10 @@ class App(object):
                 return False
 
         cap = self._max_step_cfg()
+        if self._reticle_active():
+            area_cap = 2.0 * max(1, self.radius_px())
+            if cap <= 0 or cap > area_cap:
+                cap = area_cap
         jx, jy = self._cap_step(ix, iy, cap)
         if cap > 0:
             sess["cx"] = min(max(out_x - jx, -cap), cap)
@@ -3309,7 +3554,7 @@ class App(object):
                         live = self.follow_lock is lock
                     if not live:
                         continue
-                    if res.kind == "target" and res.target is not None:
+                    if res is not None and res.kind == "target" and res.target is not None:
                         lock["misses"] = 0
 
                         ax = origin[0] + cx + res.target.dx
@@ -3431,7 +3676,7 @@ class App(object):
             log("auto-click scan error: %r" % (exc,))
             return None
 
-        if res.kind != "target" or res.target is None:
+        if res is None or res.kind != "target" or res.target is None:
             return None
 
         try:
@@ -3710,9 +3955,11 @@ class App(object):
                 self._drain_queue()
                 self._emergency_release()
                 self._pad_release_all()
+                self._debug_vis = None
                 with self._state_lock:
                     self.follow_lock = None
                     self._center_follow = None
+                    self._center_hold = None
                     self._center_hold_tomb = 0.0
                     self._pick_at = None
                     self._chase_ref = None
@@ -3777,6 +4024,7 @@ class App(object):
         self._drain_queue()
         self._emergency_release()
         self._pad_release_all()
+        self._debug_vis = None
         if self._pad_out is not None:
             try:
                 self._pad_out.close()

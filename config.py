@@ -80,6 +80,13 @@ DEFAULT_CONFIG = {
     "hpose_model": "yolo26n-pose.onnx",
     "blob_watch": True,
 
+    # YOLO26n 2D person detector (fast, no pose)
+    "yolo26n_enabled": True,
+    "yolo26n_input_size": "224",
+    "yolo26n_conf": 0.35,
+    "yolo26n_fallback_to_hpose": True,
+    "yolo26n_model": "yolo26n.onnx",
+
     "watch_center_only": False,
 
     "center_follow": False,
@@ -482,6 +489,9 @@ class Config:
         "hpose_min_conf": (0, 99),
         "scan_budget_ms": (60, 2000),
 
+        "yolo26n_input_size": (224, 640),
+        "yolo26n_conf": (0.05, 0.95),
+
         "snap_offset_x": (-200, 200),
         "snap_offset_y": (-200, 200),
 
@@ -518,9 +528,12 @@ class Config:
         "follow_learn": ("accent", "any"),
         "reticle_shape": ("cross", "plus", "dot", "circle", "x"),
         "reticle_mode": ("center", "custom"),
-        "theme": ("light", "dark"),        "pad_output": ("auto", "vigem", "emulate"),
+        "theme": ("light", "dark"),
+        "pad_output": ("auto", "vigem", "emulate"),
         "trigger_button": MOUSE_BUTTONS,
         "options_button": MOUSE_BUTTONS,
+        "yolo26n_input_size": ("224", "320", "640"),
+        "yolo26n_model": ("yolo26n.onnx", "yolo26n_int8.onnx"),
     }
 
     _LEGACY_CHOICES = {

@@ -193,6 +193,11 @@ class ReticleOverlay(object):
     def set_debug(self, cx, cy, radius, target_box=None, candidates=None):
         self._debug = (cx, cy, radius, target_box, candidates or ())
 
+    def clear_debug(self):
+        """Hide the debug overlay (assistance stopped / debug turned off)."""
+        self._debug = None
+        self._debug_destroy()
+
     def _screen(self):
         try:
             from win32rt import virtual_screen
@@ -244,7 +249,7 @@ class ReticleOverlay(object):
         except Exception:
             pass
         try:
-            self._tick_id = self._root.after(250, self.tick)
+            self._tick_id = self._root.after(100, self.tick)
         except Exception:
             self._tick_id = None
 
@@ -314,15 +319,42 @@ class ReticleOverlay(object):
                 self._debug_destroy()
                 return
         try:
-            cx, cy, radius, target_center, _candidates = self._debug
+            cx, cy, radius, target_center, candidates = self._debug
             c = self._dbg_canvas
+            # Stay above the game/image window even when it is topmost.
+            try:
+                self._dbg_win.lift()
+            except Exception:
+                pass
             c.delete('all')
+            lx, ly = cx - vx, cy - vy
+            radius = max(1, int(radius))
+            # Watched square: always visible while debug is on, so an
+            # empty scan is distinguishable from "overlay never drew".
+            c.create_rectangle(lx - radius, ly - radius,
+                               lx + radius, ly + radius,
+                               outline='#00A8FF', width=1, dash=(4, 3))
+            c.create_line(lx - 3, ly, lx + 3, ly,
+                          fill='#00A8FF', width=1)
+            c.create_line(lx, ly - 3, lx, ly + 3,
+                          fill='#00A8FF', width=1)
+            for box in candidates or ():
+                try:
+                    bx1, by1, bx2, by2 = box
+                    c.create_rectangle(bx1 - vx, by1 - vy,
+                                       bx2 - vx, by2 - vy,
+                                       outline='#FFD000', width=1)
+                except Exception:
+                    continue
             if target_center:
                 tx, ty = target_center
                 lx, ly = tx - vx, ty - vy
-
-                c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4,
+                c.create_oval(lx - 5, ly - 5, lx + 5, ly + 5,
                               outline='#00FF00', fill='#00FF00', width=0)
+                c.create_line(lx - 10, ly, lx + 10, ly,
+                              fill='#00FF00', width=1)
+                c.create_line(lx, ly - 10, lx, ly + 10,
+                              fill='#00FF00', width=1)
         except Exception:
             self._debug_destroy()
 

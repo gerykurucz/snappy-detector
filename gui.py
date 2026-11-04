@@ -463,6 +463,32 @@ META = {
                    "at person-shaped high-contrast blobs (about twice as "
                    "tall as wide, 14-64 px).",
                    "bool", None),
+
+    # YOLO26n 2D person detector (fast, no pose - pure YOLO)
+    "yolo26n_enabled": ("YOLO26n 2D person detector",
+                         "Fast 2D person bounding-box detector (YOLO26n). "
+                         "Runs at ~100+ FPS on CPU. No pose/3D, just boxes. "
+                         "Recommended as primary detector for speed.",
+                         "bool", None),
+    "yolo26n_input_size": ("YOLO26n input resolution",
+                            "Input image size for YOLO26n. Lower = faster. "
+                            "224 = fastest (~130 FPS), 320 = balanced (~50 FPS), "
+                            "640 = most accurate (~12 FPS). Requires model export.",
+                            "map", (("Fastest (224)", "224"),
+                                     ("Balanced (320)", "320"),
+                                     ("Accurate (640)", "640"))),
+    "yolo26n_conf": ("YOLO26n confidence threshold",
+                      "Minimum confidence for person detection (0.05-0.95). "
+                      "Lower finds more people, higher is stricter.",
+                      "float", None),
+    "yolo26n_fallback_to_hpose": ("Fallback to hpose when YOLO misses",
+                                     "If YOLO26n finds no person, try hpose "
+                                     "(pose/3D) as a backup. Slower but smarter.",
+                                     "bool", None),
+    "yolo26n_model": ("YOLO26n model file",
+                       "ONNX model file in the models folder.",
+                       "map", (("Standard (yolo26n.onnx)", "yolo26n.onnx"),
+                                  ("INT8 Quantized (yolo26n_int8.onnx)", "yolo26n_int8.onnx"))),
     "follow_enabled": ("Remember the last clicked item",
                        "After a successful snap, similar-looking items or "
                        "items in the same place win ties for a while - "
@@ -5399,6 +5425,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 if _dv is not None:
                     try:
                         _ov.set_debug(*_dv)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        _ov.clear_debug()
                     except Exception:
                         pass
             poll_tick[0] += 1
