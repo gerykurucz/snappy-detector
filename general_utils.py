@@ -207,9 +207,143 @@ def console_encoding() -> str:
     return "oem" if sys.platform.startswith("win") else "utf-8"
 
 def app_dir() -> str:
+    """Return the portable application root.
+
+    In the packaged layout the launcher sits in the root and the real
+    Nuitka executable lives in main\\.  The launcher also exports
+    SNAPPYAI_HOME so tools and child processes resolve the same root.
+    """
+    override = os.environ.get("SNAPPYAI_HOME")
+    if override:
+        try:
+            return os.path.abspath(override)
+        except OSError:
+            pass
     if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        if os.path.basename(base).lower() == "main":
+            return os.path.dirname(base)
+        return base
     return os.path.dirname(os.path.abspath(__file__))
+
+def _ensure_dir(path: str) -> str:
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+def app_path(*parts: str) -> str:
+    return os.path.join(app_dir(), *parts)
+
+def cache_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "cache", *parts))
+
+def capture_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "capture", *parts))
+
+def configs_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "configs", *parts))
+
+def docs_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "docs", *parts))
+
+def driver_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "driver", *parts))
+
+def logs_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "logs", *parts))
+
+def models_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "models", *parts))
+
+def recordings_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "recordings", *parts))
+
+def reports_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "reports", *parts))
+
+def scripts_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "scripts", *parts))
+
+def scripts_exec_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "scripts", "exec", *parts))
+
+def scripts_undo_dir(*parts: str) -> str:
+    return _ensure_dir(os.path.join(app_dir(), "scripts", "undo", *parts))
+
+def _move_if_missing(source: str, destination: str) -> None:
+    if not os.path.isfile(source) or os.path.exists(destination):
+        return
+    try:
+        os.replace(source, destination)
+        return
+    except OSError:
+        pass
+    try:
+        import shutil
+        shutil.copy2(source, destination)
+        try:
+            os.remove(source)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+def _merge_tree(source: str, destination: str) -> None:
+    if not os.path.isdir(source):
+        return
+    try:
+        import shutil
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+    except OSError:
+        return
+    try:
+        import shutil
+        shutil.rmtree(source, ignore_errors=True)
+    except OSError:
+        pass
+
+def migrate_legacy_layout() -> None:
+    """Move files created by older builds into the portable layout."""
+    root = app_dir()
+    for name, folder in (
+        ("config.json", configs_dir()),
+        ("config.ini", configs_dir()),
+        ("reticle_presets.json", configs_dir()),
+        ("macros.json", recordings_dir()),
+        ("pad_macros.json", recordings_dir()),
+    ):
+        _move_if_missing(os.path.join(root, name), os.path.join(folder, name))
+
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return
+    old = os.path.join(local, "SnappyAI")
+    if os.path.abspath(old).lower() == os.path.abspath(root).lower():
+        return
+    _merge_tree(os.path.join(old, "logs"), logs_dir())
+    _merge_tree(os.path.join(old, "models"), models_dir())
+    # Browser profiles are disposable caches; recreating one is cheap.
+    try:
+        import shutil
+        shutil.rmtree(os.path.join(old, "authbrowser"), ignore_errors=True)
+    except OSError:
+        pass
+
+def ensure_app_layout() -> str:
+    """Create the portable folder layout and migrate old flat files."""
+    for folder in (
+        cache_dir(), capture_dir(), configs_dir(), docs_dir(), driver_dir(),
+        logs_dir(), models_dir(), recordings_dir(), reports_dir(),
+        scripts_exec_dir(), scripts_undo_dir(),
+    ):
+        _ensure_dir(folder)
+    try:
+        migrate_legacy_layout()
+    except Exception:
+        pass
+    return app_dir()
 
 def system32_dir() -> str:
     root = os.environ.get("SystemRoot") or os.environ.get("windir")
@@ -225,7 +359,7 @@ def dll_search_paths(names, where: str = "system32") -> list[str]:
     if where in ("system32", "both"):
         roots.append(system32_dir())
     if where in ("appdir", "both"):
-        roots.append(app_dir())
+        roots.extend((driver_dir(), app_dir()))
     found = []
     for root in roots:
         for name in names:

@@ -1279,7 +1279,11 @@ class SnappyAIApp:
             return
         target = self.var_mon_target.get().strip() or "1.1.1.1"
         self._start_watch(target)
-        path = self.ctl.out_root / "chain.json"
+        try:
+            from general_utils import reports_dir
+            path = Path(reports_dir()) / "chain.json"
+        except Exception:
+            path = self.ctl.out_root / "chain.json"
         self.chain_note.configure(
             text="measuring: input, then render, then network... "
                  "(the live graph keeps running while the chain measures)")
@@ -1454,13 +1458,26 @@ class SnappyAIApp:
         self.ctl.start_diagnose()
 
     def on_open_outdir(self) -> None:
-        self._open_path(self.ctl.out_root)
+        try:
+            from general_utils import app_dir
+            self._open_path(Path(app_dir()))
+        except Exception:
+            self._open_path(self.ctl.out_root)
 
     def _open_file(self, name: str) -> None:
         target = (
             self.ctl.last_scan.out_dir if self.ctl.last_scan else self.ctl.out_root
         )
         path = Path(target) / name
+        if not path.exists():
+            # Also check reports dir
+            try:
+                from general_utils import reports_dir
+                alt = Path(reports_dir()) / name
+                if alt.exists():
+                    path = alt
+            except Exception:
+                pass
         if not path.exists():
             messagebox.showwarning(
                 self.ctl.brand, f"{path.name} does not exist yet."

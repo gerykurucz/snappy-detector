@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 
 import numpy as np
 
+import general_utils
 import hpose_classifier as classifier
 import hpose_features as features
 
@@ -102,18 +102,7 @@ def default_bundle_path() -> str:
     env = os.environ.get("HPOSE_BUNDLE")
     if env:
         return env
-    candidates = []
-    if getattr(sys, "frozen", False):
-        candidates.append(os.path.join(
-            os.path.dirname(os.path.abspath(sys.executable)),
-            "models", DEFAULT_BUNDLE_NAME))
-    candidates.append(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "models", DEFAULT_BUNDLE_NAME))
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-    return candidates[-1]
+    return os.path.join(general_utils.models_dir(), DEFAULT_BUNDLE_NAME)
 
 def load_bundle(path: str = None) -> Bundle:
     path = path or default_bundle_path()

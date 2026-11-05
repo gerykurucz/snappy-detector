@@ -322,7 +322,7 @@ def console_gate(cfg):
         sess = online.load_session()
         if sess and sess.get("provider"):
             try:
-                identity, ent = online.me(cfg, fresh=True)
+                identity, ent = online.me(cfg, fresh=False)
             except online.OnlineError as exc:
                 print("   Auth server unreachable: %s" % exc)
                 if not _retry_prompt():

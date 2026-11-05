@@ -315,10 +315,20 @@ class GuiController:
     ) -> None:
         self.backend_name = backend_name
         self.brand = brand
-        self.out_root = (
-            Path(out_root) if out_root
-            else Path.cwd() / f"{brand.lower()}-output"
-        )
+        try:
+            from general_utils import reports_dir, scripts_exec_dir, scripts_undo_dir
+            self._reports_root = Path(reports_dir())
+            self._scripts_exec_root = Path(scripts_exec_dir())
+            self._scripts_undo_root = Path(scripts_undo_dir())
+        except Exception:
+            # Fallback for non-packaged runs
+            self._reports_root = Path(out_root) if out_root else Path.cwd() / "reports"
+            self._scripts_exec_root = self._reports_root / "exec"
+            self._scripts_undo_root = self._reports_root / "undo"
+            self._reports_root.mkdir(parents=True, exist_ok=True)
+            self._scripts_exec_root.mkdir(parents=True, exist_ok=True)
+            self._scripts_undo_root.mkdir(parents=True, exist_ok=True)
+        self.out_root = self._reports_root  # backward compat
         self.events: queue.Queue[Event] = queue.Queue()
         self.inventory: Inventory | None = None
         self.last_scan: ScanResult | None = None
@@ -391,44 +401,57 @@ class GuiController:
         self._threads = [x for x in self._threads if x.is_alive()]
         return True
 
+    def _apply_dir(self) -> Path:
+        return self._scripts_exec_root
+
+    def _undo_dir(self) -> Path:
+        return self._scripts_undo_root
+
     def _plan_dir(self, plan_dir: str | Path | None) -> Path | None:
         if plan_dir:
             return Path(plan_dir)
+        # For backward compat, if last_scan has out_dir in reports, use it
         if self.last_scan and self.last_scan.out_dir:
             return Path(self.last_scan.out_dir)
-        return None
+        return self._reports_root
 
     def start_apply(self, plan_dir: str | Path | None = None) -> bool:
-        target = self._plan_dir(plan_dir)
-        if target is None:
-            self._emit(EventType.ERROR, "nothing to apply: run a scan first")
-            return False
-        apply_ps1 = target / "apply.ps1"
+        apply_dir = self._apply_dir()
+        apply_ps1 = apply_dir / "apply.ps1"
         if not apply_ps1.exists():
-            self._emit(EventType.ERROR, f"{apply_ps1} does not exist")
+            self._emit(EventType.ERROR, f"{apply_ps1} does not exist: run a scan first")
             return False
+        try:
+            from general_utils import logs_dir
+            log_path = Path(logs_dir()) / "apply-run.log"
+        except Exception:
+            log_path = apply_dir / "apply-run.log"
         return self._run("apply", lambda: self._run_script_file(
-            apply_ps1, EventType.APPLY_DONE, "apply", target / "apply-run.log"
+            apply_ps1, EventType.APPLY_DONE, "apply", log_path
         ))
 
     def start_undo(self, plan_dir: str | Path | None = None) -> bool:
-        target = self._plan_dir(plan_dir)
-        if target is None:
-            self._emit(EventType.ERROR, "nothing to undo: run a scan first")
-            return False
-        undo_ps1 = target / "undo.ps1"
+        apply_dir = self._apply_dir()
+        undo_dir = self._undo_dir()
+        undo_ps1 = undo_dir / "undo.ps1"
         if not undo_ps1.exists():
-            self._emit(EventType.ERROR, f"{undo_ps1} does not exist")
+            self._emit(EventType.ERROR, f"{undo_ps1} does not exist: run a scan first")
             return False
-        if not (target / "snapshot.json").exists():
+        snapshot = apply_dir / "snapshot.json"
+        if not snapshot.exists():
             self._emit(
                 EventType.ERROR,
-                "no snapshot.json next to undo.ps1: nothing was applied, so there "
+                "no snapshot.json in scripts\\exec: nothing was applied, so there "
                 "is nothing to restore",
             )
             return False
+        try:
+            from general_utils import logs_dir
+            log_path = Path(logs_dir()) / "undo-run.log"
+        except Exception:
+            log_path = undo_dir / "undo-run.log"
         return self._run("undo", lambda: self._run_script_file(
-            undo_ps1, EventType.UNDO_DONE, "undo", target / "undo-run.log"
+            undo_ps1, EventType.UNDO_DONE, "undo", log_path
         ))
 
     def start_run_script(self, script_path: str | Path) -> bool:
@@ -580,12 +603,18 @@ class GuiController:
             res = self.backend().powershell(_MEMORY_CLEAN_SCRIPT, timeout=180.0)
             ok, out, err = res.ok, res.stdout, res.stderr
         else:
-            import tempfile
-            script = Path(tempfile.gettempdir()) / "snappyai-memory-clean.ps1"
+            try:
+                from general_utils import cache_dir, logs_dir
+                script = Path(cache_dir()) / "snappyai-memory-clean.ps1"
+                log = Path(logs_dir()) / "memory-clean.log"
+            except Exception:
+                import tempfile
+                script = Path(tempfile.gettempdir()) / "snappyai-memory-clean.ps1"
+                log = script.with_suffix(".log")
             try:
                 engine.write_powershell(script, _MEMORY_CLEAN_SCRIPT)
                 res = run_ps1(script, timeout=180.0, elevate=True,
-                              log_path=str(script) + ".log")
+                              log_path=log)
                 ok, out, err = res.code == 0, res.output, res.output
             except Exception as exc:
                 self._emit(EventType.ERROR, f"memory clean failed: {exc}")
@@ -710,8 +739,16 @@ class GuiController:
             progress=0.55,
         )
         result = engine.build_plan(inv, policy=policy)
-        target = Path(out_dir) if out_dir else self.out_root / "plan"
-        self._emit(EventType.PROGRESS, f"writing scripts to {target}", progress=0.8)
+
+        # Directories
+        reports_root = self._reports_root
+        scripts_exec = self._scripts_exec_root
+        scripts_undo = self._scripts_undo_root
+
+        reports_root.mkdir(parents=True, exist_ok=True)
+        scripts_exec.mkdir(parents=True, exist_ok=True)
+        scripts_undo.mkdir(parents=True, exist_ok=True)
+
         maintenance: list[dict] = []
         maint_script: str | None = None
         if with_maintenance:
@@ -728,24 +765,47 @@ class GuiController:
                 brand=self.brand,
             )
             maintenance = [*cleanup_report(), *redist_report(), *memory_report()]
-        bundle = engine.render(result, generated_at=_now(), brand=self.brand)
-        paths = bundle.write(target)
-        from engine import render_html, render_markdown
 
+        # Render with custom paths so undo script finds snapshot in exec/
+        bundle = engine.render_bundle(
+            result.planned,
+            generated_at=_now(),
+            brand=self.brand,
+            inventory_digest={
+                "os": inv.os_name,
+                "build": inv.windows_build,
+                "cpu": inv.cpu.name,
+                "primary_nic": inv.primary_nic.interface_description if inv.primary_nic else None,
+                "warnings": list(inv.warnings),
+            },
+            apply_name="apply.ps1",
+            undo_name=r"..\undo\undo.ps1",
+            snapshot_name=r"..\exec\snapshot.json",
+            warnings=len(inv.warnings),
+        )
+
+        # Write scripts to their dedicated folders
+        from engine import write_powershell, render_html, render_markdown
+        write_powershell(scripts_exec / "apply.ps1", bundle.apply_ps1)
+        write_powershell(scripts_undo / "undo.ps1", bundle.undo_ps1)
+
+        # Write reports to reports/
         report = engine.build_report(
             result, maintenance=maintenance, generated_at=_now()
         )
-        (target / "report.md").write_text(
+        (reports_root / "report.md").write_text(
             render_markdown(report, brand=self.brand), encoding="utf-8"
         )
-        (target / "report.html").write_text(
+        (reports_root / "report.html").write_text(
             render_html(report, brand=self.brand), encoding="utf-8"
         )
-        paths["report_md"] = target / "report.md"
-        paths["report_html"] = target / "report.html"
+        (reports_root / "manifest.json").write_text(
+            json.dumps(bundle.manifest, indent=2), encoding="utf-8"
+        )
+
         if maint_script:
-            write_powershell(target / "maintenance.ps1", maint_script)
-            paths["maintenance"] = target / "maintenance.ps1"
+            write_powershell(scripts_exec / "maintenance.ps1", maint_script)
+
         counts: dict[str, int] = {}
         outcomes: list[dict[str, Any]] = []
         for o in result.outcomes:
@@ -782,9 +842,15 @@ class GuiController:
             requires_reboot=result.requires_reboot,
             policy_notes=list(result.policy_notes),
             errors=list(result.errors),
-            out_dir=target,
-            files=[p.name for p in paths.values()],
+            out_dir=reports_root,
+            files=[
+                "report.md", "report.html", "manifest.json",
+                "apply.ps1", "undo.ps1", "snapshot.json",
+                "maintenance.ps1" if maint_script else None,
+            ],
         )
+        # Filter None
+        self.last_scan.files = [f for f in self.last_scan.files if f]
         self._emit(
             EventType.SCAN_DONE,
             f"scan complete: {len(result.planned)} change(s), "
@@ -994,10 +1060,11 @@ class GuiController:
     def _diagnose(
         self, *, plan_dir: str | Path | None, out_dir: str | Path | None
     ) -> None:
-        from general_utils import run_diagnosis
+        from general_utils import run_diagnosis, reports_dir
 
         plan = self._plan_dir(plan_dir)
-        out = Path(out_dir) if out_dir else self.out_root / "diagnose"
+        out = Path(out_dir) if out_dir else Path(reports_dir()) / "diagnose"
+        out.mkdir(parents=True, exist_ok=True)
         diag = run_diagnosis(
             self.backend(), out, plan_dir=plan, dry_run=True, brand=self.brand,
             on_progress=lambda m: self._emit(EventType.LOG, f"diagnose: {m}"),
@@ -1074,7 +1141,7 @@ class GuiController:
             fname = "debloat.ps1"
         else:
             raise ValueError(f"unknown maintenance kind {kind!r}")
-        target = Path(out_dir) if out_dir else self.out_root / kind
+        target = Path(out_dir) if out_dir else self._scripts_exec_root
         text = render_maintenance_script(
             steps, title=title, generated_at=_now(), brand=self.brand
         )
@@ -1110,7 +1177,7 @@ class GuiController:
 
         changes = load_registry_payload(payload)
         steps = registry_steps(changes)
-        target = Path(out_dir) if out_dir else self.out_root / "registry"
+        target = Path(out_dir) if out_dir else self._scripts_exec_root
         text = render_maintenance_script(
             steps, title=f"{self.brand} registry payload", generated_at=_now(),
             brand=self.brand,

@@ -266,8 +266,8 @@ class App(object):
 
         self.rec_store = RecordingStore()
         try:
-            from config import config_dir as _cfg_dir
-            _pad_path = os.path.join(_cfg_dir(), PAD_REC_FILE)
+            from general_utils import recordings_dir as _recordings_dir
+            _pad_path = os.path.join(_recordings_dir(), PAD_REC_FILE)
         except Exception:
             _pad_path = None
         self.rec_store_pad = RecordingStore(path=_pad_path) \

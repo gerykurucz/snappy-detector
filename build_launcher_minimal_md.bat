@@ -1,0 +1,4 @@
+@echo off
+call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cd /d "C:\Users\root\Documents\GitHub\snappy-detector\dist\SnappyAI"
+cl /O2 /MD /GL /LD /nologo /DUNICODE /D_UNICODE /Fe"SnappyAI_minimal_md.exe" "C:\Users\root\AppData\Local\Temp\opencode\snappy_launcher_minimal.c" /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup user32.lib kernel32.lib

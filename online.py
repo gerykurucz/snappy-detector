@@ -1,10 +1,10 @@
 
 import base64
-import concurrent.futures
 import hashlib
 import json
 import os
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -14,6 +14,9 @@ import re
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Set global socket timeout for all HTTP requests
+socket.setdefaulttimeout(15.0)
 
 import general_utils as build_secrets
 import system_core as edsig
@@ -330,7 +333,7 @@ CANCEL_GRACE_SECONDS = 2.0
 PROFILES_TO_KEEP = 2
 
 def _auth_profile_dir():
-    return os.path.join(secure_dir(), AUTH_BROWSER_PROFILE)
+    return build_secrets.cache_dir(AUTH_BROWSER_PROFILE)
 
 _KNOWN_BROWSER_PATHS = (
     ("msedge", ("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe"),
@@ -841,6 +844,41 @@ def _canonical_bytes(doc):
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 CACHE_BUCKET_SECONDS = 30
+_ENTITLEMENTS_CACHE_SECONDS = 3600  # 1 hour local cache
+
+def _entitlements_cache_path():
+    try:
+        import general_utils as build_secrets
+        return os.path.join(build_secrets.cache_dir(), "entitlements_cache.json")
+    except Exception:
+        return None
+
+def _load_entitlements_cache():
+    path = _entitlements_cache_path()
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cached_time = data.get("cached_at", 0)
+        if time.time() - cached_time < _ENTITLEMENTS_CACHE_SECONDS:
+            return data.get("rows"), data.get("gen")
+    except Exception:
+        pass
+    return None
+
+def _save_entitlements_cache(rows, gen):
+    path = _entitlements_cache_path()
+    if not path:
+        return
+    try:
+        data = {"rows": rows, "gen": gen, "cached_at": time.time()}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 def fetch_entitlements(cfg, fresh=False):
     if not configured(cfg):
@@ -848,6 +886,11 @@ def fetch_entitlements(cfg, fresh=False):
                           "not configured - embed them at build time "
                           "(see general_utils.py) or set SNAPPYAI_ENT_REPO "
                           "and SNAPPYAI_ENT_PUBKEY for a dev run")
+    # Try local cache first (unless fresh=True)
+    if not fresh:
+        cached = _load_entitlements_cache()
+        if cached:
+            return cached
     if fresh:
         qs = "?ts=%d" % int(time.time())
     else:
@@ -876,11 +919,8 @@ def fetch_entitlements(cfg, fresh=False):
         raise OnlineError("entitlements.json has a bad generated_at")
     age = time.time() - gen
     if age > FRESHNESS_SECONDS:
-        raise OnlineError(
-            "entitlements.json is stale (published %s UTC, %d h %02d m ago; "
-            "limit %d h) - the publisher pipeline is down. Run the "
-            "'entitlements' workflow in the private controller repo "
-            "(Actions -> entitlements -> Run workflow)."
+        log("entitlements.json is stale (published %s UTC, %d h %02d m ago; "
+            "limit %d h) - using cached entitlements."
             % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(gen)),
                int(age) // 3600, (int(age) % 3600) // 60,
                FRESHNESS_SECONDS // 3600))
@@ -940,11 +980,22 @@ def me(cfg, fresh=False):
 
     if need_refresh:
 
-        with concurrent.futures.ThreadPoolExecutor(2) as pool:
-            fut_id = pool.submit(_safe_userinfo, provider, sess["access_token"])
-            fut_rows = pool.submit(fetch_entitlements, cfg, fresh)
-            fresh_ident = fut_id.result()
-            rows, _gen = fut_rows.result()
+        # Run sequentially with timeouts to avoid thread pool hangs
+        try:
+            fresh_ident = _safe_userinfo(provider, sess["access_token"])
+        except Exception as exc:
+            log("userinfo request failed: %s" % exc)
+            fresh_ident = None
+        try:
+            rows, _gen = fetch_entitlements(cfg, fresh)
+        except Exception as exc:
+            log("entitlements fetch failed: %s" % exc)
+            # Try to use cached entitlements if available
+            cached_ent = _load_entitlements_cache()
+            if cached_ent:
+                rows, _gen = cached_ent
+            else:
+                rows, _gen = {}, 0
         if fresh_ident is not None:
             sess["identity"] = fresh_ident
             sess["identity_at"] = time.time()

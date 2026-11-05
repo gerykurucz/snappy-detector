@@ -99,10 +99,14 @@ def render(canvas, cx, cy, shape, size, gap, thickness, rotation, hexcolor):
 def preset_path(config_dir=None):
     if config_dir is None:
         try:
-            from config import config_dir as _dir
-            config_dir = _dir()
+            from general_utils import configs_dir
+            config_dir = configs_dir()
         except Exception:
-            config_dir = os.path.expanduser("~")
+            try:
+                from config import config_dir as _dir
+                config_dir = _dir()
+            except Exception:
+                config_dir = os.path.expanduser("~")
     return os.path.join(config_dir, "reticle_presets.json")
 
 def list_presets(config_dir=None):

@@ -2,7 +2,6 @@
 import json
 import math
 import os
-import sys
 import threading
 from configparser import ConfigParser
 
@@ -214,28 +213,12 @@ DEFAULT_CONFIG = {
 RADIUS_STEPS = [(80, "small"), (150, "medium"), (250, "large")]
 
 def config_dir():
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-
+    """User-editable settings live in <app>\\configs."""
     try:
-        probe = os.path.join(base, ".snappyai_write_test")
-        with open(probe, "w", encoding="utf-8") as fh:
-            fh.write("x")
-        os.remove(probe)
-        return base
-    except OSError:
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            d = os.path.join(appdata, "SnappyAI")
-        else:
-            d = os.path.join(os.path.expanduser("~"), ".snappyai")
-        try:
-            os.makedirs(d, exist_ok=True)
-        except OSError:
-            pass
-        return d
+        build_secrets.ensure_app_layout()
+    except Exception:
+        pass
+    return build_secrets.configs_dir()
 
 class SafeConfigReader:
 

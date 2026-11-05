@@ -5992,7 +5992,7 @@ def run_gui(cfg):
 
         if not force_login and sess and sess.get("provider"):
             try:
-                identity, ent = online.me(cfg, fresh=True)
+                identity, ent = online.me(cfg, fresh=False)
             except online.OnlineError as exc:
                 log("Auth server unreachable at start: %s" % exc)
                 if not server_error(exc):
@@ -6007,7 +6007,7 @@ def run_gui(cfg):
                 return 0
 
             try:
-                identity, ent = online.me(cfg, fresh=True)
+                identity, ent = online.me(cfg, fresh=False)
             except online.OnlineError as exc:
                 log("Entitlement check after sign-in failed: %s" % exc)
                 if not server_error(exc):

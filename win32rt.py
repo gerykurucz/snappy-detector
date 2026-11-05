@@ -587,6 +587,14 @@ if IS_WINDOWS:
 
                 try:
                     import dxcam
+                    try:
+                        import os
+                        from general_utils import capture_dir
+                        _dxcam_data = os.path.join(capture_dir(), "dxcam")
+                        if os.path.isdir(_dxcam_data) and _dxcam_data not in dxcam.__path__:
+                            dxcam.__path__.append(_dxcam_data)
+                    except Exception:
+                        pass
                 except ImportError:
                     if self._dx_forced:
                         self._note("Capture: dxcam requested but not installed; using mss.")

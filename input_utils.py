@@ -967,14 +967,11 @@ BRAND = "SnappyAI"
 
 def default_out_root():
     try:
-        import online
+        from general_utils import reports_dir
 
-        base = online.secure_dir()
+        return reports_dir()
     except Exception:
-        base = None
-    if not base:
-        base = os.getcwd()
-    return os.path.join(base, "latency")
+        return os.path.join(os.getcwd(), "reports")
 
 def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
           brand=BRAND, cfg=None):
@@ -1743,8 +1740,8 @@ class RecordingStore(object):
 
     def __init__(self, path=None):
         if path is None:
-            from config import config_dir
-            path = os.path.join(config_dir(), REC_FILE)
+            from general_utils import recordings_dir
+            path = os.path.join(recordings_dir(), REC_FILE)
         self.path = path
         self.recordings = []
         self.revision = 0

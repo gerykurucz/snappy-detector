@@ -6,6 +6,18 @@ if "__compiled__" in globals():
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+_capture_dll_handle = None
+try:
+    import general_utils as _app_paths
+
+    _capture_path = _app_paths.capture_dir()
+    if _capture_path not in sys.path:
+        sys.path.append(_capture_path)
+    if hasattr(os, "add_dll_directory") and os.path.isdir(_capture_path):
+        _capture_dll_handle = os.add_dll_directory(_capture_path)
+except Exception:
+    pass
+
 from system_core import (APP_NAME, IS_WINDOWS, attach_log_file, log,
                   log_path)
 from config import DEFAULT_CONFIG, Config
@@ -48,18 +60,8 @@ def _ensure_single_instance():
 
 def attach_app_log():
     try:
-        import online
-        base = online.secure_dir()
-    except Exception:
-        base = None
-    if not base:
-        try:
-            import tempfile
-            base = tempfile.gettempdir()
-        except Exception:
-            return None
-    try:
-        return attach_log_file(os.path.join(base, "logs", "snappyai.log"))
+        from general_utils import logs_dir
+        return attach_log_file(os.path.join(logs_dir(), "snappyai.log"))
     except Exception:
         return None
 
@@ -253,7 +255,7 @@ def print_usage():
     print("  --no-lumnorm       disable luminance normalisation (A/B)")
     print("  --reset-config     restore every setting to its default")
     print("")
-    print("Settings live in config.json / config.ini next to the executable.")
+    print("Settings live in configs\\config.json / configs\\config.ini")
     print("Deployment constants (entitlement repo, payment links, provider")
     print("credentials) are build-time and deliberately not settings.")
     print("")
@@ -275,6 +277,11 @@ def main():
         sys.exit(1)
 
 def _run():
+    try:
+        from general_utils import ensure_app_layout
+        ensure_app_layout()
+    except Exception:
+        pass
     if not _ensure_single_instance():
         return
     attach_app_log()

@@ -5428,14 +5428,25 @@ def ico_path():
     if _ICO_PATH is None:
         import atexit
         import os
-        import tempfile
-        fd, path = tempfile.mkstemp(suffix=".ico", prefix="snappyai-")
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(base64.b64decode(ICO_B64))
+        try:
+            from general_utils import cache_dir
+            path = os.path.join(cache_dir(), "snappyai.ico")
+        except Exception:
+            import tempfile
+            fd, path = tempfile.mkstemp(suffix=".ico", prefix="snappyai-")
+            os.close(fd)
+        try:
+            if not os.path.isfile(path):
+                with open(path, "wb") as fh:
+                    fh.write(base64.b64decode(ICO_B64))
+        except OSError:
+            pass
         _ICO_PATH = path
 
         def _cleanup(p=path):
             try:
+                if p and not p.startswith(os.environ.get("TEMP", "")):
+                    return
                 os.remove(p)
             except OSError:
                 pass

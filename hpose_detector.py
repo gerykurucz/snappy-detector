@@ -8,6 +8,7 @@ import urllib.request
 
 import numpy as np
 
+import general_utils
 from hpose_keypoints import N_KP, Pose, clip_box
 
 MODEL_URLS = {
@@ -36,22 +37,13 @@ def _writable(path: str) -> bool:
         return False
 
 def cache_dir() -> str:
+    """Model directory. Downloaded models stay inside the app folder."""
     env = os.environ.get("HPOSE_CACHE")
     if env:
-        path = env
-    else:
-        path = ""
-        if getattr(sys, "frozen", False):
-            beside_exe = os.path.join(
-                os.path.dirname(os.path.abspath(sys.executable)), "models")
-            if os.path.isfile(os.path.join(beside_exe, DEFAULT_POSE_MODEL)):
-                path = beside_exe
-        if not path:
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "models")
-        if not _writable(path):
-            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            path = os.path.join(base, "SnappyAI", "models")
+        return env
+    path = general_utils.models_dir()
+    if not _writable(path):
+        path = general_utils.cache_dir("models")
     return path
 
 def model_path(name: str, download: bool = True) -> str:
@@ -200,8 +192,7 @@ class PoseDetector(object):
                     "device_id": 0,
                     "trt_fp16_enable": "1",
                     "trt_engine_cache_enable": "1",
-                    "trt_engine_cache_path": os.path.join(
-                        cache_dir(), "trt_cache"),
+                    "trt_engine_cache_path": general_utils.cache_dir("trt"),
                     "trt_timing_cache_enable": "1",
                 })
             elif ep == "DmlExecutionProvider":
