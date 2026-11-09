@@ -18,9 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Set global socket timeout for all HTTP requests
 socket.setdefaulttimeout(15.0)
 
-import general_utils as build_secrets
-import system_core as edsig
-import system_core as i18n
+import utils as build_secrets
+import system as edsig
+import system as i18n
 from config import config_dir
 
 i18n.publish("en", {
@@ -44,7 +44,7 @@ i18n.publish("en", {
     "ent.refunded_line": "refunded / charged back - entitlement revoked",
     "ent.expired_line": "expired on %s - renew on Stripe",
 })
-from system_core import APP_VERSION, IS_WINDOWS, log
+from system import APP_VERSION, IS_WINDOWS, log
 
 ENTITLEMENT_PATH = "entitlements.json"
 
@@ -848,7 +848,7 @@ _ENTITLEMENTS_CACHE_SECONDS = 3600  # 1 hour local cache
 
 def _entitlements_cache_path():
     try:
-        import general_utils as build_secrets
+        import utils as build_secrets
         return os.path.join(build_secrets.cache_dir(), "entitlements_cache.json")
     except Exception:
         return None
@@ -1132,7 +1132,7 @@ def dispatch_pat(cfg=None):
         if env:
             return env
     try:
-        import general_utils as _bs
+        import utils as _bs
         _v = _bs.dispatch_pat() if hasattr(_bs, "dispatch_pat") else ""
         if _v:
             return _v

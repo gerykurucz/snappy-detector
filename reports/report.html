@@ -1,0 +1,218 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>SnappyAI report</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+       max-width: 980px; margin: 0 auto; padding: 28px 22px 60px; line-height: 1.55;
+       color: #1b1f24; background: #fff; }
+@media (prefers-color-scheme: dark) { body { color:#e6e6e6; background:#14171a; }
+  table, .card { border-color:#2c3238 !important; } th { background:#1d2226 !important; } }
+h1 { font-size: 1.7rem; margin: 0 0 4px; }
+h2 { font-size: 1.25rem; margin: 34px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #d7dce1; }
+h3 { font-size: 1.02rem; margin: 20px 0 6px; font-family: ui-monospace, Menlo, monospace; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: .92rem; }
+th, td { border: 1px solid #d7dce1; padding: 6px 9px; text-align: left; vertical-align: top; }
+th { background: #f2f4f7; font-weight: 600; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: .88em;
+       background: rgba(127,127,127,.13); padding: 1px 5px; border-radius: 4px; }
+.card { border: 1px solid #d7dce1; border-left-width: 4px; border-radius: 6px;
+        padding: 12px 15px; margin: 12px 0; }
+.problem { border-left-color: #d1242f; }
+.ok { border-left-color: #1a7f37; }
+.na { border-left-color: #9aa0a6; }
+.unk { border-left-color: #bf8700; }
+.refused { border-left-color: #6f42c1; }
+.badge { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .04em;
+         padding: 2px 7px; border-radius: 999px; text-transform: uppercase; margin-right: 6px; }
+.b-problem { background:#ffebe9; color:#a40e26; }
+.b-ok { background:#dafbe1; color:#116329; }
+.b-na { background:#eaeef2; color:#57606a; }
+.b-unk { background:#fff8c5; color:#7d4e00; }
+.b-refused { background:#f3e8ff; color:#5a2a9c; }
+.meta { color:#6b7280; font-size:.86rem; margin:2px 0; }
+.note { background: rgba(127,127,127,.09); border-radius: 6px; padding: 10px 13px;
+        font-size: .92rem; margin: 10px 0; }
+.warn { color: #9a6700; font-size: .88rem; }
+ul { margin: 6px 0 12px; padding-left: 22px; }
+.small { font-size:.86rem; }
+</style></head><body>
+<h1>SnappyAI report</h1>
+<p class='meta'>Generated 2026-11-07T23:33:25+00:00 &middot; Windows 11 (build 26200)</p>
+<p class='meta'><b>4</b> change(s) recommended &middot; <b>6</b> checked and fine &middot; <b>4</b> not applicable &middot; <b>8</b> could not be determined</p>
+<h2>Latency budget</h2>
+<table><tr><th>Component</th><th>Finding</th></tr>
+<tr><td><code>local_queue</code><div class='meta small'>Unbounded in practice. A saturated link with a deep dumb queue can add hundreds of ms. This is usually the largest addressable term.</div></td><td>not determined (2 check(s) returned UNKNOWN)</td></tr>
+<tr><td><code>network_path</code><div class='meta small'>Bounded by the speed of light: ~10 ms RTT per 1000 km of fibre, before any queueing. No PC-side software can go below this floor.</div></td><td><b>net.wifi.prefer_wired, net.dns.fastest_resolver</b></td></tr>
+<tr><td><code>host_processing</code><div class='meta small'>Typically single-digit ms. Hardware- and driver-specific; effects are usually in the tail (spikes), not the mean.</div></td><td><b>sched.background.lower_priority</b></td></tr>
+<tr><td><code>render_input</code><div class='meta small'>Often the dominant term. Roughly: (1 / refresh_rate) for the panel, plus queued frames times frame time, plus HID polling interval.</div></td><td><b>gpu.vendor.low_latency_mode</b></td></tr>
+</table>
+<h2>Changes recommended</h2>
+<div class='card problem'>
+<span class='badge b-problem'>PROBLEM</span>
+<b><code>net.wifi.prefer_wired</code></b> &mdash; Gaming over Wi-Fi instead of a cable
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>primary adapter Intel(R) Wireless-AC 9462 is wireless</p>
+<p class='small'><b>Expected effect:</b> Lower jitter and fewer latency spikes on the first hop.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;adapter&quot;: &quot;Intel(R) Wireless-AC 9462&quot;}</code></p>
+</div>
+<div class='card problem'>
+<span class='badge b-problem'>PROBLEM</span>
+<b><code>net.dns.fastest_resolver</code></b> &mdash; Slow domain name resolver
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>resolver [&#x27;1.1.1.1&#x27;, &#x27;8.8.8.8&#x27;, &#x27;1.1.1.1&#x27;, &#x27;8.8.8.8&#x27;] took 82.2373000009975 ms</p>
+<p class='small'><b>Expected effect:</b> Faster connection setup for new sessions and services.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;servers&quot;: [&quot;1.1.1.1&quot;, &quot;8.8.8.8&quot;, &quot;1.1.1.1&quot;, &quot;8.8.8.8&quot;], &quot;resolve_ms&quot;: 82.2373000009975}</code></p>
+</div>
+<div class='card problem'>
+<span class='badge b-problem'>PROBLEM</span>
+<b><code>gpu.vendor.low_latency_mode</code></b> &mdash; Graphics driver queues frames ahead
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>driver frame queueing on NVIDIA GeForce GTX 1050 was not confirmed optimal</p>
+<p class='small'><b>Expected effect:</b> Input appears on screen up to one frame sooner.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;gpu&quot;: &quot;NVIDIA GeForce GTX 1050&quot;}</code></p>
+</div>
+<div class='card problem'>
+<span class='badge b-problem'>PROBLEM</span>
+<b><code>sched.background.lower_priority</code></b> &mdash; Background programs fight the game for CPU
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>background load competes with the game: python (15.0%)</p>
+<p class='small'><b>Expected effect:</b> Fewer preemptions while the heaviest competitor idles lower.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;hot&quot;: [[&quot;python&quot;, 15.0]]}</code></p>
+</div>
+<h2>Checked and fine &mdash; no change needed</h2>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>display.refresh_rate.maximum</code></b> &mdash; Monitor runs below its real refresh rate
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>display runs at its maximum rate</p>
+<p class='small'><b>Expected effect:</b> Shorter frame wait and visibly smoother motion.</p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>capture.game_dvr.disable</code></b> &mdash; Background recording steals GPU time
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>game recording is already off</p>
+<p class='small'><b>Expected effect:</b> Frees GPU time previously spent on unobserved recording.</p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>input.usb.selective_suspend_off</code></b> &mdash; USB devices sleep between inputs
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>USB selective suspend is already disabled</p>
+<p class='small'><b>Expected effect:</b> First input after idle responds without a resume stall.</p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>timer.global_resolution_requests</code></b> &mdash; Coarse Windows scheduling tick
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>system tick is already the finest this platform allows (15.625 ms)</p>
+<p class='small'><b>Expected effect:</b> Finer scheduling granularity for waits under a millisecond inside the holding process.</p>
+<p class='small'><b>Caveat:</b> Since Windows 10 2004 a timer request is PROCESS-scoped: the holder tightens its own waits, and other processes (including the game) only see a finer system tick when the experimental GlobalTimerResolutionRequests tweak is also enabled. A finer tick raises the clock interrupt rate, which increases idle power draw and can shorten battery life on laptops.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;tick_us&quot;: 500.0, &quot;finest_us&quot;: 15625.0, &quot;coarsest_us&quot;: 500.0, &quot;global_timer_requests&quot;: 1}</code></p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>sched.mmcss.games_task</code></b> &mdash; Multimedia scheduler ignores games
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>multimedia scheduling profile present</p>
+<p class='small'><b>Expected effect:</b> Game threads preempt background work more reliably.</p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>cpu.cpu_sets.delegate</code></b> &mdash; Game jumps between CPU cache domains
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>low</b> &middot; risk low</div>
+<p>single cache domain; roaming is cheap</p>
+<p class='small'><b>Expected effect:</b> Warmer caches and steadier frame times on multi-domain CPUs.</p>
+</div>
+<h2>Could not be determined</h2>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>nic.power_saving.disable</code></b> &mdash; Network card sleeps between packets
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>adapter power management state could not be read</p>
+<p class='small'><b>Expected effect:</b> Removes wake-up stalls from the packet delivery path.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>nic.interrupt_moderation.disable</code></b> &mdash; Network card delays interrupts to save CPU
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>interrupt moderation state could not be read (the driver exposes no such property)</p>
+<p class='small'><b>Expected effect:</b> Packets reach the game thread sooner at slightly higher CPU cost.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>net.mtu.correctness</code></b> &mdash; Misconfigured network packet size
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>low</b> &middot; risk low</div>
+<p>path MTU was not measured; fragmentation cannot be judged yet</p>
+<p class='small'><b>Expected effect:</b> Fewer retransmissions once the true path MTU is set.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>net.bufferbloat.upload_cap</code></b> &mdash; Upload queue holds game packets hostage
+<div class='meta'>component <code>local_queue</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>no loaded-latency measurement attached, so upload queueing is unjudged</p>
+<p class='small'><b>Expected effect:</b> Loaded latency drops toward the idle baseline.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>net.bufferbloat.router_sqm</code></b> &mdash; Router queue fills up under load
+<div class='meta'>component <code>local_queue</code> &middot; confidence <b>high</b> &middot; risk low</div>
+<p>no bufferbloat grade measured, so router queueing is unjudged</p>
+<p class='small'><b>Expected effect:</b> Large reduction of latency measured while the link is loaded.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>bus.pcie.aspm_off</code></b> &mdash; PCI Express links sleep between transactions
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>low</b> &middot; risk low</div>
+<p>PCIe link power state cannot be read without elevated ACPI queries</p>
+<p class='small'><b>Expected effect:</b> Removes link-retrain stalls from bursty device traffic.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>cpu.interrupt_affinity.delegate</code></b> &mdash; Device interrupts land on game cores
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>interrupt-to-core routing cannot be read without elevated queries</p>
+<p class='small'><b>Expected effect:</b> Game cores serve fewer interruptions per second.</p>
+</div>
+<div class='card unk'>
+<span class='badge b-unk'>UNKNOWN</span>
+<b><code>os.game_mode.ab_test</code></b> &mdash; Game Mode and fullscreen optimizations untested
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>medium</b> &middot; risk medium</div>
+<p>Game Mode effect cannot be read; only an A/B measurement decides</p>
+<p class='small'><b>Expected effect:</b> One toggle direction measurably wins; the other is discarded.</p>
+<p class='small'><b>Caveat:</b> Neither state is a defect; apply only the measured winner.</p>
+</div>
+<h2>Not applicable to this machine</h2>
+<div class='card na'>
+<span class='badge b-na'>n/a</span>
+<b><code>gpu.hags.ab_test</code></b> &mdash; Hardware GPU scheduling worth testing
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>medium</b> &middot; risk medium</div>
+<p>this GPU does not offer hardware-accelerated GPU scheduling (NVIDIA GeForce GTX 1050 predates it or the driver does not expose it) - there is nothing to toggle</p>
+<p class='small'><b>Expected effect:</b> Hardware-dependent; measurement decides which state to keep.</p>
+<p class='small'><b>Caveat:</b> Effect varies by hardware and driver; keep only the measured winner.</p>
+</div>
+<h2>Refused by SnappyAI, and why</h2>
+<div class='card refused'>
+<span class='badge b-refused'>REFUSED</span>
+<b><code>kb.delay.speed</code></b> &mdash; Keyboard repeat delay and speed
+<div class='meta'>component <code>render_input</code> &middot; confidence <b>high</b> &middot; risk high</div>
+<p>repeat rate affects typing, not game input latency</p>
+<p><b>Why refused:</b> Refused: keyboard repeat delay changes the Control Panel character repeat rate, not in-game input latency. No causal path to any budget term exists.</p>
+</div>
+<div class='card refused'>
+<span class='badge b-refused'>REFUSED</span>
+<b><code>net.nagle.disable</code></b> &mdash; Disable Nagle&#x27;s algorithm globally
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>high</b> &middot; risk high</div>
+<p>games already disable Nagle per socket where it matters</p>
+<p><b>Why refused:</b> Refused: per-connection TCP_NODELAY already covers games; a global override adds congestion risk with no measured benefit.</p>
+</div>
+<div class='card refused'>
+<span class='badge b-refused'>REFUSED</span>
+<b><code>net.throttling.disable</code></b> &mdash; Disable network throttling index
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>high</b> &middot; risk high</div>
+<p>games already sit in the exempt multimedia class</p>
+<p><b>Why refused:</b> Refused: the throttle protects multimedia traffic including games; disabling it helps bulk downloaders at the game&#x27;s expense.</p>
+</div>
+<p class='meta' style='margin-top:34px;border-top:1px solid #d7dce1;padding-top:12px'>SnappyAI measures, explains, and generates scripts for review.</p>
+</body></html>

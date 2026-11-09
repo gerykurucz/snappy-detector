@@ -9,15 +9,16 @@ import re
 import subprocess
 import sys
 import textwrap
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from general_utils import console_encoding, powershell_exe, silent_kwargs
-from maintenance_utils import applicable_tweaks, refused_tweaks
-from measurement_utils import build_fake_inventory
-from models import Step, StepKind, Tweak
-from system_core import (CPU, DNS, GPU, NIC, BudgetComponent,
+from utils import console_encoding, powershell_exe, silent_kwargs
+from maintenance import applicable_tweaks, refused_tweaks
+from measurement import build_fake_inventory
+from maintenance import Step, StepKind, Tweak
+from system import (CPU, DNS, GPU, NIC, BudgetComponent,
                          Display, Inventory, OSFamily, PolicyDecision, Power,
                          RefusedTweakError, SafetyPolicy, Timer,
                          TweakValidationError, Vendor, Verdict,
@@ -332,16 +333,16 @@ class RealBackend(Backend):
 
     def read_timer_details(self, inv: Inventory) -> None:
         if sys.platform.startswith("win"):
+            import winreg
             try:
                 res = query_timer_resolution()
                 inv.timer.current_period_us = res.current_us
                 inv.timer.min_period_us = res.min_us
                 inv.timer.max_period_us = res.max_us
             except Exception:
-                pass
+                inv.warnings.append("timer resolution query failed; "
+                                    "timer values unknown")
             try:
-                import winreg
-
                 with winreg.OpenKey(
                     winreg.HKEY_LOCAL_MACHINE,
                     r"SYSTEM\CurrentControlSet\Control\Session Manager\kernel",
@@ -355,8 +356,6 @@ class RealBackend(Backend):
             except OSError:
                 inv.timer.global_timer_resolution_requests = -1
             try:
-                import winreg
-
                 key = winreg.OpenKey(
                     winreg.HKEY_LOCAL_MACHINE,
                     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
@@ -457,11 +456,24 @@ class RealBackend(Backend):
         import time
 
         start = time.perf_counter()
-        try:
-            socket.getaddrinfo("example.com", 443)
-            inv.dns.resolve_ms = (time.perf_counter() - start) * 1000.0
-        except OSError as exc:
-            inv.warnings.append(f"dns probe failed: {exc}")
+        outcome: dict[str, object] = {}
+
+        def _probe() -> None:
+            try:
+                socket.getaddrinfo("example.com", 443)
+                outcome["ms"] = (time.perf_counter() - start) * 1000.0
+            except OSError as exc:
+                outcome["error"] = exc
+
+        probe = threading.Thread(target=_probe, name="dns-probe", daemon=True)
+        probe.start()
+        probe.join(5.0)
+        if probe.is_alive():
+            inv.warnings.append("dns probe timed out after 5 s")
+        elif "error" in outcome:
+            inv.warnings.append(f"dns probe failed: {outcome['error']}")
+        else:
+            inv.dns.resolve_ms = float(outcome.get("ms", 0.0))
         res = self.powershell(
             "Get-DnsClientServerAddress -AddressFamily IPv4 | "
             "Select-Object -ExpandProperty ServerAddresses | ConvertTo-Json -Compress",
@@ -474,11 +486,16 @@ class RealBackend(Backend):
                 inv.dns.server_addresses = [str(a) for a in addrs if a]
             except ValueError:
                 inv.warnings.append("dns server list returned unparsable output")
+        else:
+            inv.warnings.append("dns server query failed; server addresses unknown")
 
     def read_processes(self, inv: Inventory) -> None:
-        rows = self._process_counter_rows()
-        if rows is None:
-            rows = self._process_delta_rows()
+        # The delta sampler uses Get-Process (locale-independent). Get-Counter
+        # needs English counter names, which do not exist on localized
+        # Windows, so it is only a fallback.
+        rows = self._process_delta_rows()
+        if not rows:
+            rows = self._process_counter_rows()
         if not rows:
             return
         latest: dict[str, tuple[str, float]] = {}
@@ -529,7 +546,7 @@ class RealBackend(Backend):
             "$a = @{}; "
             "Get-Process -ErrorAction SilentlyContinue | ForEach-Object { "
             "$a[$_.Id] = @($_.ProcessName, $_.CPU) }; "
-            "Start-Sleep -Seconds 1; "
+            "Start-Sleep -Seconds 0.5; "
             "Get-Process -ErrorAction SilentlyContinue | ForEach-Object { "
             "if ($a.ContainsKey($_.Id)) { "
             "$old = $a[$_.Id]; "
@@ -556,6 +573,34 @@ class RealBackend(Backend):
                 continue
             out.append((str(row["Name"]), "", pct))
         return out
+
+    def read_anti_cheat(self, inv: Inventory) -> None:
+        """Enumerate running processes and flag known anti-cheat modules."""
+        known = (
+            "vanguard", "vgtray", "vgk", "vgc", "riotvanguard",
+            "easyanticheat", "easyanti", "easyanticheat.sys",
+            "battleye", "beservice", "battleye.sys",
+            "ricochet", "ricochetdriver",
+            "faceit", "faceit_client", "faceit_anticheat",
+            "mhyprot2",
+        )
+        found: list[str] = []
+        try:
+            res = self.powershell(
+                "tasklist /FO CSV /NH | Select-Object -First 2000",
+                timeout=20.0,
+            )
+            for line in (res.stdout or "").splitlines():
+                name = line.split(",")[0].strip().strip('"').lower()
+                if not name:
+                    continue
+                for k in known:
+                    if k in name:
+                        found.append(name)
+                        break
+        except Exception:
+            pass
+        inv.running_anti_cheat = tuple(sorted(set(found)))
 
 class FakeBackend(Backend):
     def fixture_inventory(self) -> Inventory | None:
@@ -596,6 +641,8 @@ def _vendor_of(name: str) -> Vendor:
 def make_backend(name: str | None) -> Backend:
     if name == "fake":
         return FakeBackend()
+    if name is not None and name != "real":
+        raise ValueError(f"unknown backend {name!r}")
     if sys.platform.startswith("win"):
         return RealBackend()
     return FakeBackend()
@@ -607,6 +654,8 @@ def _exit_name(brand: str) -> str:
 def write_powershell(path: str | Path, text: str) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    # UTF-8 BOM helps PowerShell detect encoding correctly; the manifest
+    # written by ScriptBundle.write is intentionally BOM-free (JSON).
     p.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
     return p
 
@@ -977,24 +1026,37 @@ def _ps_string(value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
-        return repr(value)
+        if value != value:          # nan
+            return "[double]::NaN"
+        if value == float('inf'):
+            return "[double]::PositiveInfinity"
+        if value == float('-inf'):
+            return "[double]::NegativeInfinity"
+        return f"{value:g}"          # plain decimal, avoid exponent where possible
     if isinstance(value, (list, tuple)):
         return "@(" + ", ".join(_ps_string(v) for v in value) + ")"
     s = str(value).replace("'", "''")
     return f"'{s}'"
 
 def _hive_to_ps(hive: str) -> str:
-    return {
+    mapping = {
         "HKLM": "HKLM:",
         "HKEY_LOCAL_MACHINE": "HKLM:",
         "HKCU": "HKCU:",
         "HKEY_CURRENT_USER": "HKCU:",
-    }.get(hive.upper(), hive)
+    }
+    upper = hive.upper()
+    if upper not in mapping:
+        raise ValueError(f"unsupported registry hive {hive!r}")
+    return mapping[upper]
 
 _PS_VALUE_TYPES = ("DWord", "String", "QWord", "Binary", "MultiString",
                    "ExpandString")
 
 def _ps_lit(value: Any) -> str:
+    # Escape single quotes for use inside a single-quoted PowerShell string.
+    # Mirrors _ps_string's escaping (str(value).replace("'", "''")) but does
+    # not add surrounding quotes, since the caller already wraps in '...'.
     return str(value).replace("'", "''")
 
 def _step_apply_block(step: Step) -> str:
@@ -1087,8 +1149,10 @@ def _step_undo_block(step: Step) -> str:
 
 def _is_disruptive(step: Step) -> bool:
     cmd = (step.command or "").lower()
+    # Normalize: collapse multiple spaces, strip leading/trailing.
+    cmd = " ".join(cmd.split())
     return (
-        "disable-netadapter " in cmd
+        "disable-netadapter" in cmd
         or "restart-netadapter" in cmd
         or "restart-computer" in cmd
         or "set-dnsclientserveraddress" in cmd
@@ -1216,7 +1280,7 @@ def render_bundle(
                 call = (
                     f"if (-not (Confirm-Disruptive -What "
                     f"{_ps_string(step.description)})) {{\n"
-                    f"    Write-Step {t.id!r} 'skipped by user'\n"
+                    f"    Write-Step {_ps_string(t.id)} 'skipped by user'\n"
                     "} else {\n" + textwrap.indent(call, "    ") + "\n}"
                 )
             body.append(call)
@@ -2327,8 +2391,6 @@ def evaluate_all(
 ) -> tuple[list[TweakOutcome], list[str]]:
     policy = policy or SafetyPolicy()
     detected = getattr(inv, "running_anti_cheat", [])
-    if not detected:
-        detected = []
     notes: list[str] = []
     if detected:
         notes.append(
@@ -2388,17 +2450,27 @@ def build_plan(
         would.append(o.tweak.id)
     by_id = {o.tweak.id: o.tweak for o in outcomes}
     kept: list[str] = []
+    kept_set: set[str] = set()
+    kept_conflicts: set[str] = set()  # union of conflicts_with from kept tweaks
     for tid in would:
         t = by_id.get(tid)
-        clash = [
-            k for k in kept
-            if t is not None and (
-                k in (t.conflicts_with or ())
-                or tid in ((by_id[k].conflicts_with or ())
-                           if k in by_id else ())
+        if t is None:
+            continue
+        t_conflicts = set(t.conflicts_with or ())
+        # Drop if this tweak conflicts with any already-kept tweak
+        if t_conflicts & kept_set:
+            clash = [k for k in kept if k in t_conflicts]
+            notes.append(
+                f"conflict: {tid} dropped - it declares or receives a "
+                f"conflict with the already-planned {', '.join(clash)}"
             )
-        ]
-        if clash:
+            for o in outcomes:
+                if o.tweak.id == tid:
+                    o.skipped_reason = f"conflicts with {', '.join(clash)}"
+            continue
+        # Drop if any already-kept tweak declares this tweak as a conflict
+        if tid in kept_conflicts:
+            clash = [k for k in kept if tid in (by_id[k].conflicts_with or ())]
             notes.append(
                 f"conflict: {tid} dropped - it declares or receives a "
                 f"conflict with the already-planned {', '.join(clash)}"
@@ -2408,6 +2480,8 @@ def build_plan(
                     o.skipped_reason = f"conflicts with {', '.join(clash)}"
             continue
         kept.append(tid)
+        kept_set.add(tid)
+        kept_conflicts |= t_conflicts
     would = kept
     if dry_run:
         if would:

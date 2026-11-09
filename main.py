@@ -8,8 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 _capture_dll_handle = None
 try:
-    import general_utils as _app_paths
-
+    import utils as _app_paths
     _capture_path = _app_paths.capture_dir()
     if _capture_path not in sys.path:
         sys.path.append(_capture_path)
@@ -18,7 +17,7 @@ try:
 except Exception:
     pass
 
-from system_core import (APP_NAME, IS_WINDOWS, attach_log_file, log,
+from system import (APP_NAME, IS_WINDOWS, attach_log_file, log,
                   log_path)
 from config import DEFAULT_CONFIG, Config
 
@@ -60,7 +59,7 @@ def _ensure_single_instance():
 
 def attach_app_log():
     try:
-        from general_utils import logs_dir
+        from utils import logs_dir
         return attach_log_file(os.path.join(logs_dir(), "snappyai.log"))
     except Exception:
         return None
@@ -278,7 +277,7 @@ def main():
 
 def _run():
     try:
-        from general_utils import ensure_app_layout
+        from utils import ensure_app_layout
         ensure_app_layout()
     except Exception:
         pass
@@ -324,7 +323,7 @@ def _run():
 
     try:
         import online
-        import general_utils as build_secrets
+        import utils as build_secrets
         fatal, advisory = online.build_is_ready()
         for problem in advisory:
             log("BUILD: %s" % problem)

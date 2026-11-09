@@ -1,0 +1,34 @@
+﻿[
+    {
+        "tweak":  "net.dns.fastest_resolver",
+        "description":  "Point all adapters at fast public resolvers (1.1.1.1, 8.8.8.8)",
+        "kind":  "powershell",
+        "hive":  "",
+        "path":  "",
+        "name":  "",
+        "prior":  null,
+        "applied":  null,
+        "valueType":  "DWord",
+        "command":  "Get-NetAdapter -Physical | Set-DnsClientServerAddress -ServerAddresses \u00271.1.1.1\u0027,\u00278.8.8.8\u0027",
+        "undoScript":  "\n            Get-NetAdapter -Physical | Set-DnsClientServerAddress -ResetServerAddresses\n        ",
+        "reversible":  true,
+        "safety":  "",
+        "requiresReboot":  false
+    },
+    {
+        "tweak":  "sched.background.lower_priority",
+        "description":  "Lower python to BelowNormal priority while gaming",
+        "kind":  "powershell",
+        "hive":  "",
+        "path":  "",
+        "name":  "",
+        "prior":  null,
+        "applied":  null,
+        "valueType":  "DWord",
+        "command":  "Get-Process -Name \u0027python\u0027 -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = \u0027BelowNormal\u0027 }",
+        "undoScript":  "\n        Get-Process -Name \u0027python\u0027 -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = \u0027Normal\u0027 }\n    ",
+        "reversible":  true,
+        "safety":  "",
+        "requiresReboot":  false
+    }
+]

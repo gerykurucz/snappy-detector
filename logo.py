@@ -5429,7 +5429,7 @@ def ico_path():
         import atexit
         import os
         try:
-            from general_utils import cache_dir
+            from utils import cache_dir
             path = os.path.join(cache_dir(), "snappyai.ico")
         except Exception:
             import tempfile

@@ -5,12 +5,12 @@ import threading
 import time
 
 import online
-from system_core import APP_NAME, log
+from system import APP_NAME, log
 
 from config import RADIUS_STEPS
 from assist import start_app
-from input_utils import effective_mode_key
-from vision import (_parse_accents, accent_soft_of, accent_matcher_of,
+from input import effective_mode_key
+from detection import (_parse_accents, accent_soft_of, accent_matcher_of,
                     calibrate_accent)
 
 def print_banner(app):
@@ -343,7 +343,12 @@ def console_gate(cfg):
         return identity
 
 def windows_main(cfg, identity=None):
-    app, hook_thread = start_app(cfg, identity)
+    try:
+        app, hook_thread = start_app(cfg, identity)
+    except Exception as exc:
+        log("console: start_app failed: %r" % (exc,))
+        print("Snappy AI could not start: %s" % (exc,))
+        return 1
     if app is None:
         return 1
 
@@ -369,8 +374,14 @@ def windows_main(cfg, identity=None):
     def shared_watch():
         if not identity:
             return
-        idh = online.row_hash(identity)
-        legacy = online.row_hash_legacy(identity)
+        idh = None
+        legacy = None
+        try:
+            idh = online.row_hash(identity)
+            legacy = online.row_hash_legacy(identity)
+        except Exception as exc:
+            log("console: shared-watch hash setup failed: %r" % (exc,))
+            return
         _last_shared_log = 0.0
         while not app.stop.is_set():
             try:
@@ -397,7 +408,12 @@ def windows_main(cfg, identity=None):
                 log("console: row_shared error: %r" % (exc,))
                 continue
             if shared and app.running:
-                app.toggle_running()
+                lock = getattr(app, "_state_lock", None)
+                if lock is not None:
+                    with lock:
+                        app.toggle_running()
+                else:
+                    app.toggle_running()
                 log("ACCOUNT IN USE ELSEWHERE - assistance paused. "
                     "Snappy AI runs on one machine per account; close "
                     "the other session and launch again.")
@@ -422,6 +438,7 @@ def windows_main(cfg, identity=None):
                 break
 
             if line is None:
+                app.request_quit()
                 break
 
             line = line.strip().lower()
@@ -492,7 +509,7 @@ def windows_main(cfg, identity=None):
                           "v again.")
                 else:
                     try:
-                        from win32rt import get_cursor_pos
+                        from input import get_cursor_pos
                         x, y = get_cursor_pos()
                         img, cx, cy, _o, _e = app.grab_around(
                             x, y, app.radius_px())

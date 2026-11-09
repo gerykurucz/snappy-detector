@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-07T23:33:25+00:00",
+  "applied_utc": null,
+  "apply_script": "apply.ps1",
+  "undo_script": "..\\undo\\undo.ps1",
+  "snapshot": "..\\exec\\snapshot.json",
+  "reboot_required": false,
+  "warning_count": 0,
+  "automated_step_count": 2,
+  "manual_step_count": 2,
+  "changes": [
+    {
+      "id": "net.wifi.prefer_wired",
+      "title": "Gaming over Wi-Fi instead of a cable",
+      "component": "network_path",
+      "confidence": "high",
+      "risk": "low",
+      "requires_reboot": false,
+      "finding": "primary adapter Intel(R) Wireless-AC 9462 is wireless",
+      "expected_effect": "Lower jitter and fewer latency spikes on the first hop.",
+      "measure": {
+        "metric": "p95",
+        "min_effect_ms": 1.0,
+        "needs_load": false,
+        "samples": 200
+      },
+      "caveats": "",
+      "evidence": [],
+      "policy_notes": [],
+      "steps": [
+        {
+          "kind": "manual",
+          "description": "Switch the gaming PC from Wi-Fi to a wired Ethernet cable",
+          "command": null,
+          "hive": null,
+          "path": null,
+          "value_name": null,
+          "value": null,
+          "requires_reboot": false,
+          "text": "1. Connect an Ethernet cable from the PC to the router\n2. Open Settings > Network and confirm the Ethernet adapter shows Connected\n3. Disconnect Wi-Fi or set the Ethernet adapter metric lower than Wi-Fi\n4. Re-run the live latency monitor and compare p95 before and after",
+          "notes": "No registry value reproduces a cable; the medium itself is the fix.",
+          "reversible": true,
+          "safety": "",
+          "manual": true,
+          "undo_steps": 0
+        }
+      ]
+    },
+    {
+      "id": "net.dns.fastest_resolver",
+      "title": "Slow domain name resolver",
+      "component": "network_path",
+      "confidence": "medium",
+      "risk": "low",
+      "requires_reboot": false,
+      "finding": "resolver ['1.1.1.1', '8.8.8.8', '1.1.1.1', '8.8.8.8'] took 82.2373000009975 ms",
+      "expected_effect": "Faster connection setup for new sessions and services.",
+      "measure": {
+        "metric": "p95",
+        "min_effect_ms": 1.0,
+        "needs_load": false,
+        "samples": 200
+      },
+      "caveats": "",
+      "evidence": [],
+      "policy_notes": [],
+      "steps": [
+        {
+          "kind": "powershell",
+          "description": "Point all adapters at fast public resolvers (1.1.1.1, 8.8.8.8)",
+          "command": "Get-NetAdapter -Physical | Set-DnsClientServerAddress -ServerAddresses '1.1.1.1','8.8.8.8'",
+          "hive": null,
+          "path": null,
+          "value_name": null,
+          "value": null,
+          "requires_reboot": false,
+          "text": "",
+          "notes": "Undo returns the adapters to DHCP-provided resolvers.",
+          "reversible": true,
+          "safety": "",
+          "manual": false,
+          "undo_steps": 1
+        }
+      ]
+    },
+    {
+      "id": "gpu.vendor.low_latency_mode",
+      "title": "Graphics driver queues frames ahead",
+      "component": "render_input",
+      "confidence": "high",
+      "risk": "low",
+      "requires_reboot": false,
+      "finding": "driver frame queueing on NVIDIA GeForce GTX 1050 was not confirmed optimal",
+      "expected_effect": "Input appears on screen up to one frame sooner.",
+      "measure": {
+        "metric": "p95",
+        "min_effect_ms": 1.0,
+        "needs_load": false,
+        "samples": 200
+      },
+      "caveats": "",
+      "evidence": [],
+      "policy_notes": [],
+      "steps": [
+        {
+          "kind": "manual",
+          "description": "Enable the lowest-latency frame mode in the GPU driver panel",
+          "command": null,
+          "hive": null,
+          "path": null,
+          "value_name": null,
+          "value": null,
+          "requires_reboot": false,
+          "text": "1. NVIDIA: Control Panel > Manage 3D settings > Low Latency Mode > Ultra\n2. AMD: Adrenalin > Graphics > Anti-Lag > Enabled\n3. Intel: Arc Control > Performance > Low Latency > On\n4. Restart the game and confirm the setting survived the reboot",
+          "notes": "One fewer queued frame removes a full frame time of input lag.",
+          "reversible": true,
+          "safety": "",
+          "manual": true,
+          "undo_steps": 0
+        }
+      ]
+    },
+    {
+      "id": "sched.background.lower_priority",
+      "title": "Background programs fight the game for CPU",
+      "component": "host_processing",
+      "confidence": "medium",
+      "risk": "low",
+      "requires_reboot": false,
+      "finding": "background load competes with the game: python (15.0%)",
+      "expected_effect": "Fewer preemptions while the heaviest competitor idles lower.",
+      "measure": {
+        "metric": "p95",
+        "min_effect_ms": 1.0,
+        "needs_load": false,
+        "samples": 200
+      },
+      "caveats": "",
+      "evidence": [],
+      "policy_notes": [],
+      "steps": [
+        {
+          "kind": "powershell",
+          "description": "Lower python to BelowNormal priority while gaming",
+          "command": "Get-Process -Name 'python' -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = 'BelowNormal' }",
+          "hive": null,
+          "path": null,
+          "value_name": null,
+          "value": null,
+          "requires_reboot": false,
+          "text": "",
+          "notes": "Transient only; priorities reset when the process restarts.",
+          "reversible": true,
+          "safety": "",
+          "manual": false,
+          "undo_steps": 1
+        }
+      ]
+    }
+  ],
+  "inventory_digest": {
+    "os": "Windows 11",
+    "build": 26200,
+    "cpu": "Intel64 Family 6 Model 158 Stepping 10, GenuineIntel",
+    "primary_nic": "Intel(R) Wireless-AC 9462",
+    "warnings": []
+  }
+}

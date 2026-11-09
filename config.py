@@ -5,12 +5,11 @@ import os
 import threading
 from configparser import ConfigParser
 
-import general_utils as build_secrets
-import input_utils as gamepad
-import input_utils as hotkeys
-import system_core as i18n
-from system_core import log
-from system_core import parse_accents
+import utils as build_secrets
+import input as gamepad
+import system as i18n
+from system import log
+from system import parse_accents
 
 MOUSE_BUTTONS = ("mouse1", "mouse2", "mouse3", "mouse4", "mouse5")
 
@@ -160,6 +159,7 @@ DEFAULT_CONFIG = {
     "key_pause": "ctrl+p",
     "key_mode1": "1",
     "key_mode2": "2",
+    "key_assist_off": "ctrl+alt+o",
     "key_record": "ctrl+alt+r",
     "key_record_stop": "ctrl+alt+s",
     "key_play": "ctrl+alt+m",
@@ -192,6 +192,7 @@ DEFAULT_CONFIG = {
     "pad_pause": "back",
     "pad_mode1": "",
     "pad_mode2": "",
+    "pad_assist_off": "",
     "pad_record": "ls+rs",
     "pad_record_stop": "",
     "pad_play": "",
@@ -216,8 +217,8 @@ def config_dir():
     """User-editable settings live in <app>\\configs."""
     try:
         build_secrets.ensure_app_layout()
-    except Exception:
-        pass
+    except Exception as exc:
+        log("config: failed to ensure app layout: %r" % (exc,))
     return build_secrets.configs_dir()
 
 class SafeConfigReader:
@@ -351,6 +352,9 @@ def _coerce_value(raw, default, key=None):
 class Config:
     def __init__(self):
         self.lock = threading.RLock()
+        # Serializes disk writes: set() now saves outside the state lock, so
+        # two concurrent set() calls could otherwise share the same .tmp file.
+        self._save_lock = threading.Lock()
         self.dir = config_dir()
         self.path = os.path.join(self.dir, "config.json")
         self.ini_path = os.path.join(self.dir, "config.ini")
@@ -500,7 +504,7 @@ class Config:
                   "pad_play1", "pad_play2", "pad_play3", "pad_play4",
                   "pad_play5", "pad_macro1_key", "pad_macro2_key",
                   "pad_macro3_key", "pad_macro4_key", "pad_macro5_key",
-                  "bypass_pad")
+                  "pad_assist_off", "bypass_pad")
 
     _PAD_SINGLE = ("pad_click_button", "pad_right_button")
 
@@ -540,17 +544,30 @@ class Config:
     def sanitize(self):
         return self._sanitize()
 
+    @staticmethod
+    def _clamp(value, lo, hi, default):
+        """Clamp ``value`` into ``[lo, hi]``, with int rounding for int bounds.
+
+        Returns ``default`` when the value cannot be clamped (non-finite,
+        NaN, or wrong type).
+        """
+        try:
+            clamped = min(hi, max(lo, value))
+            if isinstance(lo, int):
+                clamped = min(hi, max(lo, int(round(clamped))))
+            else:
+                clamped = type(lo)(clamped)
+            if (not math.isfinite(clamped)) or math.isnan(value):
+                return default
+            return clamped
+        except (TypeError, ValueError):
+            return default
+
     def _sanitize(self):
         for key, (lo, hi) in self._RANGES.items():
             try:
                 value = self.values[key]
-                clamped = min(hi, max(lo, value))
-                if isinstance(lo, int):
-                    clamped = min(hi, max(lo, int(round(clamped))))
-                else:
-                    clamped = type(lo)(clamped)
-                if (not math.isfinite(clamped)) or math.isnan(value):
-                    clamped = DEFAULT_CONFIG[key]
+                clamped = self._clamp(value, lo, hi, DEFAULT_CONFIG[key])
                 if clamped != value:
                     log("config: %s %r clamped to %r" % (key, value, clamped))
                 self.values[key] = clamped
@@ -626,7 +643,7 @@ class Config:
                 self.values["trigger_button"] = DEFAULT_CONFIG["trigger_button"]
 
         raw = str(self.values.get("bypass_key", "shift") or "").strip()
-        canonical = hotkeys.describe_bypass_spec(raw)
+        canonical = gamepad.describe_bypass_spec(raw)
         if not canonical:
             log("config: bypass_key %r is not a key, a modifier or a "
                 "combination of them; using %r."
@@ -647,8 +664,10 @@ class Config:
 
     def export_to(self, path, values=None):
         try:
+            with self.lock:
+                payload = self._public_values(values)
             with open(path, "w", encoding="utf-8") as fh:
-                json.dump(self._public_values(values), fh, indent=2)
+                json.dump(payload, fh, indent=2)
             return True, i18n.L("st.exported", path)
         except OSError as exc:
             return False, i18n.L("st.export_fail", exc)
@@ -681,8 +700,11 @@ class Config:
                     imported_keys.append(key)
                 else:
                     skipped.append(key)
+            for key in data:
+                if key in build_secrets.SENSITIVE_KEYS and key not in DEFAULT_CONFIG:
+                    refused_sensitive.append(key)
             self._sanitize()
-            applied = len([k for k in imported_keys if k in self.values])
+            applied = len(imported_keys)
 
         if refused_sensitive:
             log("import: ignored %d deployment key(s) (%s) - those come "
@@ -715,24 +737,24 @@ class Config:
             out[key] = value
         return out
 
-    _leak_warned = False
-
     def save(self):
         tmp = self.path + ".tmp"
-        try:
-            with self.lock:
-                payload = self._public_values()
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
-            os.replace(tmp, self.path)
-        except OSError:
+        with self._save_lock:
             try:
-                os.remove(tmp)
+                with self.lock:
+                    payload = self._public_values()
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2)
+                os.replace(tmp, self.path)
             except OSError:
-                pass
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
     def get(self, key, default=None):
-        return self.values.get(key, default)
+        with self.lock:
+            return self.values.get(key, default)
 
     def set(self, key, value, save=True):
         if key in build_secrets.SENSITIVE_KEYS:
@@ -755,27 +777,16 @@ class Config:
                     value = default
             bounds = self._RANGES.get(key)
             if bounds is not None:
-                try:
-                    lo, hi = bounds
-                    clamped = min(hi, max(lo, value))
-                    if isinstance(lo, int):
-                        clamped = min(hi, max(lo, int(round(clamped))))
-                    else:
-                        clamped = type(lo)(clamped)
-                    if (not math.isfinite(clamped)) or math.isnan(value):
-                        clamped = DEFAULT_CONFIG[key]
-                    value = clamped
-                except (TypeError, ValueError):
-                    log("config: %s %r invalid; using %r"
-                        % (key, value, DEFAULT_CONFIG.get(key)))
-                    value = DEFAULT_CONFIG.get(key)
+                value = self._clamp(value, bounds[0], bounds[1],
+                                    DEFAULT_CONFIG[key])
             raw = value
             value, accepted = self._normalize_choice(key, value)
             if not accepted:
                 log("config: %s %r unknown; using %r" % (key, raw, value))
             self.values[key] = value
-            if save:
-                self.save()
+            needs_save = save
+        if needs_save:
+            self.save()
 
     def cycle(self, key, steps):
         current = self.get(key)

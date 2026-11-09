@@ -99,7 +99,7 @@ def render(canvas, cx, cy, shape, size, gap, thickness, rotation, hexcolor):
 def preset_path(config_dir=None):
     if config_dir is None:
         try:
-            from general_utils import configs_dir
+            from utils import configs_dir
             config_dir = configs_dir()
         except Exception:
             try:
@@ -204,7 +204,7 @@ class ReticleOverlay(object):
 
     def _screen(self):
         try:
-            from win32rt import virtual_screen
+            from input import virtual_screen
             if virtual_screen is None:
                 raise ValueError("no virtual screen")
             return virtual_screen()
