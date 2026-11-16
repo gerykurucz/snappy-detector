@@ -67,10 +67,10 @@ def attach_app_log():
 def apply_cli_overrides(cfg, argv):
 
     if "--mode1" in argv:
-        cfg.set("mode", 1, save=False)
+        cfg._initial_mode = 1
 
     if "--mode2" in argv:
-        cfg.set("mode", 2, save=False)
+        cfg._initial_mode = 2
 
     if "--accent-only" in argv:
         cfg.set("accent_only", True, save=False)
@@ -80,12 +80,6 @@ def apply_cli_overrides(cfg, argv):
 
     if "--motion-3d" in argv:
         cfg.set("motion_3d", True, save=False)
-
-    if "--controller" in argv:
-        cfg.set("controller_input", True, save=False)
-
-    if "--no-controller-drive" in argv:
-        cfg.set("pad_drive", False, save=False)
 
     if "--no-adaptive" in argv:
         cfg.set("adaptive_threshold", False, save=False)
@@ -160,21 +154,11 @@ def apply_cli_overrides(cfg, argv):
                 continue
             cfg.set("accent_color", nxt.strip(), save=False)
 
-        elif arg == "--glide":
-            nxt = _next_value(i)
-            if nxt is None:
-                print("Ignored --glide (missing value)")
-                continue
-            try:
-                cfg.set("glide_ms", int(float(nxt)), save=False)
-            except (ValueError, OverflowError):
-                print("Ignored invalid --glide %r" % (nxt,))
-
 _KNOWN_FLAGS = ("--mode1", "--mode2", "--accent-only",
                 "--follow", "--motion-3d", "--no-adaptive",
                 "--no-lumnorm", "--console", "--reset-config", "--help",
-                "-h", "--repo", "--radius", "--capture", "--merge", "--accent",
-                "--glide", "--controller", "--no-controller-drive")
+                "-h", "--repo", "--radius", "--capture", "--merge",
+                "--accent")
 
 def _announce(title, body, fatal=False):
     text = "%s\n\n%s" % (title, body)
@@ -244,12 +228,9 @@ def print_usage():
     print("  --capture auto|dxcam|mss|wgc    screen-capture backend")
     print("  --merge N          merge detected pieces within N px")
     print("  --accent SPEC      preferred colour(s): blue, 60,120,220, or a ; list")
-    print("  --glide MS         animate cursor moves over MS milliseconds")
     print("  --accent-only      assist only items carrying the accent colour")
     print("  --follow           remember and prefer the last snapped item")
     print("  --motion-3d        lead moving targets with the position+scale tracker")
-    print("  --controller       enable controller (XInput) input")
-    print("  --no-controller-drive  controller binds actions only; the mouse stays the pointer")
     print("  --no-adaptive      disable the adaptive ink threshold (A/B)")
     print("  --no-lumnorm       disable luminance normalisation (A/B)")
     print("  --reset-config     restore every setting to its default")

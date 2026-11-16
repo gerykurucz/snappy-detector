@@ -1,0 +1,36 @@
+﻿[
+    {
+        "tweak":  "nic.interrupt_moderation.disable",
+        "description":  "Disable interrupt moderation on all physical network adapters",
+        "kind":  "powershell",
+        "hive":  "",
+        "path":  "",
+        "name":  "",
+        "prior":  null,
+        "applied":  null,
+        "valueType":  "DWord",
+        "command":  "Get-NetAdapter -Physical | Set-NetAdapterAdvancedProperty -DisplayName \u0027Interrupt Moderation\u0027 -DisplayValue \u0027Disabled\u0027 -NoRestart",
+        "undoId":  "cbc0b13a84af92b98e01202a",
+        "reversible":  true,
+        "safety":  "",
+        "requiresReboot":  false,
+        "applyCompleted":  true
+    },
+    {
+        "tweak":  "net.dns.fastest_resolver",
+        "description":  "Point all adapters at fast public resolvers (1.1.1.1, 8.8.8.8)",
+        "kind":  "powershell",
+        "hive":  "",
+        "path":  "",
+        "name":  "",
+        "prior":  null,
+        "applied":  null,
+        "valueType":  "DWord",
+        "command":  "Get-NetAdapter -Physical | Set-DnsClientServerAddress -ServerAddresses \u00271.1.1.1\u0027,\u00278.8.8.8\u0027",
+        "undoId":  "0223fa85ff1b55f18565376f",
+        "reversible":  true,
+        "safety":  "",
+        "requiresReboot":  false,
+        "applyCompleted":  true
+    }
+]

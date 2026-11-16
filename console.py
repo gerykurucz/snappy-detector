@@ -8,7 +8,7 @@ import online
 from system import APP_NAME, log
 
 from config import RADIUS_STEPS
-from assist import start_app
+from assist import PAD_DRIVE_ENABLED, start_app
 from input import effective_mode_key
 from detection import (_parse_accents, accent_soft_of, accent_matcher_of,
                     calibrate_accent)
@@ -20,19 +20,13 @@ def print_banner(app):
         rad_value = int(cfg.get("radius"))
     except (TypeError, ValueError):
         rad_value = 150
-    scaled_px = app.radius_px()
     rad_label = dict(RADIUS_STEPS).get(rad_value, "custom")
-    if scaled_px != rad_value:
-        rad_label = "%s (scaled %d px)" % (rad_label, scaled_px)
 
     print("")
     print("=" * 70)
     print("   S N A P P Y   A I  -  accessibility click helper")
     print("=" * 70)
-    try:
-        _mode = int(str(cfg.get("mode", "2")))
-    except (TypeError, ValueError):
-        _mode = 2
+    _mode = app.current_mode()
     print("   MODE        : %s" % ("1 classic" if _mode == 1 else "2 guide"))
     print("   Radius      : %s (%d px)" % (rad_label, app.radius_px()))
     print("   Capture     : %s" % cfg.get("capture_backend", "auto"))
@@ -46,12 +40,6 @@ def print_banner(app):
         "  [ONLY - other items ignored]"
         if cfg.get("accent_only") else ""))
     try:
-        glide = int(cfg.get("glide_ms", 0) or 0)
-    except (TypeError, ValueError):
-        glide = 0
-    print("   Glide       : %s" % ("%d ms" % glide if glide > 0
-                                   else "off (instant)"))
-    try:
         _fb = float(cfg.get("follow_boost", 1.0))
     except (TypeError, ValueError):
         _fb = 1.0
@@ -63,16 +51,13 @@ def print_banner(app):
         "ON (%.1fx boost, %ds memory)"
         % (_fb, _fs)
         if cfg.get("follow_enabled") else "OFF"))
-    if cfg.get("controller_input"):
-        _binds = [str(cfg.get(k) or "") for k in
-                  ("pad_launch", "pad_pause", "pad_record", "pad_play")]
-        print("   Controller  : ON (%s drive, output %s%s)"
-              % ("stick+trigger" if cfg.get("pad_drive", True) else "bindings",
-                 cfg.get("pad_output", "auto"),
-                 ", bound: " + "/".join(b for b in _binds if b)
-                 if any(_binds) else ""))
-    else:
-        print("   Controller  : OFF (Assistance tab: Enable controller input)")
+    _binds = [str(cfg.get(k) or "") for k in
+              ("pad_launch", "pad_pause", "pad_record", "pad_play")]
+    print("   Controller  : ON (%s drive, output %s%s)"
+          % ("stick+trigger" if PAD_DRIVE_ENABLED else "bindings",
+             cfg.get("pad_output", "emulate"),
+             ", bound: " + "/".join(b for b in _binds if b)
+             if any(_binds) else ""))
     print("")
     print("   STATE       : %s" % ("LAUNCHED" if app.running else "PAUSED"))
     print("")
@@ -84,6 +69,8 @@ def print_banner(app):
     print("     Mode 1 classic:")
     print("       If you click near an item, the mis-click is suppressed,")
     print("       cursor snaps to the item, and SnappyAI clicks it for you.")
+    print("       In Game Mode it blocks the trigger, confirms exact centre")
+    print("       on a fresh frame, clicks once, and does not keep following.")
     print("")
     print("   SHIFT + click : no assist for that click.")
     print("")
@@ -115,7 +102,7 @@ def print_status(app):
     print(
         " STATUS   mode: %s | radius: %d px | state: %s"
         % (
-            cfg.get("mode"),
+            app.current_mode(),
             app.radius_px(),
             "LAUNCHED" if app.running else "PAUSED",
         )
@@ -162,11 +149,10 @@ def print_help(app):
     print("  - follow_learn = accent: the follow memory only learns items")
     print("    matching accent_color, so a misclick that snapped elsewhere")
     print("    never retargets the memory away from your colour.")
-    print("  - glide_ms animates cursor moves so you can follow them")
-    print("    (0 = instant; moving your mouse cancels a glide).")
     print("  - accent_only (console 'a') restricts assistance to items")
     print("    containing your accent colour - 'click the blue thing' mode.")
-    print("    Clicks where nothing matches pass through untouched.")
+    print("    Non-matches pass through on desktop/Mode 2; in game Mode 1")
+    print("    the trigger stays blocked rather than firing off-target.")
     print("  - follow memory (console 'f') remembers your last snapped item:")
     print("    for a few seconds, similar-looking or same-place items win")
     print("    ties - handy for scrollbars and repeated clicks on one")
@@ -194,17 +180,14 @@ def print_help(app):
     print("    subscription bound to that login is re-checked at every")
     print("    start - no reachable server, no engine.")
     print("  - exclude_color (Detection tab): items containing")
-    print("    that colour are NEVER clickable - clicks on them pass")
-    print("    straight through, in both modes. Exclusion outranks")
-    print("    accent boosts.")
-    print("  - motion_predict + motion_lead_ms (Detection tab):")
-    print("    track ahead of MOVING items (scrolling lists, video seek")
-    print("    bars) by a measured speed+direction lead; standing")
-    print("    items behave exactly as before.")
-    print("  - motion_3d (Assistance tab): the same lead through a")
-    print("    position-plus-size tracker - bad scans are ignored, turns")
-    print("    are followed through, and a sudden size jump restarts the")
-    print("    track. Same gates and cap; only the brains change.")
+    print("    that colour are NEVER assisted. They pass through on desktop/")
+    print("    Mode 2; in game Mode 1 the trigger stays blocked. Exclusion")
+    print("    outranks accent boosts.")
+    print("  - motion_predict (Assistance tab): measured recent direction,")
+    print("    speed changes, capture age and output delay determine the lead.")
+    print("    Stops, reversals and body-centre wobble cancel stale motion.")
+    print("  - motion_3d also tracks size: a sudden scale jump restarts the")
+    print("    track, while growth/shrinkage records approach/move-away state.")
     print("  - Macros tab: five macro keys that send a whole key combo")
     print("    instead of typing ('B means Ctrl+C'). One press = one")
     print("    combo press, and the macro key is always consumed while")
@@ -213,8 +196,8 @@ def print_help(app):
     print("    Ctrl+Alt+M play, Ctrl+1..5 play by list position. Each")
     print("    recording is named and carries its own playback style:")
     print("    play once, or repeat until stopped.")
-    print("  - Controller (Assistance tab: 'Enable controller input'):")
-    print("    Windows' own XInput, so a pad is a full second input device.")
+    print("  - Controller: connected XInput pads are detected automatically,")
+    print("    so a pad is a full second input device.")
     print("    Left stick steers the cursor, right trigger is the press that")
     print("    assistance snaps from, left trigger is a right click, and the")
     print("    right stick steers the view while that press is held - so the")

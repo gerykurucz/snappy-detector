@@ -23,26 +23,16 @@ i18n.publish("en", {
 })
 
 DEFAULT_CONFIG = {
-
-    "mode": 2,
-
     "radius": 150,
 
     "unibot_aim": True,
     "aim_speed": 1.0,
+    "aim_y_speed_multiplier": 1.0,
+    "ads_steer_multiplier": 2.5,
 
     "theme": "light",
 
     "watcher_seconds": 0.45,
-
-    "stall_pause_seconds": 0.25,
-
-    "contrast_threshold": 38,
-    "min_contrast": 48,
-    "min_area": 220,
-    "max_area": 45000,
-    "max_dim": 300,
-    "on_target_dist": 10,
 
     "adaptive_threshold": True,
     "luminance_norm": True,
@@ -67,27 +57,12 @@ DEFAULT_CONFIG = {
     "exclude_color": "off",
 
     "motion_predict": False,
-    "motion_lead_ms": 50,
 
-    "hpose_mode": "off",
-    "hpose_view": "any",
-    "hpose_stance": "any",
+    "hpose_mode": True,
     "hpose_aim": "center",
-    "hpose_lead_ms": 60,
     "hpose_min_conf": 12,
-    "hpose_model": "yolo26n-pose.onnx",
-    "blob_watch": True,
 
-    # YOLO26n 2D person detector (fast, no pose)
-    "yolo26n_enabled": True,
-    "yolo26n_input_size": "224",
-    "yolo26n_conf": 0.35,
-    "yolo26n_fallback_to_hpose": True,
-    "yolo26n_model": "yolo26n.onnx",
-
-    "watch_center_only": False,
-
-    "center_follow": False,
+    "game_mode": False,
 
     "scan_budget_ms": 350,
 
@@ -99,18 +74,11 @@ DEFAULT_CONFIG = {
     "follow_boost": 1.0,
     "follow_seconds": 20,
 
-    "glide_ms": 0,
-
-    "snap_offset_x": 0,
-    "snap_offset_y": 0,
-
     "color_adapt": True,
 
     "accent_variants": True,
 
     "accent_coherent": True,
-
-    "language": "en",
 
     "trigger_button": "mouse1",
     "options_button": "mouse2",
@@ -128,7 +96,6 @@ DEFAULT_CONFIG = {
 
     "motion_sense": 0,
 
-    "motion_priority": True,
     "motion_camera_comp": True,
 
     "subject_priority": True,
@@ -137,15 +104,12 @@ DEFAULT_CONFIG = {
 
     "reticle_enabled": False,
     "reticle_shape": "cross",
-    "reticle_mode": "center",
     "reticle_size": 24,
     "reticle_gap": 6,
     "reticle_thickness": 2,
     "reticle_rotation": 0,
     "reticle_opacity": 90,
     "reticle_color": "0,255,0",
-    "reticle_x": 0,
-    "reticle_y": 0,
 
     "rapid_click_snap": False,
 
@@ -157,9 +121,7 @@ DEFAULT_CONFIG = {
 
     "key_launch": "ctrl+l",
     "key_pause": "ctrl+p",
-    "key_mode1": "1",
-    "key_mode2": "2",
-    "key_assist_off": "ctrl+alt+o",
+    "key_track_target": "",
     "key_record": "ctrl+alt+r",
     "key_record_stop": "ctrl+alt+s",
     "key_play": "ctrl+alt+m",
@@ -175,24 +137,13 @@ DEFAULT_CONFIG = {
     "macro4_key": "",       "macro4_action": "",
     "macro5_key": "",       "macro5_action": "",
 
-    "controller_input": False,
-    "pad_index": -1,
-    "pad_output": "auto",
-    "pad_drive": True,
-    "pad_deadzone": 20,
-    "pad_sensitivity": 1.0,
-    "pad_trigger_threshold": 128,
-    "pad_poll_hz": 125,
-    "pad_rumble": True,
+    "pad_output": "emulate",
     "pad_click_button": "rt",
     "pad_right_button": "lt",
-    "pad_emulate": gamepad.PAD_EMU_DEFAULT,
 
     "pad_launch": "start",
     "pad_pause": "back",
-    "pad_mode1": "",
-    "pad_mode2": "",
-    "pad_assist_off": "",
+    "pad_track_target": "",
     "pad_record": "ls+rs",
     "pad_record_stop": "",
     "pad_play": "",
@@ -207,8 +158,6 @@ DEFAULT_CONFIG = {
     "pad_macro3_key": "",   "pad_macro3_action": "",
     "pad_macro4_key": "",   "pad_macro4_action": "",
     "pad_macro5_key": "",   "pad_macro5_action": "",
-
-    "config_version": 8,
 }
 
 RADIUS_STEPS = [(80, "small"), (150, "medium"), (250, "large")]
@@ -409,7 +358,27 @@ class Config:
                            "auto_click_repeat_px",
                            "auto_click_radius",
                            "server_url", "rebind_url",
-                           "block_bound_keys", "bare_mode_keys")
+                           "block_bound_keys", "bare_mode_keys",
+                           # These used to be persisted despite having no
+                           # editable GUI control. They are fixed runtime
+                           # behaviour now, not user settings.
+                           "aim_stick_sensitivity", "blob_watch",
+                           "center_follow", "config_version",
+                           "contrast_threshold", "controller_input",
+                           "glide_ms", "hpose_lead_ms", "hpose_model",
+                           "hpose_stance", "hpose_view", "language",
+                           "max_area", "max_dim", "min_area",
+                           "min_contrast", "mode", "motion_lead_ms",
+                           "motion_priority", "on_target_dist",
+                           "pad_deadzone", "pad_drive", "pad_emulate",
+                           "pad_index", "pad_poll_hz", "pad_rumble",
+                           "pad_sensitivity", "pad_trigger_threshold",
+                           "reticle_mode", "reticle_x", "reticle_y",
+                           "snap_offset_x", "snap_offset_y",
+                           "stall_pause_seconds", "watch_center_only",
+                           "yolo26n_conf", "yolo26n_enabled",
+                           "yolo26n_fallback_to_hpose",
+                           "yolo26n_input_size", "yolo26n_model")
                 dropped = [k for k in retired if k in data]
                 if dropped:
                     for k in dropped:
@@ -425,14 +394,6 @@ class Config:
                         "slots + recordings); its value was dropped - "
                         "re-create it as a recording or in slots 1-5.")
 
-                try:
-                    version = int(data.get("config_version", 1))
-                except Exception:
-                    version = 1
-
-                if version < 8:
-
-                    self.values["config_version"] = 8
         except (OSError, ValueError):
             pass
 
@@ -447,13 +408,6 @@ class Config:
 
     _RANGES = {
         "radius": (40, 400),
-        "mode": (1, 2),
-
-        "contrast_threshold": (1, 200),
-        "min_contrast": (1, 200),
-        "min_area": (1, 100000),
-        "max_area": (100, 1000000),
-        "max_dim": (10, 2000),
 
         "center_blind_area": (0, 100000),
 
@@ -463,48 +417,31 @@ class Config:
         "merge_distance": (0, 64),
         "accent_tolerance": (4, 90),
         "aim_speed": (0.1, 2.0),
+        "aim_y_speed_multiplier": (0.1, 2.0),
+        "ads_steer_multiplier": (0.0, 5.0),
         "accent_soft": (0, 100),
         "accent_boost": (0.0, 3.0),
         "follow_boost": (0.0, 3.0),
         "follow_seconds": (1, 120),
-        "glide_ms": (0, 500),
         "watcher_seconds": (0.0, 3.0),
-        "stall_pause_seconds": (0.0, 3.0),
-        "on_target_dist": (0, 100),
-        "motion_lead_ms": (0, 300),
-        "hpose_lead_ms": (0, 300),
         "hpose_min_conf": (0, 99),
         "scan_budget_ms": (60, 2000),
-
-        "yolo26n_input_size": (224, 640),
-        "yolo26n_conf": (0.05, 0.95),
-
-        "snap_offset_x": (-200, 200),
-        "snap_offset_y": (-200, 200),
 
         "reticle_size": (8, 96),
         "reticle_gap": (0, 48),
         "reticle_thickness": (1, 10),
         "reticle_rotation": (0, 90),
         "reticle_opacity": (10, 100),
-        "reticle_x": (-10000, 10000),
-        "reticle_y": (-10000, 10000),
-
-        "pad_index": (-1, 3),
-        "pad_deadzone": (0, 60),
-        "pad_sensitivity": (0.1, 4.0),
-        "pad_trigger_threshold": (1, 255),
-        "pad_poll_hz": (30, 500),
 
         "timer_resolution_us": (0, 15625),
     }
 
-    _PAD_SPECS = ("pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
+    _PAD_SPECS = ("pad_launch", "pad_pause", "pad_track_target",
                   "pad_record", "pad_record_stop", "pad_play",
                   "pad_play1", "pad_play2", "pad_play3", "pad_play4",
                   "pad_play5", "pad_macro1_key", "pad_macro2_key",
                   "pad_macro3_key", "pad_macro4_key", "pad_macro5_key",
-                  "pad_assist_off", "bypass_pad")
+                  "bypass_pad")
 
     _PAD_SINGLE = ("pad_click_button", "pad_right_button")
 
@@ -514,13 +451,10 @@ class Config:
         "input_backend": ("win32", "driver"),
         "follow_learn": ("accent", "any"),
         "reticle_shape": ("cross", "plus", "dot", "circle", "x"),
-        "reticle_mode": ("center", "custom"),
         "theme": ("light", "dark"),
-        "pad_output": ("auto", "vigem", "emulate"),
+        "pad_output": ("emulate", "vigem"),
         "trigger_button": MOUSE_BUTTONS,
         "options_button": MOUSE_BUTTONS,
-        "yolo26n_input_size": ("224", "320", "640"),
-        "yolo26n_model": ("yolo26n.onnx", "yolo26n_int8.onnx"),
     }
 
     _LEGACY_CHOICES = {
@@ -578,12 +512,6 @@ class Config:
                 else:
                     self.values.pop(key, None)
 
-        if self.values.get("min_area", 0) > self.values.get("max_area", 0):
-            log("config: min_area %r is above max_area %r - nothing could "
-                "match; using max_area for both."
-                % (self.values.get("min_area"), self.values.get("max_area")))
-            self.values["min_area"] = self.values["max_area"]
-
         for key in self._CHOICES:
             raw = self.values.get(key, DEFAULT_CONFIG[key])
             value, ok = self._normalize_choice(key, raw)
@@ -597,12 +525,6 @@ class Config:
             log("config: accent_only is on but accent_color is off - "
                 "it stays on and simply does nothing until a colour "
                 "is set again.")
-
-        lang = str(self.values.get("language", "en")).strip().lower()
-        if lang not in i18n.codes():
-            log("config: unknown language %r, defaulting to en" % (lang,))
-            lang = "en"
-        self.values["language"] = lang
 
         for key in self._PAD_SPECS:
             raw = str(self.values.get(key, "") or "").strip()
@@ -720,11 +642,8 @@ class Config:
 
     def reload(self):
         with self.lock:
-            live_mode = self.values.get("mode")
             self.values = dict(DEFAULT_CONFIG)
             self._load()
-            if live_mode in (1, 2):
-                self.values["mode"] = live_mode
 
     def _public_values(self, values=None):
         src = self.values if values is None else values

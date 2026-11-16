@@ -1,0 +1,63 @@
+HWID spoofer build artifacts (btbd/hwid)
+========================================
+Built: 2026-11-11
+Machine: x64
+
+Prerequisites used
+------------------
+- Visual Studio 2022 Build Tools 2026 (MSBuild 17.14, v143 toolset), installed at D:\VS22
+- Windows SDK 10.0.26100.0 (include/lib at C:\Program Files (x86)\Windows Kits\10)
+- Windows Driver Kit 10.0.26100.6584 (Microsoft.WindowsWDK.10.0.26100 via winget)
+- WDK Visual Studio integration added via vs_installer --add Component.Microsoft.Windows.DriverKit
+  -> platform toolset "WindowsKernelModeDriver10.0" registered under v170
+- WDKContentRoot override required: C:\Program Files (x86)\Windows Kits\10\
+  (64-bit registry KitsRoot10 pointed at C:\Program Files\Windows Kits\10 which lacks WDK)
+
+Build commands (Release | x64)
+------------------------------
+User-mode client (exe):
+  MSBuild User\User.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+
+Kernel driver (WDM - recommended; source is WDM despite project defaulting to KMDF):
+  MSBuild Kernel\Kernel.vcxproj /p:Configuration=Release /p:Platform=x64
+    /p:DriverType=WDM
+    /p:WDKContentRoot=C:/Program Files (x86)/Windows Kits/10/
+    /p:WDKBuildFolder=10.0.26100.0 /p:WindowsTargetPlatformVersion=10.0.26100.0 /p:TargetPlatformVersion=10.0.26100.0
+    /p:Driver_SpectreMitigation=false /p:SkipPackageVerification=true /p:EnableTestSign=false
+
+Kernel driver (KMDF - as-shipped project default; imports WDFLDR.SYS):
+  same as above but omit /p:DriverType=WDM
+
+Client DLL wrapper (added):
+  User\UserDll.vcxproj + User\dllmain.c
+  MSBuild User\UserDll.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+  Exports: RunSpoofer() (calls the original main() spoofing routine)
+
+Notes
+-----
+- Driver .sys files are WDM/KMDF kernel drivers for x64. They are TEST-signed with a
+  self-signed cert (CN=SnappyHWID Driver) installed into LocalMachine\Root.
+  To load, you may still need to enable test signing:
+    bcdedit /set testsigning on   (requires admin + reboot)
+- dist\wdm contains the WDM build (recommended - only imports ntoskrnl.exe).
+- dist\kmdf contains the KMDF build (imports WDFLDR.SYS).
+- dist\client contains User.exe (console, requires admin) and UserDll.dll.
+- The upstream hwid repo has no DLL target; UserDll.dll is a thin wrapper around main().
+
+Signing
+-------
+Test certificate: CN=SnappyHWID Driver, thumbprint C851FD4D8125D71F64D70C7CF51C52D785B24F9C
+Private key password: SnappyTest123 (PFX in %TEMP%\snappyhwid_test.pfx)
+All .sys/.cat/.exe/.dll signed with signtool /a /fd SHA256 and verified with signtool verify /pa.
+
+Artifacts
+---------
+dist\wdm\Kernel.sys   - WDM kernel driver (x64, native subsystem), signed
+dist\wdm\Kernel.inf   - WDM-friendly INF (KMDF/coinstaller sections removed)
+dist\wdm\Kernel.cat   - catalog for WDM package, signed
+dist\kmdf\Kernel.sys  - KMDF kernel driver (x64), signed
+dist\kmdf\Kernel.inf  - original project INF (KMDF), signed
+dist\kmdf\Kernel.cat  - catalog, signed
+dist\client\User.exe  - usermode spoofing console app, signed
+dist\client\UserDll.dll - wrapper DLL exporting RunSpoofer(), signed
+dist\client\UserDll.lib - import lib for UserDll.dll

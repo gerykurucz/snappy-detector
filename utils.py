@@ -75,6 +75,9 @@ def run_diagnosis(
     backend: Any,
     out: str | Path,
     plan_dir: str | Path | None = None,
+    apply_dir: str | Path | None = None,
+    undo_dir: str | Path | None = None,
+    report_dir: str | Path | None = None,
     dry_run: bool = True,
     brand: str = "latency",
     on_progress: Callable[[str], None] | None = None,
@@ -102,8 +105,18 @@ def run_diagnosis(
     note("plan scripts")
     plan_info: dict[str, Any] = {"plan_dir": str(plan_dir) if plan_dir else None}
     if plan_dir:
-        for name in ("apply.ps1", "undo.ps1", "manifest.json", "snapshot.json"):
-            p = Path(plan_dir) / name
+        base = Path(plan_dir)
+        locations = {
+            "apply.ps1": Path(apply_dir) / "apply.ps1" if apply_dir else base / "apply.ps1",
+            "undo.ps1": Path(undo_dir) / "undo.ps1" if undo_dir else base / "undo.ps1",
+            "manifest.json": (
+                Path(report_dir) / "manifest.json" if report_dir
+                else base / "manifest.json"),
+            "snapshot.json": (
+                Path(apply_dir) / "snapshot.json" if apply_dir
+                else base / "snapshot.json"),
+        }
+        for name, p in locations.items():
             if not p.exists():
                 plan_info[name] = "missing"
                 continue
@@ -120,11 +133,11 @@ def run_diagnosis(
                     plan_info[name] = f"invalid: {exc}"
                     failed.append(f"parse:{name}")
         if dry_run:
-            apply = Path(plan_dir) / "apply.ps1"
+            apply = locations["apply.ps1"]
             if apply.exists():
                 if sys.platform.startswith("win"):
                     res = backend.powershell(
-                        f"& '{apply}' -WhatIf2 -NoPause *>&1 | Out-String",
+                        f"& {_ps_quote(apply)} -WhatIf2 -NoPause *>&1 | Out-String",
                         timeout=120.0,
                     )
                     plan_info["dry_run_code"] = res.code
@@ -180,6 +193,10 @@ class RunResult:
     code: int
     output: str = ""
     log_path: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.code == 0
 
 def is_elevated() -> bool:
     if not sys.platform.startswith("win"):
@@ -369,6 +386,8 @@ def dll_search_paths(names, where: str = "system32") -> list[str]:
     return found
 
 def dll_pin_ok(path: str) -> bool:
+    if not os.path.isfile(path):
+        return False
     pin = path + ".sha256"
     if not os.path.isfile(pin):
         return True
@@ -422,12 +441,23 @@ def _elevated_hidden(command: str, timeout: float) -> RunResult:
         return RunResult(code=1, output="elevation was refused or failed")
     try:
         kernel32 = ctypes.windll.kernel32
-        wait = kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000))
+        try:
+            wait_ms = max(1, min(0xFFFFFFFE, int(float(timeout) * 1000)))
+        except (TypeError, ValueError, OverflowError):
+            wait_ms = 900000
+        wait = kernel32.WaitForSingleObject(info.hProcess, wait_ms)
+        if wait == 0x102:  # WAIT_TIMEOUT
+            # A timed-out elevated maintenance script must not continue making
+            # changes after the caller has reported failure.
+            kernel32.TerminateProcess(info.hProcess, 124)
+            kernel32.WaitForSingleObject(info.hProcess, 5000)
         code = ctypes.wintypes.DWORD()
         kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
         kernel32.CloseHandle(info.hProcess)
-        if wait != 0:
+        if wait == 0x102:
             return RunResult(code=124, output="elevated run timed out")
+        if wait != 0:
+            return RunResult(code=1, output=f"elevated wait failed ({wait})")
         return RunResult(code=int(code.value), output="")
     except Exception as exc:
         return RunResult(code=1, output=f"elevated run failed: {exc}")
@@ -455,6 +485,10 @@ def run_ps1(
     path = Path(script)
     if not path.exists():
         return RunResult(code=2, output=f"{path} does not exist")
+    try:
+        timeout = max(0.1, float(timeout))
+    except (TypeError, ValueError, OverflowError):
+        return RunResult(code=2, output="timeout must be a positive number")
     if elevate and not is_elevated():
         if log_path:
             try:

@@ -38,13 +38,13 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 .small { font-size:.86rem; }
 </style></head><body>
 <h1>SnappyAI report</h1>
-<p class='meta'>Generated 2026-11-07T23:33:25+00:00 &middot; Windows 11 (build 26200)</p>
-<p class='meta'><b>4</b> change(s) recommended &middot; <b>6</b> checked and fine &middot; <b>4</b> not applicable &middot; <b>8</b> could not be determined</p>
+<p class='meta'>Generated 2026-11-13T09:39:06+00:00 &middot; Windows 11 (build 26200)</p>
+<p class='meta'><b>4</b> change(s) recommended &middot; <b>7</b> checked and fine &middot; <b>4</b> not applicable &middot; <b>7</b> could not be determined</p>
 <h2>Latency budget</h2>
 <table><tr><th>Component</th><th>Finding</th></tr>
 <tr><td><code>local_queue</code><div class='meta small'>Unbounded in practice. A saturated link with a deep dumb queue can add hundreds of ms. This is usually the largest addressable term.</div></td><td>not determined (2 check(s) returned UNKNOWN)</td></tr>
-<tr><td><code>network_path</code><div class='meta small'>Bounded by the speed of light: ~10 ms RTT per 1000 km of fibre, before any queueing. No PC-side software can go below this floor.</div></td><td><b>net.wifi.prefer_wired, net.dns.fastest_resolver</b></td></tr>
-<tr><td><code>host_processing</code><div class='meta small'>Typically single-digit ms. Hardware- and driver-specific; effects are usually in the tail (spikes), not the mean.</div></td><td><b>sched.background.lower_priority</b></td></tr>
+<tr><td><code>network_path</code><div class='meta small'>Bounded by the speed of light: ~10 ms RTT per 1000 km of fibre, before any queueing. No PC-side software can go below this floor.</div></td><td><b>net.wifi.prefer_wired, nic.interrupt_moderation.disable, net.dns.fastest_resolver</b></td></tr>
+<tr><td><code>host_processing</code><div class='meta small'>Typically single-digit ms. Hardware- and driver-specific; effects are usually in the tail (spikes), not the mean.</div></td><td>not determined (2 check(s) returned UNKNOWN)</td></tr>
 <tr><td><code>render_input</code><div class='meta small'>Often the dominant term. Roughly: (1 / refresh_rate) for the panel, plus queued frames times frame time, plus HID polling interval.</div></td><td><b>gpu.vendor.low_latency_mode</b></td></tr>
 </table>
 <h2>Changes recommended</h2>
@@ -58,11 +58,19 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 </div>
 <div class='card problem'>
 <span class='badge b-problem'>PROBLEM</span>
+<b><code>nic.interrupt_moderation.disable</code></b> &mdash; Network card delays interrupts to save CPU
+<div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>interrupt moderation is enabled on 1 adapter(s), batching packets and delaying each delivery to save CPU</p>
+<p class='small'><b>Expected effect:</b> Packets reach the game thread sooner at slightly higher CPU cost.</p>
+<p class='small'><b>Measured:</b> <code>{&quot;adapters&quot;: [&quot;Ethernet&quot;]}</code></p>
+</div>
+<div class='card problem'>
+<span class='badge b-problem'>PROBLEM</span>
 <b><code>net.dns.fastest_resolver</code></b> &mdash; Slow domain name resolver
 <div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
-<p>resolver [&#x27;1.1.1.1&#x27;, &#x27;8.8.8.8&#x27;, &#x27;1.1.1.1&#x27;, &#x27;8.8.8.8&#x27;] took 82.2373000009975 ms</p>
+<p>resolver [&#x27;1.1.1.1&#x27;, &#x27;8.8.8.8&#x27;] took 91.04780000052415 ms</p>
 <p class='small'><b>Expected effect:</b> Faster connection setup for new sessions and services.</p>
-<p class='small'><b>Measured:</b> <code>{&quot;servers&quot;: [&quot;1.1.1.1&quot;, &quot;8.8.8.8&quot;, &quot;1.1.1.1&quot;, &quot;8.8.8.8&quot;], &quot;resolve_ms&quot;: 82.2373000009975}</code></p>
+<p class='small'><b>Measured:</b> <code>{&quot;servers&quot;: [&quot;1.1.1.1&quot;, &quot;8.8.8.8&quot;], &quot;resolve_ms&quot;: 91.04780000052415}</code></p>
 </div>
 <div class='card problem'>
 <span class='badge b-problem'>PROBLEM</span>
@@ -71,14 +79,6 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 <p>driver frame queueing on NVIDIA GeForce GTX 1050 was not confirmed optimal</p>
 <p class='small'><b>Expected effect:</b> Input appears on screen up to one frame sooner.</p>
 <p class='small'><b>Measured:</b> <code>{&quot;gpu&quot;: &quot;NVIDIA GeForce GTX 1050&quot;}</code></p>
-</div>
-<div class='card problem'>
-<span class='badge b-problem'>PROBLEM</span>
-<b><code>sched.background.lower_priority</code></b> &mdash; Background programs fight the game for CPU
-<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
-<p>background load competes with the game: python (15.0%)</p>
-<p class='small'><b>Expected effect:</b> Fewer preemptions while the heaviest competitor idles lower.</p>
-<p class='small'><b>Measured:</b> <code>{&quot;hot&quot;: [[&quot;python&quot;, 15.0]]}</code></p>
 </div>
 <h2>Checked and fine &mdash; no change needed</h2>
 <div class='card ok'>
@@ -106,10 +106,10 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 <span class='badge b-ok'>ok</span>
 <b><code>timer.global_resolution_requests</code></b> &mdash; Coarse Windows scheduling tick
 <div class='meta'>component <code>host_processing</code> &middot; confidence <b>high</b> &middot; risk low</div>
-<p>system tick is already the finest this platform allows (15.625 ms)</p>
+<p>system tick is already the finest this platform allows (0.500 ms)</p>
 <p class='small'><b>Expected effect:</b> Finer scheduling granularity for waits under a millisecond inside the holding process.</p>
 <p class='small'><b>Caveat:</b> Since Windows 10 2004 a timer request is PROCESS-scoped: the holder tightens its own waits, and other processes (including the game) only see a finer system tick when the experimental GlobalTimerResolutionRequests tweak is also enabled. A finer tick raises the clock interrupt rate, which increases idle power draw and can shorten battery life on laptops.</p>
-<p class='small'><b>Measured:</b> <code>{&quot;tick_us&quot;: 500.0, &quot;finest_us&quot;: 15625.0, &quot;coarsest_us&quot;: 500.0, &quot;global_timer_requests&quot;: 1}</code></p>
+<p class='small'><b>Measured:</b> <code>{&quot;tick_us&quot;: 500.0, &quot;finest_us&quot;: 500.0, &quot;coarsest_us&quot;: 15625.0, &quot;global_timer_requests&quot;: 1}</code></p>
 </div>
 <div class='card ok'>
 <span class='badge b-ok'>ok</span>
@@ -117,6 +117,13 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 <div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
 <p>multimedia scheduling profile present</p>
 <p class='small'><b>Expected effect:</b> Game threads preempt background work more reliably.</p>
+</div>
+<div class='card ok'>
+<span class='badge b-ok'>ok</span>
+<b><code>sched.background.lower_priority</code></b> &mdash; Background programs fight the game for CPU
+<div class='meta'>component <code>host_processing</code> &middot; confidence <b>medium</b> &middot; risk low</div>
+<p>no heavy background competitor seen</p>
+<p class='small'><b>Expected effect:</b> Fewer preemptions while the heaviest competitor idles lower.</p>
 </div>
 <div class='card ok'>
 <span class='badge b-ok'>ok</span>
@@ -132,13 +139,6 @@ ul { margin: 6px 0 12px; padding-left: 22px; }
 <div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
 <p>adapter power management state could not be read</p>
 <p class='small'><b>Expected effect:</b> Removes wake-up stalls from the packet delivery path.</p>
-</div>
-<div class='card unk'>
-<span class='badge b-unk'>UNKNOWN</span>
-<b><code>nic.interrupt_moderation.disable</code></b> &mdash; Network card delays interrupts to save CPU
-<div class='meta'>component <code>network_path</code> &middot; confidence <b>medium</b> &middot; risk low</div>
-<p>interrupt moderation state could not be read (the driver exposes no such property)</p>
-<p class='small'><b>Expected effect:</b> Packets reach the game thread sooner at slightly higher CPU cost.</p>
 </div>
 <div class='card unk'>
 <span class='badge b-unk'>UNKNOWN</span>

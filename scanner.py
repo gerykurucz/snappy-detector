@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-import  engine
+import engine
 from engine import make_backend
 from system import Confidence
 from measurement import CollectOptions, collect_inventory
@@ -85,6 +85,8 @@ class ScanResult:
     policy_notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     out_dir: Path | None = None
+    apply_dir: Path | None = None
+    undo_dir: Path | None = None
     files: list[str] = field(default_factory=list)
 
 def _now() -> str:
@@ -315,19 +317,26 @@ class GuiController:
     ) -> None:
         self.backend_name = backend_name
         self.brand = brand
-        try:
-            from utils import reports_dir, scripts_exec_dir, scripts_undo_dir
-            self._reports_root = Path(reports_dir())
-            self._scripts_exec_root = Path(scripts_exec_dir())
-            self._scripts_undo_root = Path(scripts_undo_dir())
-        except Exception:
-            # Fallback for non-packaged runs
-            self._reports_root = Path(out_root) if out_root else Path.cwd() / "reports"
+        if out_root is not None:
+            # Explicit roots are self-contained, which makes diagnosis, tests,
+            # and portable exports independent from the application's folders.
+            self._reports_root = Path(out_root)
             self._scripts_exec_root = self._reports_root / "exec"
             self._scripts_undo_root = self._reports_root / "undo"
-            self._reports_root.mkdir(parents=True, exist_ok=True)
-            self._scripts_exec_root.mkdir(parents=True, exist_ok=True)
-            self._scripts_undo_root.mkdir(parents=True, exist_ok=True)
+        else:
+            try:
+                from utils import reports_dir, scripts_exec_dir, scripts_undo_dir
+                self._reports_root = Path(reports_dir())
+                self._scripts_exec_root = Path(scripts_exec_dir())
+                self._scripts_undo_root = Path(scripts_undo_dir())
+            except Exception:
+                # Fallback for non-packaged runs
+                self._reports_root = Path.cwd() / "reports"
+                self._scripts_exec_root = self._reports_root / "exec"
+                self._scripts_undo_root = self._reports_root / "undo"
+        self._reports_root.mkdir(parents=True, exist_ok=True)
+        self._scripts_exec_root.mkdir(parents=True, exist_ok=True)
+        self._scripts_undo_root.mkdir(parents=True, exist_ok=True)
         self.out_root = self._reports_root  # backward compat
         self.events: queue.Queue[Event] = queue.Queue()
         self.inventory: Inventory | None = None
@@ -347,7 +356,8 @@ class GuiController:
         self._monitor_lock = threading.Lock()
 
     def backend(self) -> Any:
-        return make_backend("fake" if self.backend_name == "fake" else None)
+        name = str(self.backend_name or "auto").strip().lower()
+        return make_backend(None if name == "auto" else name)
 
     def poll(self) -> list[Event]:
         out: list[Event] = []
@@ -401,10 +411,20 @@ class GuiController:
         self._threads = [x for x in self._threads if x.is_alive()]
         return True
 
-    def _apply_dir(self) -> Path:
+    def _apply_dir(self, plan_dir: str | Path | None = None) -> Path:
+        if plan_dir is not None:
+            root = Path(plan_dir)
+            return root / "exec" if (root / "exec").is_dir() else root
+        if self.last_scan and self.last_scan.apply_dir:
+            return Path(self.last_scan.apply_dir)
         return self._scripts_exec_root
 
-    def _undo_dir(self) -> Path:
+    def _undo_dir(self, plan_dir: str | Path | None = None) -> Path:
+        if plan_dir is not None:
+            root = Path(plan_dir)
+            return root / "undo" if (root / "undo").is_dir() else root
+        if self.last_scan and self.last_scan.undo_dir:
+            return Path(self.last_scan.undo_dir)
         return self._scripts_undo_root
 
     def _plan_dir(self, plan_dir: str | Path | None) -> Path | None:
@@ -415,8 +435,15 @@ class GuiController:
             return Path(self.last_scan.out_dir)
         return self._reports_root
 
+    @staticmethod
+    def _guard_active_snapshot(snapshot: Path) -> None:
+        if snapshot.exists():
+            raise RuntimeError(
+                f"active rollback snapshot exists at {snapshot}; run the "
+                "matching undo before generating a replacement script")
+
     def start_apply(self, plan_dir: str | Path | None = None) -> bool:
-        apply_dir = self._apply_dir()
+        apply_dir = self._apply_dir(plan_dir)
         apply_ps1 = apply_dir / "apply.ps1"
         if not apply_ps1.exists():
             self._emit(EventType.ERROR, f"{apply_ps1} does not exist: run a scan first")
@@ -431,8 +458,8 @@ class GuiController:
         ))
 
     def start_undo(self, plan_dir: str | Path | None = None) -> bool:
-        apply_dir = self._apply_dir()
-        undo_dir = self._undo_dir()
+        apply_dir = self._apply_dir(plan_dir)
+        undo_dir = self._undo_dir(plan_dir)
         undo_ps1 = undo_dir / "undo.ps1"
         if not undo_ps1.exists():
             self._emit(EventType.ERROR, f"{undo_ps1} does not exist: run a scan first")
@@ -497,6 +524,18 @@ class GuiController:
         self, target: str, interval: float = 1.0, transport: str = "auto",
         port: int = 443,
     ) -> bool:
+        if not str(target or "").strip():
+            self._emit(EventType.ERROR, "a monitor target is required")
+            return False
+        try:
+            interval = max(0.05, min(60.0, float(interval)))
+            port = int(port)
+        except (TypeError, ValueError, OverflowError):
+            self._emit(EventType.ERROR, "monitor interval and port are invalid")
+            return False
+        if not 1 <= port <= 65535:
+            self._emit(EventType.ERROR, "monitor port must be from 1 through 65535")
+            return False
         if self.monitoring:
             self.stop_monitor()
         with self._monitor_lock:
@@ -670,7 +709,7 @@ class GuiController:
         else:
             msg = "timer request released"
             if res.get("released") is False:
-                msg += (" (the coarse re-request failed - the fine tick "
+                msg += (" (the release call failed - the fine tick "
                         "may persist until SnappyAI exits)")
         if cur:
             msg += f"; tick now {cur / 1000.0:.4f} ms"
@@ -741,18 +780,24 @@ class GuiController:
         result = engine.build_plan(inv, policy=policy)
 
         # Directories
-        reports_root = self._reports_root
-        scripts_exec = self._scripts_exec_root
-        scripts_undo = self._scripts_undo_root
+        if out_dir is not None:
+            reports_root = Path(out_dir)
+            scripts_exec = reports_root / "exec"
+            scripts_undo = reports_root / "undo"
+        else:
+            reports_root = self._reports_root
+            scripts_exec = self._scripts_exec_root
+            scripts_undo = self._scripts_undo_root
 
         reports_root.mkdir(parents=True, exist_ok=True)
         scripts_exec.mkdir(parents=True, exist_ok=True)
         scripts_undo.mkdir(parents=True, exist_ok=True)
+        self._guard_active_snapshot(scripts_exec / "snapshot.json")
 
         maintenance: list[dict] = []
         maint_script: str | None = None
         if with_maintenance:
-            from engine import render_maintenance_script, write_powershell
+            from engine import render_maintenance_script
             from maintenance import (cleanup_report, memory_report,
                                            redist_report)
 
@@ -843,10 +888,15 @@ class GuiController:
             policy_notes=list(result.policy_notes),
             errors=list(result.errors),
             out_dir=reports_root,
+            apply_dir=scripts_exec,
+            undo_dir=scripts_undo,
             files=[
-                "report.md", "report.html", "manifest.json",
-                "apply.ps1", "undo.ps1", "snapshot.json",
-                "maintenance.ps1" if maint_script else None,
+                str(reports_root / "report.md"),
+                str(reports_root / "report.html"),
+                str(reports_root / "manifest.json"),
+                str(scripts_exec / "apply.ps1"),
+                str(scripts_undo / "undo.ps1"),
+                str(scripts_exec / "maintenance.ps1") if maint_script else None,
             ],
         )
         # Filter None
@@ -911,6 +961,8 @@ class GuiController:
             "policy_notes": list(res.policy_notes),
             "errors": list(res.errors),
             "out_dir": str(res.out_dir) if res.out_dir else None,
+            "apply_dir": str(res.apply_dir) if res.apply_dir else None,
+            "undo_dir": str(res.undo_dir) if res.undo_dir else None,
             "files": list(res.files),
             "outcomes": list(res.outcomes),
         }
@@ -1065,8 +1117,19 @@ class GuiController:
         plan = self._plan_dir(plan_dir)
         out = Path(out_dir) if out_dir else Path(reports_dir()) / "diagnose"
         out.mkdir(parents=True, exist_ok=True)
+        if plan_dir is not None:
+            diag_apply = self._apply_dir(plan_dir)
+            diag_undo = self._undo_dir(plan_dir)
+            diag_report = Path(plan_dir)
+        else:
+            diag_apply = self._apply_dir()
+            diag_undo = self._undo_dir()
+            diag_report = self.last_scan.out_dir if self.last_scan else self._reports_root
         diag = run_diagnosis(
-            self.backend(), out, plan_dir=plan, dry_run=True, brand=self.brand,
+            self.backend(), out, plan_dir=plan,
+            apply_dir=diag_apply, undo_dir=diag_undo,
+            report_dir=diag_report,
+            dry_run=True, brand=self.brand,
             on_progress=lambda m: self._emit(EventType.LOG, f"diagnose: {m}"),
         )
         self._emit(
@@ -1090,7 +1153,8 @@ class GuiController:
         include_opt_in: bool = False, include_optional: bool = False,
         execute: bool = False, process_names: tuple[str, ...] = (),
         out_dir: str | Path | None = None,
-    ) -> bool:        return self._run(
+    ) -> bool:
+        return self._run(
             f"generate-{kind}",
             lambda: self._generate(
                 kind=kind, selected=selected, include_opt_in=include_opt_in,
@@ -1142,6 +1206,7 @@ class GuiController:
         else:
             raise ValueError(f"unknown maintenance kind {kind!r}")
         target = Path(out_dir) if out_dir else self._scripts_exec_root
+        self._guard_active_snapshot(target / (fname + ".snapshot.json"))
         text = render_maintenance_script(
             steps, title=title, generated_at=_now(), brand=self.brand
         )
@@ -1178,6 +1243,7 @@ class GuiController:
         changes = load_registry_payload(payload)
         steps = registry_steps(changes)
         target = Path(out_dir) if out_dir else self._scripts_exec_root
+        self._guard_active_snapshot(target / "registry.ps1.snapshot.json")
         text = render_maintenance_script(
             steps, title=f"{self.brand} registry payload", generated_at=_now(),
             brand=self.brand,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import urllib.request
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -15,7 +16,7 @@ class LoadController:
 
     @property
     def configured(self) -> bool:
-        return bool(self.url.strip())
+        return bool(str(self.url or "").strip())
 
 @dataclass
 class BufferbloatResult:
@@ -117,7 +118,7 @@ class _Load:
     def _upload(self) -> None:
         try:
             n = int(self.ctl.upload_bytes)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             n = 1024 * 1024
         payload = b"x" * max(1, min(n, 64 * 1024 * 1024))
         while not self.stop.is_set():
@@ -131,8 +132,15 @@ class _Load:
                 self.stop.wait(0.5)
 
     def start(self) -> None:
-        fn = self._download if self.ctl.direction == "download" else self._upload
-        for _ in range(max(1, self.ctl.concurrency)):
+        direction = str(self.ctl.direction or "").strip().lower()
+        if direction not in ("download", "upload"):
+            raise ValueError("load direction must be 'download' or 'upload'")
+        fn = self._download if direction == "download" else self._upload
+        try:
+            concurrency = int(self.ctl.concurrency)
+        except (TypeError, ValueError, OverflowError):
+            concurrency = 1
+        for _ in range(max(1, min(concurrency, 64))):
             t = threading.Thread(target=fn, daemon=True)
             t.start()
             self.threads.append(t)
@@ -157,6 +165,10 @@ def run_bufferbloat_test(
         if on_phase is not None:
             on_phase(phase, msg)
 
+    try:
+        settle = max(0.0, float(settle_seconds))
+    except (TypeError, ValueError, OverflowError):
+        settle = 0.0
     result = BufferbloatResult(target=target)
     note("idle", f"probing {target} without load")
     idle = probe(
@@ -173,11 +185,11 @@ def run_bufferbloat_test(
         if ctl is None or not ctl.configured:
             note(phase, "no load endpoint configured; skipping")
             continue
-        note(phase, f"saturating {phase} for {settle_seconds:g}s to fill queues")
+        note(phase, f"saturating {phase} for {settle:g}s to fill queues")
         load = _Load(ctl)
         load.start()
-        time.sleep(settle_seconds)
         try:
+            time.sleep(settle)
             note(phase, f"probing {target} under {phase} load")
             dist = probe(
                 target, count=samples_per_phase, interval=interval,
@@ -202,7 +214,7 @@ def run_bufferbloat_test(
     return result
 
 ASSUMPTIONS = (
-    "input one-way is half the hook round-trip (symmetric dispatch assumed); "
+    "input is one-way software dispatch from SendInput to the low-level hook; "
     "render is present-to-vblank on a blank test surface, not game engine time; "
     "network is ICMP/TCP ping p95, not game-protocol latency; panel scan-out and "
     "pixel response are excluded and need a camera to observe"
@@ -377,28 +389,44 @@ def probe(
 ) -> ProbeResult:
     if not target:
         raise ProbeUnavailableError("no target to probe")
-    use_tcp = transport == "tcp"
-    use_icmp = transport == "icmp"
+    mode = str(transport or "auto").strip().lower()
+    if mode not in ("auto", "icmp", "tcp"):
+        raise ValueError("transport must be 'auto', 'icmp', or 'tcp'")
+    try:
+        sample_count = max(1, min(10000, int(count)))
+    except (TypeError, ValueError, OverflowError):
+        sample_count = 1
+    try:
+        delay = max(0.0, float(interval))
+        timeout = max(0.05, min(60.0, float(timeout)))
+        port = int(port)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("interval, timeout, and port must be numeric") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be from 1 through 65535")
     samples: list[Sample] = []
-    chosen = transport
-    for i in range(max(1, count)):
-        if use_tcp or (transport == "auto" and i > 0 and not any(s.rtt_ms is not None for s in samples)):
+    chosen = mode
+    for i in range(sample_count):
+        if mode == "tcp" or chosen == "tcp":
             rtt = _tcp_once(target, port, timeout)
             if rtt is not None:
                 chosen = "tcp"
-            else:
-                rtt = _ping_once(target, timeout)
-                if rtt is not None:
-                    chosen = "icmp" if chosen == "auto" else "tcp+icmp"
-        elif use_icmp or transport == "auto":
+        elif mode == "icmp" or chosen == "icmp":
             rtt = _ping_once(target, timeout)
-            if rtt is not None and chosen == "auto":
-                chosen = "icmp"
         else:
-            rtt = _tcp_once(target, port, timeout)
+            # Auto starts with ICMP. If the machine/network blocks it, select
+            # TCP once and keep every later sample on that same transport;
+            # never mix unlike measurements in one distribution.
+            rtt = _ping_once(target, timeout)
+            if rtt is not None:
+                chosen = "icmp"
+            else:
+                rtt = _tcp_once(target, port, timeout)
+                if rtt is not None:
+                    chosen = "tcp"
         samples.append(Sample(rtt_ms=rtt))
-        if interval and i < count - 1:
-            time.sleep(interval)
+        if delay and i < sample_count - 1:
+            time.sleep(delay)
     if chosen == "auto":
         chosen = "icmp" if any(s.rtt_ms is not None for s in samples) else "unreachable"
     return ProbeResult(samples=samples, transport=chosen, target=target)
@@ -486,6 +514,12 @@ import math
 
 def _pct(sorted_samples: list[float], q: float) -> float | None:
     if not sorted_samples:
+        return None
+    try:
+        q = float(q)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(q) or not 0.0 <= q <= 100.0:
         return None
     if len(sorted_samples) == 1:
         return sorted_samples[0]
@@ -803,11 +837,16 @@ class TraceResult:
 
     @property
     def cgnat(self) -> bool:
-        return any(
-            h.address.startswith("100.") and 64 <= int(h.address.split(".")[1] or 0) <= 127
-            for h in self.hops
-            if h.address and h.address != "*" and h.address[0].isdigit()
-        )
+        import ipaddress
+
+        network = ipaddress.ip_network("100.64.0.0/10")
+        for hop in self.hops:
+            try:
+                if ipaddress.ip_address(hop.address) in network:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     @property
     def double_nat(self) -> bool:
@@ -858,6 +897,14 @@ def traceroute(
 ) -> TraceResult:
     if not sys.platform.startswith("win"):
         raise SnappyAIError("traceroute currently needs Windows tracert")
+    if not str(target or "").strip():
+        raise SnappyAIError("no target to trace")
+    try:
+        max_hops = max(1, min(255, int(max_hops)))
+        probes_per_hop = max(1, min(10, int(probes_per_hop)))
+        timeout = max(0.05, min(60.0, float(timeout)))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SnappyAIError("invalid traceroute limits") from exc
     try:
         resolved = socket.gethostbyname(target)
     except OSError as exc:
@@ -934,14 +981,15 @@ def _open_window() -> dict[str, Any]:
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    lresult_t = ctypes.c_ssize_t
+    wparam_t = ctypes.c_size_t
+    lparam_t = ctypes.c_ssize_t
     user32.DefWindowProcW.argtypes = [
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
-    ]
-    user32.DefWindowProcW.restype = wintypes.LPARAM
+        wintypes.HWND, wintypes.UINT, wparam_t, lparam_t]
+    user32.DefWindowProcW.restype = lresult_t
 
     @ctypes.WINFUNCTYPE(
-        wintypes.LPARAM, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
-        wintypes.LPARAM,
+        lresult_t, wintypes.HWND, wintypes.UINT, wparam_t, lparam_t,
     )
     def _wndproc(hwnd, msg, wp, lp):
         try:
@@ -983,13 +1031,14 @@ def _open_window() -> dict[str, Any]:
     user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD]
-    LWA_ALPHA = 0x00000002
     hinst = kernel32.GetModuleHandleW(None)
+    class_name = "SnappyAIPresentProbe-%d-%d" % (
+        os.getpid(), threading.get_ident())
     cls = WNDCLASSEXW()
     cls.cbSize = ctypes.sizeof(WNDCLASSEXW)
     cls.lpfnWndProc = _wndproc
     cls.hInstance = hinst
-    cls.lpszClassName = "SnappyAIPresentProbe"
+    cls.lpszClassName = class_name
     cls.style = CS_OWNDC
     if not user32.RegisterClassExW(ctypes.byref(cls)):
         raise OSError("RegisterClassEx failed")
@@ -999,12 +1048,17 @@ def _open_window() -> dict[str, Any]:
     x = (sw - w) // 2
     y = (sh - h) // 2
     hwnd = user32.CreateWindowExW(
-        0x00080008, "SnappyAIPresentProbe", "present probe", WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0x08080088, class_name, "present probe",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
         x, y, w, h, None, None, hinst, None,
     )
     if not hwnd:
+        user32.UnregisterClassW(class_name, hinst)
         raise OSError("CreateWindowEx failed")
-    user32.SetLayeredWindowAttributes(hwnd, 0, 0, 0x00000002)
+    # Alpha zero can make DWM classify the surface as fully occluded, which
+    # defeats a present-to-vblank probe. One alpha step remains effectively
+    # invisible while keeping the swap chain composited.
+    user32.SetLayeredWindowAttributes(hwnd, 0, 1, 0x00000002)
     user32.ShowWindow(hwnd, SW_SHOWNA)
     user32.UpdateWindow(hwnd)
     time.sleep(0.2)
@@ -1015,7 +1069,7 @@ def _open_window() -> dict[str, Any]:
         except Exception:
             pass
         try:
-            user32.UnregisterClassW("SnappyAIPresentProbe", hinst)
+            user32.UnregisterClassW(class_name, hinst)
         except Exception:
             pass
 
@@ -1160,28 +1214,39 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
     swap_effects = [(4, "flip-discard"), (0, "discard")]
     driver_types = [(1, "hardware"), (5, "WARP")]
     effect = ""
+
+    def release_ptr(ptr: Any) -> None:
+        if not getattr(ptr, "value", None):
+            return
+        try:
+            _vcall(ptr, 2, wintypes.ULONG)(ptr)
+        except Exception:
+            pass
+
     for driver_type, driver_name in driver_types:
         for code, swap_name in swap_effects:
-            import logging
-            logging.warning(f"Trying driver={driver_name}, swap effect={code} ({swap_name})")
+            _ = driver_name
             hr = d3d11.D3D11CreateDeviceAndSwapChain(
                 None, driver_type, None, 0, level, 1, 7, ctypes.byref(make_desc(code)),
                 ctypes.byref(swapchain), ctypes.byref(device),
                 ctypes.byref(out_level), ctypes.byref(context),
             )
-            logging.warning(f"D3D11CreateDeviceAndSwapChain driver={driver_name}, swap={code} hr={hr}, swapchain={swapchain.value}")
             if hr != 0 or not swapchain.value:
+                for ptr in (context, device, swapchain):
+                    release_ptr(ptr)
+                swapchain = ctypes.c_void_p()
+                device = ctypes.c_void_p()
+                context = ctypes.c_void_p()
                 continue
 
             present_fn = _vcall(swapchain, 8, ctypes.c_long, wintypes.UINT, wintypes.UINT)
             test_hr = present_fn(swapchain, 1, 0)
-            logging.warning(f"Test Present driver={driver_name}, swap={code} hr={test_hr}")
             if test_hr == 0:
                 effect = swap_name
                 break
 
-            release_fn = _vcall(swapchain, 2, wintypes.ULONG)
-            release_fn(swapchain)
+            for ptr in (context, device, swapchain):
+                release_ptr(ptr)
             swapchain = ctypes.c_void_p()
             device = ctypes.c_void_p()
             context = ctypes.c_void_p()
@@ -1192,17 +1257,13 @@ def _open_device(hwnd: Any) -> dict[str, Any]:
 
     present = _vcall(swapchain, 8, ctypes.c_long, wintypes.UINT, wintypes.UINT)
     getstats = _vcall(swapchain, 13, ctypes.c_long, ctypes.POINTER(FRAME_STATS))
-    release = _vcall(swapchain, 2, wintypes.ULONG)
 
     def do_present(sync: int, flags: int) -> int:
         return int(present(swapchain, sync, flags))
 
     def do_release() -> None:
-        for ptr in (swapchain, context, device):
-            try:
-                release(ptr)
-            except Exception:
-                pass
+        for ptr in (context, device, swapchain):
+            release_ptr(ptr)
 
     def close() -> None:
         do_release()
@@ -1238,24 +1299,28 @@ def measure_present(
             "ok": False, "error": "present measurement needs Windows with DirectX",
             "method": METHOD, "limits": LIMITS,
         }
+    try:
+        samples = int(samples)
+        warmup = int(warmup)
+    except (TypeError, ValueError, OverflowError):
+        return {"ok": False, "error": "sample counts must be integers",
+                "method": METHOD, "limits": LIMITS}
     if samples <= 0:
         return {"ok": False, "error": "no samples requested",
                 "method": METHOD, "limits": LIMITS}
+    samples = min(samples, 10000)
+    warmup = max(1, min(warmup, 1000))
     win = None
     dev = None
     try:
         try:
             win = _open_window()
-            import logging
-            logging.warning(f"Window created: hwnd={win['hwnd']}")
-        except OSError as exc:
+        except Exception as exc:
             return {"ok": False, "error": f"test window failed: {exc}",
                     "method": METHOD, "limits": LIMITS}
         try:
             dev = _open_device(win["hwnd"])
-            import logging
-            logging.warning(f"Device created successfully")
-        except OSError as exc:
+        except Exception as exc:
             return {"ok": False, "error": f"device failed: {exc}",
                     "method": METHOD, "limits": LIMITS}
         present = dev["present"]
@@ -1283,10 +1348,12 @@ def measure_present(
         alive = False
         for round in range(3):
             s_pre = stats()
+            presented = False
             for i in range(warmup):
                 hr = present(1, 0)
                 if hr != 0:
                     break
+                presented = True
                 pump()
                 if on_progress is not None and round == 0 and i % 10 == 0:
                     on_progress(f"render warmup {i + 1}/{warmup}")
@@ -1294,8 +1361,9 @@ def measure_present(
             if s_post["hr"] == 0 and s_post["prc"] > s_pre.get("prc", -1):
                 alive = True
                 break
-            elif s_post["hr"] != 0:
-
+            elif s_post["hr"] != 0 and presented:
+                # Some swap effects/drivers do not expose frame statistics.
+                # Successful blocking presents still support fallback timing.
                 alive = True
                 break
         if not alive:
@@ -1306,13 +1374,10 @@ def measure_present(
         lats: list[float] = []
         intervals: list[float] = []
         timeouts = 0
-        use_stats = True
         last_present_time = None
         for i in range(samples):
             s0 = stats()
             if s0["hr"] != 0:
-
-                use_stats = False
                 t0 = now_ms()
                 if present(1, 0) != 0:
                     continue

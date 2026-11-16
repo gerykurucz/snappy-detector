@@ -4,7 +4,6 @@ import math
 import os
 
 SHAPES = ("cross", "plus", "dot", "circle", "x")
-MODES = ("center", "custom")
 DEFAULT_COLOR = (0, 255, 0)
 _TRANSPARENT = "black"
 
@@ -43,23 +42,37 @@ def _rot(x, y, ang):
 
 def shape_geometry(shape, size, gap, thickness, rotation=0):
     try:
-        size = max(2.0, float(size))
-    except (TypeError, ValueError):
+        size = float(size)
+        if not math.isfinite(size):
+            raise ValueError
+        size = max(2.0, size)
+    except (TypeError, ValueError, OverflowError):
         size = 24.0
     try:
-        gap = max(0.0, float(gap))
-    except (TypeError, ValueError):
+        gap = float(gap)
+        if not math.isfinite(gap):
+            raise ValueError
+        gap = max(0.0, gap)
+    except (TypeError, ValueError, OverflowError):
         gap = 0.0
     try:
-        ang = math.radians(max(0.0, min(90.0, float(rotation))))
-    except (TypeError, ValueError):
+        rotation = float(rotation)
+        if not math.isfinite(rotation):
+            raise ValueError
+        ang = math.radians(max(0.0, min(90.0, rotation)))
+    except (TypeError, ValueError, OverflowError):
         ang = 0.0
     shape = str(shape or "cross").strip().lower()
+    if shape not in SHAPES:
+        shape = "cross"
     lines, ovals = [], []
     if shape == "dot":
         try:
-            r = max(2.0, float(thickness) * 1.5)
-        except (TypeError, ValueError):
+            r = float(thickness) * 1.5
+            if not math.isfinite(r):
+                raise ValueError
+            r = max(2.0, r)
+        except (TypeError, ValueError, OverflowError):
             r = 3.0
         ovals.append((-r, -r, r, r, True))
     elif shape == "circle":
@@ -124,10 +137,14 @@ def save_preset(name, values, config_dir=None):
     data = list_presets(config_dir)
     data[name] = {k: v for k, v in dict(values).items()
                   if str(k).startswith("reticle_")}
-    tmp = preset_path(config_dir) + ".tmp"
+    target = preset_path(config_dir)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = target + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
-    os.replace(tmp, preset_path(config_dir))
+    os.replace(tmp, target)
     return True
 
 def load_preset(name, config_dir=None):
@@ -138,16 +155,23 @@ def delete_preset(name, config_dir=None):
     if str(name or "").strip() not in data:
         return False
     del data[str(name or "").strip()]
-    tmp = preset_path(config_dir) + ".tmp"
+    target = preset_path(config_dir)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = target + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
-    os.replace(tmp, preset_path(config_dir))
+    os.replace(tmp, target)
     return True
 
 def shape_bounds(shape, size, gap, thickness, rotation=0):
     try:
-        thick = max(1.0, float(thickness))
-    except (TypeError, ValueError):
+        thick = float(thickness)
+        if not math.isfinite(thick):
+            raise ValueError
+        thick = max(1.0, thick)
+    except (TypeError, ValueError, OverflowError):
         thick = 2.0
     geo = shape_geometry(shape, size, gap, thickness, rotation)
     reach = 0.0
@@ -219,10 +243,10 @@ class ReticleOverlay(object):
     def _signature(self):
         g = self._cfg.get
         return (bool(g("reticle_enabled", False)), g("reticle_shape"),
-                g("reticle_mode"), g("reticle_size"), g("reticle_gap"),
+                g("reticle_size"), g("reticle_gap"),
                 g("reticle_thickness"), g("reticle_rotation"),
                 g("reticle_opacity"), g("reticle_color"),
-                g("reticle_x"), g("reticle_y"), self._screen())
+                self._screen())
 
     def start(self):
         self.tick()
@@ -234,6 +258,7 @@ class ReticleOverlay(object):
         except Exception:
             pass
         self._tick_id = None
+        self._sig = None
         self.hide()
         self._debug_destroy()
 
@@ -367,10 +392,19 @@ class ReticleOverlay(object):
             self.hide()
             return
         vx, vy, vw, vh = self._screen()
-        size = int(self._cfg.get("reticle_size", 24) or 24)
-        gap = int(self._cfg.get("reticle_gap", 6) or 0)
-        thick = int(self._cfg.get("reticle_thickness", 2) or 2)
-        rot = int(self._cfg.get("reticle_rotation", 0) or 0)
+        def number(key, default):
+            try:
+                value = float(self._cfg.get(key, default))
+                if not math.isfinite(value):
+                    raise ValueError
+                return int(round(value))
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        size = number("reticle_size", 24)
+        gap = number("reticle_gap", 6)
+        thick = number("reticle_thickness", 2)
+        rot = number("reticle_rotation", 0)
         shape = self._cfg.get("reticle_shape", "cross")
         try:
             r = shape_bounds(shape, size, gap, thick, rot)
@@ -379,7 +413,11 @@ class ReticleOverlay(object):
         w = h = r * 2 + 4
         if self._win is None:
             import tkinter as tk
-            win = tk.Toplevel(self._root)
+            try:
+                win = tk.Toplevel(self._root)
+            except Exception:
+                self._sig = None
+                return
             try:
                 win.overrideredirect(True)
             except Exception:
@@ -400,31 +438,32 @@ class ReticleOverlay(object):
                     pass
                 self._win = None
                 self._canvas = None
+                self._sig = None
                 return
             canvas = tk.Canvas(win, bg=_TRANSPARENT, highlightthickness=0,
                                bd=0, width=w, height=h)
             canvas.pack()
             self._win = win
             self._canvas = canvas
-        mode = str(self._cfg.get("reticle_mode", "center") or "center")
-        if mode.strip().lower() == "custom":
-            try:
-                px = int(self._cfg.get("reticle_x", 0) or 0)
-                py = int(self._cfg.get("reticle_y", 0) or 0)
-            except (TypeError, ValueError):
-                px, py = vx + vw // 2, vy + vh // 2
         else:
-            px, py = vx + vw // 2, vy + vh // 2
+            try:
+                self._canvas.configure(width=w, height=h)
+            except Exception:
+                self.hide()
+                self._sig = None
+                return
+        px, py = vx + vw // 2, vy + vh // 2
         try:
             self._win.geometry("%dx%d+%d+%d" % (w, h, px - r, py - r))
         except Exception:
             pass
         try:
             _opac = float(self._cfg.get("reticle_opacity", 90)) / 100.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _opac = 0.9
         if not _apply_layered(self._win, _opac):
             self.hide()
+            self._sig = None
             return
         _col = parse_color(self._cfg.get("reticle_color"))
         if _col == (0, 0, 0):

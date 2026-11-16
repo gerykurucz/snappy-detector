@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import html
 import json
 import os
@@ -10,11 +11,12 @@ import subprocess
 import sys
 import textwrap
 import threading
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from utils import console_encoding, powershell_exe, silent_kwargs
+from utils import powershell_exe, silent_kwargs
 from maintenance import applicable_tweaks, refused_tweaks
 from measurement import build_fake_inventory
 from maintenance import Step, StepKind, Tweak
@@ -42,13 +44,17 @@ def _maybe_float(value):
     try:
         if value is None or value == "":
             return None
-        return float(value)
-    except (TypeError, ValueError):
+        out = float(value)
+        return out if math.isfinite(out) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 def _maybe_int(value):
     f = _maybe_float(value)
-    return None if f is None else int(f)
+    try:
+        return None if f is None else int(f)
+    except (ValueError, OverflowError):
+        return None
 
 def _as_rows(value):
     if value is None or value == "":
@@ -80,15 +86,30 @@ def parse_nics(payload):
     power = {}
     for row in _as_rows(payload.get("p") if isinstance(payload, dict) else None):
         name = str(row.get("Name") or "")
-        val = str(row.get("AllowComputerToTurnOffDevice") or "").lower()
-        if name and val in ("enabled", "disabled"):
-            power[name] = val == "enabled"
+        raw = row.get("AllowComputerToTurnOffDevice")
+        if isinstance(raw, bool):
+            val = raw
+        else:
+            text = str(raw if raw is not None else "").strip().lower()
+            if text in ("1", "true", "enabled"):
+                val = True
+            elif text in ("0", "false", "disabled"):
+                val = False
+            else:
+                continue
+        if name:
+            power[name] = val
     moderation = {}
     for row in _as_rows(payload.get("m") if isinstance(payload, dict) else None):
         name = str(row.get("Name") or "")
-        val = str(row.get("DisplayValue") or "").lower()
-        if name and val in ("enabled", "disabled"):
-            moderation[name] = val == "enabled"
+        raw = row.get("RegistryValue")
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        val = str(raw if raw is not None else row.get("DisplayValue") or "").lower()
+        if name and val in ("1", "true", "enabled"):
+            moderation[name] = True
+        elif name and val in ("0", "false", "disabled"):
+            moderation[name] = False
     nics = []
     for row in adapters:
         name = str(row.get("Name") or "")
@@ -172,6 +193,13 @@ class Backend:
 
 class RealBackend(Backend):
     def powershell(self, script: str, timeout: float = 60.0) -> BackendResult:
+        # Force a known encoding. Windows PowerShell otherwise inherits the
+        # machine OEM code page, which corrupts adapter and power-plan names on
+        # localized systems when stdout is redirected.
+        prefix = (
+            "$OutputEncoding=[Console]::OutputEncoding="
+            "[Text.UTF8Encoding]::new($false); "
+        )
         try:
             proc = subprocess.run(
                 [
@@ -181,11 +209,11 @@ class RealBackend(Backend):
                     "-ExecutionPolicy",
                     "Bypass",
                     "-Command",
-                    script,
+                    prefix + script,
                 ],
                 capture_output=True,
                 text=True,
-                encoding=console_encoding(),
+                encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
                 **silent_kwargs(),
@@ -307,25 +335,34 @@ class RealBackend(Backend):
     def read_power_details(self, inv: Inventory) -> None:
         import json
 
+        scheme_text = ""
+        try:
+            scheme_proc = subprocess.run(
+                ["powercfg.exe", "/getactivescheme"], capture_output=True,
+                text=True, encoding="oem", errors="replace", timeout=15.0,
+                **silent_kwargs(),
+            )
+            if scheme_proc.returncode == 0:
+                scheme_text = scheme_proc.stdout or ""
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            pass
         res = self.powershell(
-            "$s = (powercfg /getactivescheme | Out-String); "
             "$b = $null; "
             "try { $b = (Get-CimInstance Win32_Battery | "
             "Select-Object -First 1).BatteryStatus } catch {}; "
-            "@{s=$s; b=$b} | ConvertTo-Json -Compress",
+            "@{b=$b} | ConvertTo-Json -Compress",
             timeout=30.0,
         )
-        if not res.ok or not res.stdout.strip():
+        if (not res.ok or not res.stdout.strip()) and not scheme_text:
             inv.warnings.append("power scheme query failed; plan name unknown")
             return
         try:
-            raw = json.loads(res.stdout)
+            raw = json.loads(res.stdout) if res.ok and res.stdout.strip() else {}
         except ValueError:
-            inv.warnings.append("power scheme query returned unparsable output")
-            return
+            raw = {}
         if not isinstance(raw, dict):
-            return
-        guid, name = parse_scheme(raw.get("s"))
+            raw = {}
+        guid, name = parse_scheme(scheme_text)
         inv.power.active_scheme_guid = guid
         inv.power.active_scheme_name = name
         status = _maybe_int(raw.get("b"))
@@ -393,11 +430,13 @@ class RealBackend(Backend):
             "$ErrorActionPreference='SilentlyContinue'; "
             "$a = @(Get-NetAdapter -Physical | Select-Object "
             "InterfaceDescription,Name,Status,MtuSize,PhysicalMediaType); "
-            "$p = @(Get-NetAdapter -Physical | Get-NetAdapterPowerManagement | "
+            "$p = @(Get-NetAdapter -Physical | ForEach-Object { "
+            "Get-NetAdapterPowerManagement -Name $_.Name -ErrorAction SilentlyContinue } | "
             "Select-Object Name,AllowComputerToTurnOffDevice); "
-            "$m = @(Get-NetAdapter -Physical | Get-NetAdapterAdvancedProperty | "
-            "Where-Object {$_.DisplayName -eq 'Interrupt Moderation'} | "
-            "Select-Object Name,DisplayValue); "
+            "$m = @(Get-NetAdapter -Physical | ForEach-Object { "
+            "Get-NetAdapterAdvancedProperty -Name $_.Name -ErrorAction SilentlyContinue } | "
+            "Where-Object {$_.RegistryKeyword -eq '*InterruptModeration'} | "
+            "Select-Object Name,DisplayValue,RegistryValue); "
             "@{a=$a;p=$p;m=$m} | ConvertTo-Json -Compress -Depth 3",
             timeout=45.0,
         )
@@ -483,7 +522,9 @@ class RealBackend(Backend):
             try:
                 raw = json.loads(res.stdout)
                 addrs = raw if isinstance(raw, list) else [raw]
-                inv.dns.server_addresses = [str(a) for a in addrs if a]
+                inv.dns.server_addresses = list(dict.fromkeys(
+                    str(a) for a in addrs if a
+                ))
             except ValueError:
                 inv.warnings.append("dns server list returned unparsable output")
         else:
@@ -744,6 +785,7 @@ function Write-Warn2 {
 }
 
 function Save-Snapshot {
+    param([switch]$Quiet)
     # Merge with any existing snapshot: the EARLIEST recorded prior value
     # for a change wins, and records from earlier runs that this run did
     # not touch are kept. A second apply (or a subset apply) can therefore
@@ -752,7 +794,11 @@ function Save-Snapshot {
     $merged = $new
     try {
         if (Test-Path -LiteralPath $script:Snapshot) {
-            $old = @(Get-Content -LiteralPath $script:Snapshot -Raw | ConvertFrom-Json)
+            # Windows PowerShell 5.1 emits a JSON array as ONE pipeline
+            # object, so @(pipeline) nests it. Assign first, then wrap.
+            $parsed = Get-Content -LiteralPath $script:Snapshot -Raw | ConvertFrom-Json
+            $old = @()
+            if ($null -ne $parsed) { $old = @($parsed) }
             if ($old.Count -gt 0 -and $null -ne $old[0]) {
                 $byKey = [ordered]@{}
                 foreach ($o in $old) {
@@ -762,18 +808,39 @@ function Save-Snapshot {
                 }
                 foreach ($n in $new) {
                     $k = "$($n.tweak)|$($n.kind)|$($n.hive)|$($n.path)|$($n.name)|$($n.command)|$($n.description)"
-                    if (-not $byKey.Contains($k)) { $byKey[$k] = $n }
+                    if (-not $byKey.Contains($k)) {
+                        $byKey[$k] = $n
+                    } elseif ([bool]$n.applyCompleted) {
+                        $existing = $byKey[$k]
+                        if ($null -eq $existing.PSObject.Properties['applyCompleted']) {
+                            $existing | Add-Member -NotePropertyName applyCompleted -NotePropertyValue $true
+                        } else {
+                            $existing.applyCompleted = $true
+                        }
+                    }
                 }
                 $merged = @($byKey.Values)
             }
         }
     } catch {
-        $merged = $new
+        throw "Existing snapshot is unreadable; refusing to replace its rollback data: $($_.Exception.Message)"
     }
-    $merged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:Snapshot -Encoding UTF8
-    Write-Host ""
-    Write-Host "Snapshot written to $script:Snapshot (earliest recorded prior values win)." -ForegroundColor Green
-    Write-Host ("{0} change(s) recorded. Undo with: .\@@UNDO@@" -f @($merged).Count) -ForegroundColor Green
+    if (@($merged).Count -eq 0) {
+        Write-Host "No automated changes were attempted; no snapshot was written." -ForegroundColor DarkGray
+        return
+    }
+    $tmp = "$script:Snapshot.$PID.tmp"
+    try {
+        $merged | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tmp -Encoding UTF8
+        Move-Item -LiteralPath $tmp -Destination $script:Snapshot -Force
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $Quiet) {
+        Write-Host ""
+        Write-Host "Snapshot written to $script:Snapshot (earliest recorded prior values win)." -ForegroundColor Green
+        Write-Host ("{0} change(s) recorded. Undo with: .\@@UNDO@@" -f @($merged).Count) -ForegroundColor Green
+    }
 }
 
 function Read-RegistryValue {
@@ -782,16 +849,35 @@ function Read-RegistryValue {
     $ErrorActionPreference = 'SilentlyContinue'
     $item = Get-Item -LiteralPath $Path
     $ErrorActionPreference = $prev
-    if ($null -eq $item) { return $null }
-    if ($item.GetValueNames() -notcontains $Name) { return $null }
+    if ($null -eq $item) {
+        return [pscustomobject]@{ keyExists = $false; valueExists = $false }
+    }
+    if ($item.GetValueNames() -notcontains $Name) {
+        return [pscustomobject]@{ keyExists = $true; valueExists = $false }
+    }
     $v = $item.GetValue($Name, $null, 'DoNotExpandEnvironmentNames')
     $k = [string]$item.GetValueKind($Name)
-    return [pscustomobject]@{ value = $v; kind = $k }
+    return [pscustomobject]@{
+        keyExists = $true; valueExists = $true; value = $v; kind = $k
+    }
+}
+
+function Assert-SnapshotReadable {
+    if (-not (Test-Path -LiteralPath $script:Snapshot)) { return }
+    try {
+        $raw = Get-Content -LiteralPath $script:Snapshot -Raw
+        if (-not $raw.Trim()) { throw 'snapshot is empty' }
+        $null = $raw | ConvertFrom-Json
+    } catch {
+        Write-Host "Existing snapshot is unreadable; refusing to apply over it." -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Red
+        Exit-@@EXIT@@ 1
+    }
 }
 
 function Confirm-Disruptive {
     param([string]$What)
-    if ($Force) { return $true }
+    if ($Force -or $WhatIf2) { return $true }
     Write-Host ""
     Write-Warn2 "DISRUPTIVE: $What"
     $ans = Read-Host "  Continue? [y/N]"
@@ -815,11 +901,11 @@ function Invoke-Change {
         [bool]$Reversible,
         [bool]$RequiresReboot,
         [scriptblock]$Apply,
-        [scriptblock]$Undo
+        [string]$UndoId
     )
     Write-Step $TweakId $Description
     if ($Notes) { Write-Warn2 $Notes }
-    if (-not $Reversible) {
+    if (-not $Reversible -and -not $WhatIf2) {
         Write-Host "    IRREVERSIBLE: there is no undo for this step." -ForegroundColor Red
         if ($Safety) { Write-Host ("    Safeguard: {0}" -f $Safety) -ForegroundColor DarkYellow }
         if (-not $Force) {
@@ -835,7 +921,11 @@ function Invoke-Change {
         $root = switch ($Hive) { 'HKLM' { 'HKLM:' } 'HKCU' { 'HKCU:' } default { $Hive } }
         $full = if ($root) { Join-Path $root $Path } else { $Path }
         $prior = Read-RegistryValue -Path $full -Name $Name
-        $shown = if ($null -eq $prior) { '<absent>' } else { "$($prior.value) ($($prior.kind))" }
+        $shown = if ($null -eq $prior -or -not $prior.valueExists) {
+            '<absent>'
+        } else {
+            "$($prior.value) ($($prior.kind))"
+        }
         Write-Host ("    prior value: {0}" -f $shown)
     }
     $record = [pscustomobject]@{
@@ -849,10 +939,11 @@ function Invoke-Change {
         applied = $Value
         valueType = $ValueType
         command = $Command
-        undoScript = $Undo.ToString()
+        undoId = $UndoId
         reversible = $Reversible
         safety = $Safety
         requiresReboot = $RequiresReboot
+        applyCompleted = $false
     }
     if ($WhatIf2) {
         Write-Host "    [preview] no change made" -ForegroundColor DarkGray
@@ -860,17 +951,22 @@ function Invoke-Change {
         return
     }
     try {
-        & $Apply
+        # Record the prior state before the first command.  If a multi-command
+        # step fails halfway through, its undo remains available.
         $script:Changes += $record
+        Save-Snapshot -Quiet
+        & $Apply
+        $record.applyCompleted = $true
+        Save-Snapshot -Quiet
         Write-Host "    applied" -ForegroundColor Green
     } catch {
         Write-Host ("    FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
         Write-Warn2 "Stopping. Partial application is worse than no application."
-        Save-Snapshot
         Exit-@@EXIT@@ 1
     }
 }
 
+Assert-SnapshotReadable
 Write-Host ""
 Write-Host "@@BRAND@@ apply script" -ForegroundColor Magenta
 Write-Host "--------------------" -ForegroundColor Magenta
@@ -897,6 +993,7 @@ $ErrorActionPreference = 'Stop'
 $script:Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Snapshot = Join-Path $Here '@@SNAPSHOT@@'
 $script:Interactive = [Environment]::UserInteractive
+$script:KnownUndoIds = @(@@UNDO_IDS@@)
 
 function Exit-@@EXIT@@ {
     param([int]$Code = 0)
@@ -914,7 +1011,11 @@ if (-not (Test-Path -LiteralPath $script:Snapshot)) {
 }
 
 $raw = Get-Content -LiteralPath $script:Snapshot -Raw
-$changes = @($raw | ConvertFrom-Json)
+# Windows PowerShell 5.1 emits a JSON array as ONE pipeline object, so
+# @(pipeline) nests it. Assign first, then wrap.
+$parsed = $raw | ConvertFrom-Json
+$changes = @()
+if ($null -ne $parsed) { $changes = @($parsed) }
 if ($changes.Count -eq 0 -or ($changes.Count -eq 1 -and $null -eq $changes[0].tweak)) {
     Write-Host "Snapshot is empty; nothing was applied." -ForegroundColor Yellow
     Exit-@@EXIT@@ 0
@@ -931,17 +1032,21 @@ $ordered = @($changes)
 $failed = 0
 foreach ($c in $ordered) {
     Write-Host ("[{0}] {1}" -f $c.tweak, $c.description) -ForegroundColor Cyan
-    if ($WhatIf2) {
-        Write-Host "    [preview] would restore prior value" -ForegroundColor DarkGray
-        continue
-    }
     try {
-        if (-not $c.undoScript) {
-            Write-Host "    no undo recorded for this change" -ForegroundColor Yellow
+        if (-not $c.undoId) {
+            throw "snapshot record has no undo id"
+        }
+        if ($script:KnownUndoIds -notcontains [string]$c.undoId) {
+            throw "snapshot contains an unknown undo id"
+        }
+        if ($WhatIf2) {
+            Write-Host "    [preview] would restore prior value" -ForegroundColor DarkGray
             continue
         }
-        $undo = [scriptblock]::Create($c.undoScript)
-        & $undo
+        switch ([string]$c.undoId) {
+@@UNDO_CASES@@
+            default { throw "snapshot contains an unknown undo id" }
+        }
         Write-Host "    restored" -ForegroundColor Green
     } catch {
         Write-Host ("    FAILED to restore: {0}" -f $_.Exception.Message) -ForegroundColor Red
@@ -954,9 +1059,21 @@ if ($failed -gt 0) {
     Write-Host ("{0} change(s) could not be restored. Review them manually." -f $failed) -ForegroundColor Red
     Exit-@@EXIT@@ 1
 }
+if ($WhatIf2) {
+    Write-Host "Undo preview complete; the active snapshot was left untouched." -ForegroundColor DarkGray
+    Exit-@@EXIT@@ 0
+}
 Write-Host "All recorded changes restored." -ForegroundColor Green
 if (@($changes | Where-Object { $_.requiresReboot }).Count -gt 0) {
     Write-Host "Some of these changes require a reboot to fully unwind." -ForegroundColor Yellow
+}
+$archive = "$script:Snapshot.restored-$(Get-Date -Format 'yyyyMMdd-HHmmssfff')"
+try {
+    Move-Item -LiteralPath $script:Snapshot -Destination $archive -Force
+    Write-Host "Archived the completed snapshot at $archive" -ForegroundColor DarkGray
+} catch {
+    Write-Host "Restored the changes but could not archive the active snapshot: $($_.Exception.Message)" -ForegroundColor Red
+    Exit-@@EXIT@@ 1
 }
 Exit-@@EXIT@@ 0
 """
@@ -999,6 +1116,11 @@ class ScriptBundle:
     def write(self, outdir: str | Path) -> dict[str, Path]:
         d = Path(outdir)
         d.mkdir(parents=True, exist_ok=True)
+        snapshot = d / self.snapshot_name
+        if snapshot.exists():
+            raise FileExistsError(
+                f"active snapshot exists at {snapshot}; run its matching undo "
+                "before replacing the apply/undo scripts")
         paths = {
             "apply": d / self.apply_name,
             "undo": d / self.undo_name,
@@ -1105,11 +1227,35 @@ def _registry_restore_block(
     name_lit = _ps_lit(name)
     return textwrap.dedent(
         f"""\
-        $root = '{ps_hive}'
         $full = '{full}'
-        if ($null -eq $c.prior) {{
+        $prior = $c.prior
+        $valueFlag = if ($null -ne $prior) {{
+            $prior.PSObject.Properties['valueExists']
+        }} else {{ $null }}
+        $hadValue = if ($null -eq $prior) {{
+            $false
+        }} elseif ($null -ne $valueFlag) {{
+            [bool]$prior.valueExists
+        }} else {{
+            # Compatibility with snapshots written before key/value flags.
+            $true
+        }}
+        if (-not $hadValue) {{
             Remove-ItemProperty -LiteralPath $full -Name '{name_lit}' `
                 -ErrorAction SilentlyContinue
+            $keyWasAbsent = $false
+            if ($null -ne $prior -and
+                    $null -ne $prior.PSObject.Properties['keyExists']) {{
+                $keyWasAbsent = -not [bool]$prior.keyExists
+            }}
+            if ($keyWasAbsent) {{
+                $item = Get-Item -LiteralPath $full -ErrorAction SilentlyContinue
+                if ($null -ne $item -and
+                        @($item.GetValueNames()).Count -eq 0 -and
+                        @($item.GetSubKeyNames()).Count -eq 0) {{
+                    Remove-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue
+                }}
+            }}
         }} else {{
             if (-not (Test-Path -LiteralPath $full)) {{
                 New-Item -Path $full -Force | Out-Null
@@ -1146,6 +1292,22 @@ def _step_undo_block(step: Step) -> str:
             "-ForegroundColor Yellow"
         )
     return "\n".join(parts)
+
+def _undo_token(namespace: str, step: Step, undo_body: str) -> str:
+    """Return an order-independent ID for one statically generated undo."""
+    identity = {
+        "namespace": namespace,
+        "kind": step.kind,
+        "description": step.description,
+        "hive": step.hive,
+        "path": step.path,
+        "value_name": step.value_name,
+        "command": step.command,
+        "undo": undo_body,
+    }
+    raw = json.dumps(
+        identity, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 def _is_disruptive(step: Step) -> bool:
     cmd = (step.command or "").lower()
@@ -1224,6 +1386,8 @@ def render_bundle(
     )
     body: list[str] = []
     manual_blocks: list[str] = []
+    undo_cases: list[str] = []
+    undo_ids: dict[int, str] = {}
     reboot_needed = False
     total_automated = 0
     for pc in changes:
@@ -1257,6 +1421,14 @@ def render_bundle(
             total_automated += 1
             apply_body = _step_apply_block(step)
             undo_body = _step_undo_block(step)
+            undo_id = _undo_token(t.id, step, undo_body)
+            undo_ids[id(step)] = undo_id
+            undo_cases.extend([
+                f"            '{undo_id}' {{",
+                indent_body(undo_body, "                "),
+                "                break",
+                "            }",
+            ])
             call = (
                 "Invoke-Change "
                 f"-TweakId {_ps_string(t.id)} "
@@ -1274,7 +1446,7 @@ def render_bundle(
                 f"-Reversible ${'true' if step.reversible else 'false'} "
                 f"-RequiresReboot ${'true' if step.requires_reboot else 'false'} "
                 f"-Apply {{\n{indent_body(apply_body, '        ')}\n    }} "
-                f"-Undo {{\n{indent_body(undo_body, '        ')}\n    }}"
+                f"-UndoId {_ps_string(undo_id)}"
             )
             if _is_disruptive(step):
                 call = (
@@ -1327,6 +1499,10 @@ def render_bundle(
     undo_ps1 = _fill(
         _UNDO_HEADER, snapshot=snapshot_name, undo=undo_name, brand=brand,
         exit=exit_name,
+        undo_ids=", ".join(_ps_string(value)
+                           for value in sorted(set(undo_ids.values()))),
+        undo_cases=("\n".join(undo_cases) if undo_cases else
+                    "            # no generated undo entries"),
     )
     manifest = {
         "version": 1,
@@ -1374,6 +1550,7 @@ def render_bundle(
                         "safety": s.safety,
                         "manual": s.is_manual,
                         "undo_steps": len(s.undo),
+                        "undo_id": undo_ids.get(id(s)),
                     }
                     for s in pc.steps
                 ],
@@ -1396,6 +1573,20 @@ def render_maintenance_script(
     steps: list[Step], *, title: str, generated_at: str, brand: str = "latency"
 ) -> str:
     exit_name = _exit_name(brand)
+    maintenance_undo_ids: dict[int, str] = {}
+    maintenance_undo_lines: list[str] = []
+    for step in steps:
+        if step.is_manual:
+            continue
+        undo_body = _step_undo_block(step)
+        undo_id = _undo_token("maintenance", step, undo_body)
+        maintenance_undo_ids[id(step)] = undo_id
+        maintenance_undo_lines.extend([
+            f"                '{undo_id}' {{",
+            indent_body(undo_body, "                    "),
+            "                    break",
+            "                }",
+        ])
     out = [
         "<#",
         ".SYNOPSIS",
@@ -1420,7 +1611,8 @@ def render_maintenance_script(
         "#>",
         "#Requires -Version 5.1",
         "[CmdletBinding()]",
-        "param([switch]$Force, [switch]$SkipManual, [switch]$NoPause, [switch]$Undo)",
+        "param([switch]$Force, [switch]$SkipManual, [switch]$NoPause, "
+        "[switch]$Undo, [switch]$WhatIf2)",
         "",
         "$ErrorActionPreference = 'Continue'",
         "$script:Interactive = [Environment]::UserInteractive",
@@ -1428,10 +1620,14 @@ def render_maintenance_script(
         "$script:Leaf = Split-Path -Leaf $MyInvocation.MyCommand.Path",
         "$script:Snapshot = Join-Path $Here ($script:Leaf + '.snapshot.json')",
         "$script:Changes = @()",
+        "$script:Failures = 0",
+        "$script:KnownUndoIds = @(" + ", ".join(
+            _ps_string(value)
+            for value in sorted(set(maintenance_undo_ids.values()))) + ")",
         "",
         "function Exit-@@EXIT@@ {",
         "    param([int]$Code = 0)",
-        "    if ($script:Interactive -and -not $NoPause) {",
+        "    if ($script:Interactive -and -not $NoPause -and -not $WhatIf2) {",
         "        Write-Host ''",
         "        if ($Code -ne 0) {",
         "            Write-Host ('Exiting with code ' + $Code + '.') -ForegroundColor Red",
@@ -1447,14 +1643,19 @@ def render_maintenance_script(
         "    $ErrorActionPreference = 'SilentlyContinue'",
         "    $item = Get-Item -LiteralPath $Path",
         "    $ErrorActionPreference = $prev",
-        "    if ($null -eq $item) { return $null }",
-        "    if ($item.GetValueNames() -notcontains $Name) { return $null }",
+        "    if ($null -eq $item) {",
+        "        return [pscustomobject]@{ keyExists = $false; valueExists = $false }",
+        "    }",
+        "    if ($item.GetValueNames() -notcontains $Name) {",
+        "        return [pscustomobject]@{ keyExists = $true; valueExists = $false }",
+        "    }",
         "    $v = $item.GetValue($Name, $null, 'DoNotExpandEnvironmentNames')",
         "    $k = [string]$item.GetValueKind($Name)",
-        "    return [pscustomobject]@{ value = $v; kind = $k }",
+        "    return [pscustomobject]@{ keyExists = $true; valueExists = $true; value = $v; kind = $k }",
         "}",
         "",
         "function Save-Snapshot {",
+        "    param([switch]$Quiet)",
         "    # Merge: earliest recorded prior wins; records from earlier runs",
         "    # that this run did not touch are kept (re-runs cannot replace",
         "    # the ORIGINAL priors with post-change values).",
@@ -1462,29 +1663,66 @@ def render_maintenance_script(
         "    $merged = $new",
         "    try {",
         "        if (Test-Path -LiteralPath $script:Snapshot) {",
-        "            $old = @(Get-Content -LiteralPath $script:Snapshot -Raw | ConvertFrom-Json)",
+        "            # Windows PowerShell 5.1 emits a JSON array as ONE pipeline",
+        "            # object, so @(pipeline) nests it. Assign first, then wrap.",
+        "            $parsed = Get-Content -LiteralPath $script:Snapshot -Raw | ConvertFrom-Json",
+        "            $old = @()",
+        "            if ($null -ne $parsed) { $old = @($parsed) }",
         "            if ($old.Count -gt 0 -and $null -ne $old[0]) {",
         "                $byKey = [ordered]@{}",
         "                foreach ($o in $old) {",
         "                    if ($null -eq $o) { continue }",
-        '                    $k = "$($o.kind)|$($o.description)"',
+        '                    $k = "$($o.undoId)|$($o.kind)|$($o.description)"',
         "                    if (-not $byKey.Contains($k)) { $byKey[$k] = $o }",
         "                }",
         "                foreach ($n in $new) {",
-        '                    $k = "$($n.kind)|$($n.description)"',
-        "                    if (-not $byKey.Contains($k)) { $byKey[$k] = $n }",
+        '                    $k = "$($n.undoId)|$($n.kind)|$($n.description)"',
+        "                    if (-not $byKey.Contains($k)) {",
+        "                        $byKey[$k] = $n",
+        "                    } elseif ([bool]$n.applyCompleted) {",
+        "                        $existing = $byKey[$k]",
+        "                        if ($null -eq $existing.PSObject.Properties['applyCompleted']) {",
+        "                            $existing | Add-Member -NotePropertyName applyCompleted -NotePropertyValue $true",
+        "                        } else {",
+        "                            $existing.applyCompleted = $true",
+        "                        }",
+        "                    }",
         "                }",
         "                $merged = @($byKey.Values)",
         "            }",
         "        }",
         "    } catch {",
-        "        $merged = $new",
+        "        throw ('Existing snapshot is unreadable; refusing to replace its rollback data: ' + $_.Exception.Message)",
         "    }",
-        "    $merged | ConvertTo-Json -Depth 10 |",
-        "        Set-Content -LiteralPath $script:Snapshot -Encoding UTF8",
-        '    Write-Host ("Snapshot written to {0} ({1} change(s), earliest priors kept)." -f '
+        "    if (@($merged).Count -eq 0) { return }",
+        "    $tmp = \"$script:Snapshot.$PID.tmp\"",
+        "    try {",
+        "        $merged | ConvertTo-Json -Depth 10 |",
+        "            Set-Content -LiteralPath $tmp -Encoding UTF8",
+        "        Move-Item -LiteralPath $tmp -Destination $script:Snapshot -Force",
+        "    } finally {",
+        "        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue",
+        "    }",
+        "    if (-not $Quiet) {",
+        '        Write-Host ("Snapshot written to {0} ({1} change(s), earliest priors kept)." -f '
         "$script:Snapshot, @($merged).Count) -ForegroundColor Green",
+        "    }",
         "}",
+        "",
+        "function Assert-SnapshotReadable {",
+        "    if (-not (Test-Path -LiteralPath $script:Snapshot)) { return }",
+        "    try {",
+        "        $raw = Get-Content -LiteralPath $script:Snapshot -Raw",
+        "        if (-not $raw.Trim()) { throw 'snapshot is empty' }",
+        "        $null = $raw | ConvertFrom-Json",
+        "    } catch {",
+        "        Write-Host 'Existing snapshot is unreadable; refusing to apply over it.' -ForegroundColor Red",
+        "        Write-Host $_.Exception.Message -ForegroundColor Red",
+        "        Exit-@@EXIT@@ 1",
+        "    }",
+        "}",
+        "",
+        "Assert-SnapshotReadable",
         "",
         "$script:IsAdmin = ([Security.Principal.WindowsPrincipal]"
         "[Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole("
@@ -1501,7 +1739,11 @@ def render_maintenance_script(
         "        Exit-@@EXIT@@ 1",
         "    }",
         "    $raw = Get-Content -LiteralPath $script:Snapshot -Raw",
-        "    $changes = @($raw | ConvertFrom-Json)",
+        "    # Windows PowerShell 5.1 emits a JSON array as ONE pipeline object,",
+        "    # so @(pipeline) nests it. Assign first, then wrap.",
+        "    $parsed = $raw | ConvertFrom-Json",
+        "    $changes = @()",
+        "    if ($null -ne $parsed) { $changes = @($parsed) }",
         "    if ($changes.Count -eq 0 -or ($changes.Count -eq 1 -and $null -eq $changes[0].description)) {",
         "        Write-Host 'Snapshot is empty; nothing was applied.' -ForegroundColor Yellow",
         "        Exit-@@EXIT@@ 0",
@@ -1515,12 +1757,20 @@ def render_maintenance_script(
         "    foreach ($c in $ordered) {",
         '        Write-Host ("[{0}]" -f $c.description) -ForegroundColor Cyan',
         "        try {",
-        "            if (-not $c.undoScript) {",
-        "                Write-Host '    no undo recorded for this change' -ForegroundColor Yellow",
+        "            if (-not $c.undoId) {",
+        "                throw 'snapshot record has no undo id'",
+        "            }",
+        "            if ($script:KnownUndoIds -notcontains [string]$c.undoId) {",
+        "                throw 'snapshot contains an unknown undo id'",
+        "            }",
+        "            if ($WhatIf2) {",
+        "                Write-Host '    [preview] would run the recorded undo' -ForegroundColor DarkGray",
         "                continue",
         "            }",
-        "            $undo = [scriptblock]::Create($c.undoScript)",
-        "            & $undo",
+        "            switch ([string]$c.undoId) {",
+        *maintenance_undo_lines,
+        "                default { throw 'snapshot contains an unknown undo id' }",
+        "            }",
         "            Write-Host '    restored' -ForegroundColor Green",
         "        } catch {",
         '            Write-Host ("    FAILED to restore: {0}" -f $_.Exception.Message) -ForegroundColor Red',
@@ -1532,7 +1782,19 @@ def render_maintenance_script(
         '        Write-Host ("{0} change(s) could not be restored. Review them manually." -f $failed) -ForegroundColor Red',
         "        Exit-@@EXIT@@ 1",
         "    }",
+        "    if ($WhatIf2) {",
+        "        Write-Host 'Undo preview complete; the active snapshot was left untouched.' -ForegroundColor DarkGray",
+        "        Exit-@@EXIT@@ 0",
+        "    }",
         "    Write-Host 'All recorded changes restored.' -ForegroundColor Green",
+        "    $archive = \"$script:Snapshot.restored-$(Get-Date -Format 'yyyyMMdd-HHmmssfff')\"",
+        "    try {",
+        "        Move-Item -LiteralPath $script:Snapshot -Destination $archive -Force",
+        "        Write-Host ('Archived the completed snapshot at ' + $archive) -ForegroundColor DarkGray",
+        "    } catch {",
+        "        Write-Host ('Restored the changes but could not archive the active snapshot: ' + $_.Exception.Message) -ForegroundColor Red",
+        "        Exit-@@EXIT@@ 1",
+        "    }",
         "    Exit-@@EXIT@@ 0",
         "}",
         "",
@@ -1549,7 +1811,7 @@ def render_maintenance_script(
             out.append("    Write-Host 'MANUAL' -ForegroundColor Magenta")
             for ln in (step.text or step.notes or step.description).split("\n"):
                 out.append(f"    Write-Host {_ps_string(ln)}")
-            out.append("    Read-Host 'Press Enter when you have read this'")
+            out.append("    if (-not $WhatIf2) { Read-Host 'Press Enter when you have read this' }")
             out.append("}")
             continue
         out.append("Write-Host ''")
@@ -1570,14 +1832,18 @@ def render_maintenance_script(
                     f"Write-Host ('  Safeguard: ' + {_ps_string(step.safety)}) "
                     "-ForegroundColor DarkYellow"
                 )
-            out.append("if (-not $Force) {")
+            out.append("if (-not $Force -and -not $WhatIf2) {")
             out.append("    $ans = Read-Host '  Run it anyway? [y/N]'")
             out.append(
                 "    if ($ans -notmatch '^(y|Y)$') {"
                 " Write-Host '  skipped' -ForegroundColor DarkGray; $run = $false }"
             )
             out.append("}")
-        undo_body = _step_undo_block(step)
+        undo_id = maintenance_undo_ids[id(step)]
+        out.append("if ($run -and $WhatIf2) {")
+        out.append("    Write-Host '  [preview] no change made' -ForegroundColor DarkGray")
+        out.append("    $run = $false")
+        out.append("}")
         out.append("if ($run) {")
         if step.kind in (StepKind.REGISTRY_SET, StepKind.REGISTRY_DELETE):
             full = f"{_hive_to_ps(step.hive or 'HKLM')}\\{step.path}"
@@ -1589,18 +1855,20 @@ def render_maintenance_script(
         out.append(f"        description = {_ps_string(step.description)}")
         out.append(f"        kind = {_ps_string(step.kind)}")
         out.append("        prior = $prior")
-        out.append("        undoScript = @'")
-        for ln in undo_body.split("\n"):
-            out.append(ln)
-        out.append("'@")
+        out.append(f"        undoId = {_ps_string(undo_id)}")
+        out.append("        applyCompleted = $false")
         out.append("    }")
         out.append("    try {")
         out.append("        $ErrorActionPreference = 'Stop'")
-        out.append(indent_body(_step_apply_block(step), "        "))
-        out.append("        $ErrorActionPreference = 'Continue'")
         out.append("        $script:Changes += $record")
+        out.append("        Save-Snapshot -Quiet")
+        out.append(indent_body(_step_apply_block(step), "        "))
+        out.append("        $record.applyCompleted = $true")
+        out.append("        Save-Snapshot -Quiet")
+        out.append("        $ErrorActionPreference = 'Continue'")
         out.append("    } catch {")
         out.append("        $ErrorActionPreference = 'Continue'")
+        out.append("        $script:Failures++")
         out.append(
             "        Write-Host ('  FAILED: ' + $_.Exception.Message) -ForegroundColor Red"
         )
@@ -1620,6 +1888,10 @@ def render_maintenance_script(
         f"Write-Host ('Done. {n_irrev} irreversible operation(s) were included.') "
         "-ForegroundColor Magenta"
     )
+    out.append("if ($script:Failures -gt 0) {")
+    out.append("    Write-Host ($script:Failures.ToString() + ' step(s) failed; use -Undo to roll back any partial changes.') -ForegroundColor Red")
+    out.append("    Exit-@@EXIT@@ 1")
+    out.append("}")
     out.append("Exit-@@EXIT@@ 0")
     return _fill("\n".join(out), brand=brand, exit=exit_name)
 
@@ -1661,7 +1933,7 @@ def _render_manual_block(tweak_id: str, step: Step, skip_var: str = "") -> str:
         for ln in _wrap_preserving(step.notes):
             out.append(f"    Write-Host {_ps_string(ln)} -ForegroundColor DarkGray")
     out.append(f"    Write-Host {sep} -ForegroundColor DarkGray")
-    out.append("    Read-Host 'Press Enter when you have read this'")
+    out.append("    if (-not $WhatIf2) { Read-Host 'Press Enter when you have read this' }")
     out.append("}")
     return "\n".join(out)
 

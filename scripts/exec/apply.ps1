@@ -8,7 +8,7 @@
 
     Snapshot : ..\exec\snapshot.json
     Undo     : .\..\undo\undo.ps1
-    Generated: 2026-11-07T23:33:25+00:00
+    Generated: 2026-11-11T12:07:34+00:00
 
     Every change below records its previous value into the snapshot BEFORE it is applied,
     so the undo script restores YOUR prior state rather than a generic default.
@@ -229,7 +229,7 @@ Write-Host ""
 # component : network_path
 # confidence: medium   risk: low
 #
-#   resolver ['1.1.1.1', '8.8.8.8', '1.1.1.1', '8.8.8.8'] took 82.2373000009975
+#   resolver ['1.1.1.1', '8.8.8.8', '1.1.1.1', '8.8.8.8'] took 87.44780000051833
 #   ms
 # expected  : Faster connection setup for new sessions and services.
 # measure   : p95, meaningful if >= 1.0 ms
@@ -254,22 +254,6 @@ if (-not (Confirm-Disruptive -What 'Point all adapters at fast public resolvers 
 # expected  : Input appears on screen up to one frame sooner.
 # measure   : p95, meaningful if >= 1.0 ms
 # ==========================================================================
-
-# ==========================================================================
-# sched.background.lower_priority - Background programs fight the game for CPU
-# component : host_processing
-# confidence: medium   risk: low
-#
-#   background load competes with the game: python (15.0%)
-# expected  : Fewer preemptions while the heaviest competitor idles lower.
-# measure   : p95, meaningful if >= 1.0 ms
-# ==========================================================================
-Invoke-Change -TweakId 'sched.background.lower_priority' -Description 'Lower python to BelowNormal priority while gaming' -Kind 'powershell' -Hive $null -Path $null -Name $null -Value $null -ValueType 'DWord' -Command 'Get-Process -Name ''python'' -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = ''BelowNormal'' }' -Notes 'Transient only; priorities reset when the process restarts.' -Text '' -Safety '' -Reversible $true -RequiresReboot $false -Apply {
-        Get-Process -Name 'python' -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = 'BelowNormal' }
-    } -Undo {
-        Get-Process -Name 'python' -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = 'Normal' }
-    }
-
 if (-not $WhatIf2) {
     Save-Snapshot
 } else {
@@ -312,6 +296,6 @@ if (-not $SkipManual) {
 }
 
 Write-Host ''
-Write-Host "4 ops applied, 0 warnings, reboot required: no"
+Write-Host "3 ops applied, 0 warnings, reboot required: no"
 Write-Host "Now measure again BEFORE deciding to keep these changes." -ForegroundColor Magenta
 Write-Host "If the measurement did not improve, run the undo script: ..\undo\undo.ps1" -ForegroundColor Magenta

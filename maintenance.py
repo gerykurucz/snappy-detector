@@ -215,6 +215,11 @@ class Tweak:
                 f"{self.id}: measure_metric must be a percentile (pNN), "
                 f"'mean' or 'max'"
             )
+        if self.measure_metric.startswith("p"):
+            percentile = int(self.measure_metric[1:])
+            if not 0 <= percentile <= 100:
+                raise TweakValidationError(
+                    f"{self.id}: percentile must be from p0 through p100")
 
     def evaluate(self, inventory: Any) -> Finding:
         try:
@@ -615,7 +620,9 @@ _PREAMBLE = (
     "$sig = 'using System; using System.Runtime.InteropServices; "
     "public static class MemClean { "
     "[DllImport(\"ntdll.dll\")] "
-    "public static extern int NtSetSystemInformation(int c, ref int i, int l); }'; "
+    "public static extern int NtSetSystemInformation(int c, ref int i, int l); "
+    "[DllImport(\"psapi.dll\", SetLastError=true)] "
+    "public static extern bool EmptyWorkingSet(IntPtr h); }'; "
     "Add-Type -TypeDefinition $sig -ErrorAction Stop"
 )
 
@@ -658,7 +665,9 @@ def build_memory_steps(
                         description=f"Trim working set of {proc}",
                         command=(
                             f"Get-Process -Name '{_ps_name(proc)}' -ErrorAction Stop | "
-                            "ForEach-Object { $_.TrimWorkingSet() }"
+                            "ForEach-Object { "
+                            "if (-not [MemClean]::EmptyWorkingSet($_.Handle)) { "
+                            "throw ('EmptyWorkingSet failed for ' + $_.ProcessName) } }"
                         ),
                         reversible=False,
                         safety=op.safety,
@@ -742,7 +751,11 @@ def build_power_steps(
     include_opt_in: bool = False,
 ) -> list[Step]:
     if selected is None:
-        ops = [o for o in POWER_OPERATIONS if not o.survey]
+        # A plain "generate power" action is read-only. The two changes are
+        # deliberately opt-in because their heat/battery trade-off varies by
+        # machine.
+        ops = ([o for o in POWER_OPERATIONS if not o.survey]
+               if include_opt_in else [o for o in POWER_OPERATIONS if o.survey])
     else:
         unknown = [i for i in selected if i not in _POWER_BY_ID]
         if unknown:
@@ -1005,8 +1018,10 @@ def resident_timer_command(units: int) -> str:
         "$now = 0\n"
         "[void][SnappyAITimer]::NtQueryTimerResolution([ref]$lo, [ref]$hi, [ref]$now)\n"
         f"$want = {units}\n"
-        "if ($lo -gt 0 -and $want -lt $lo) { $want = $lo }\n"
-        "if ($hi -gt 0 -and $want -gt $hi) { $want = $hi }\n"
+        "$fine = [Math]::Min($lo, $hi)\n"
+        "$coarse = [Math]::Max($lo, $hi)\n"
+        "if ($fine -gt 0 -and $want -lt $fine) { $want = $fine }\n"
+        "if ($coarse -gt 0 -and $want -gt $coarse) { $want = $coarse }\n"
         "$cur = 0\n"
         "$st = [SnappyAITimer]::NtSetTimerResolution($want, [byte]1, [ref]$cur)\n"
         "if ($st -ne 0) { exit $st }\n"

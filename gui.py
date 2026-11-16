@@ -105,11 +105,12 @@ def mount(root, pages, kit, pal, fonts, out_root=None, backend="auto",
     on_timer_persist = None
     startup_timer_us = 0
     if cfg is not None:
-        def on_timer_persist(us):
+        def _persist_timer(us):
             try:
                 cfg.set("timer_resolution_us", int(us))
             except Exception:
                 pass
+        on_timer_persist = _persist_timer
         try:
             startup_timer_us = int(cfg.get("timer_resolution_us") or 0)
         except (TypeError, ValueError):
@@ -273,10 +274,10 @@ F_BTN = ("Segoe UI", 11, "bold")
 F_BTN_BIG = ("Segoe UI", 13, "bold")
 F_ENTRY = ("Segoe UI", 11)
 F_TAB = ("Segoe UI", 12, "bold")
-F_TAB_OFF = ("Segoe UI", 10)
+F_TAB_OFF = ("Segoe UI", 11)
 
-TOPBAR_H = 74
-TOPBAR_LOGO_PX = 60
+TOPBAR_H = 92
+TOPBAR_LOGO_PX = 56
 
 TOPBAR_TEXT_RAISE = 4
 
@@ -292,24 +293,13 @@ ENTITLEMENT_CHECK_MINUTES = 30
 
 META = {
 
-    "controller_input": ("Enable controller input",
-        "Read a gamepad through Windows' own XInput so it can launch, pause, "
-        "click and steer like the mouse, with the same bindings and macros. "
-        "Controller OUTPUT (replaying recordings as a virtual gamepad) needs "
-        "the optional ViGEmBus driver.",
-        "bool", None),
-    "pad_drive": ("Controller steers and clicks",
-        "The left stick moves the cursor and the trigger is the click, so all "
-        "assistance works from a controller alone. The right stick steers the "
-        "view while the click is held.",
-        "bool", None),
-    "pad_output": ("Controller output method",
+    "pad_output": ("Input device",
         "How controller recordings and 'pad:' macros leave the program: "
-        "Automatic (ViGEmBus if installed, else keyboard/mouse), Virtual pad "
-        "(ViGEmBus only) or Keyboard/mouse emulation. Applies on restart.",
-        "map", (('Automatic', 'auto'),
-                 ('Virtual pad (ViGEmBus)', 'vigem'),
-                 ('Keyboard/mouse', 'emulate'))),
+        "Keyboard & mouse emulation (default, works everywhere) or "
+        "Controller (ViGEmBus virtual pad, needs the ViGEmBus driver). "
+        "Applies on restart.",
+        "map", (('Keyboard & mouse', 'emulate'),
+                 ('Controller (ViGEmBus)', 'vigem'))),
     "pad_launch": ("Controller: launch",
         "Controller button that starts assistance - one button ('start') or a "
         "combination ('rb+start'). Empty = unbound.",
@@ -318,14 +308,10 @@ META = {
         "Controller button that pauses assistance and hands all input back to "
         "you. Empty = unbound.",
         "pad", None),
-    "pad_mode1": ("Controller: classic mode",
-        "Controller button that switches to mode 1 (classic): a mis-click is "
-        "caught, snapped and pressed for you. Empty = unbound.",
-        "pad", None),
-    "pad_mode2": ("Controller: guide mode",
-        "Controller button that switches to mode 2 (guide): your click always "
-        "goes through. Empty = unbound.",
-        "pad", None),
+    "pad_track_target": ("Controller: track target (hold)",
+        "While this button is held, scan for a person, lock on, and keep them "
+        "at the exact screen centre. Ignores assist settings and modes. "
+        "Release to stop.", "pad", None),
     "pad_record": ("Controller: record",
         "Starts a controller recording; also stops and saves one when "
         "'Controller: stop recording' is empty. Empty = unbound.",
@@ -344,10 +330,12 @@ META = {
                     "thumbs. Clicks elsewhere are untouched.",
                     "bool", None),
     "rapid_click_snap": ("Assist every click in a fast burst",
-                          "On: every left click is assisted, so rapid clicks "
-                          "keep snapping. Off: extra clicks during one "
-                          "handling go straight to Windows.",
-                          "bool", None),
+                           "On: every left click is assisted, so rapid clicks "
+                           "keep snapping. Off: extra clicks during one "
+                           "handling pass through on the desktop; in game "
+                           "Mode 1 they stay blocked so no uncentred shot "
+                           "escapes.",
+                           "bool", None),
     "trigger_button": ("Assist trigger button",
                        "The mouse button assistance listens to; hold it to be "
                        "guided onto the nearest clear target. In classic mode "
@@ -386,8 +374,9 @@ META = {
                      "motion). Off: nearest target wins.",
                      "bool", None),
     "subject_only": ("Only aim at people",
-                     "Only detected people can be assisted; all other clicks "
-                     "pass straight through untouched.",
+                     "Only detected people can be assisted. Non-matches pass "
+                     "through on the desktop and in Mode 2; in game Mode 1 "
+                     "the trigger stays blocked rather than firing off-target.",
                      "bool", None),
     "debug_visualize": ("Debug: show detections",
                         "Draw a box around every candidate the scanner "
@@ -406,11 +395,6 @@ META = {
                         "map", (("Cross", "cross"), ("Plus", "plus"),
                                 ("Dot", "dot"), ("Circle", "circle"),
                                 ("X", "x"))),
-    "reticle_mode": ("Reticle position",
-                       "Centred on the screen, or a fixed custom spot "
-                       "you choose with the button below.",
-                       "map", (("Centred", "center"),
-                               ("Custom position", "custom"))),
     "reticle_size": ("Reticle size",
                        "Overall size in pixels (8-96).",
                        "int", None),
@@ -431,12 +415,6 @@ META = {
                         "One colour as r,g,b (for example 0,255,0) or "
                         "#rrggbb. The swatches below fill this in.",
                         "str", None),
-    "reticle_x": ("Custom X",
-                    "Horizontal screen position for custom mode.",
-                    "int", None),
-    "reticle_y": ("Custom Y",
-                    "Vertical screen position for custom mode.",
-                    "int", None),
     "mouse2_action": ("Extra-options button: short press",
                       "What a short press of the extra-options button does on "
                       "top of its normal click. The follow options only steer "
@@ -454,17 +432,18 @@ META = {
                                     ('Follow last colour', 2),
                                     ('Pick colour, then follow', 3))),
     "radius": ("Search distance (px)",
-               "How far around the anchor assistance looks (40-400). The "
-               "anchor is the screen centre in centre-watch mode, the cursor "
-               "otherwise.", "int", None),
+               "How many physical screen pixels around the anchor assistance "
+               "looks (40-400). The anchor is the screen centre in Game Mode, "
+               "the cursor otherwise. Windows display scaling does not change "
+               "this value.", "int", None),
     "center_blind_area": ("Centre blindness threshold",
                "Centre-watch only: ignore tiny items sitting right on the "
                "centre anchor, e.g. a drawn reticle (900 ~= 30x30 px). "
                "0 disables.", "int", None),
     "center_max_step": ("Steering step cap (px)",
-               "Largest single correction of the classic steerer (0 = "
-               "uncapped). The Unibot steering loop is exempt; click snaps "
-               "stay capped.", "int", None),
+               "Largest single steering correction in pixels (0 = uncapped). "
+               "Applies to Mode 1 centring and to Mode 2 while the trigger is "
+               "held. Raw click warps are not capped.", "int", None),
     "subject_focus_bias": ("Subject aim bias (0-100)",
                "For tall 1:2 body-shape targets, move the snap point from "
                "the middle toward the box top by this share. 0 (default) "
@@ -473,14 +452,6 @@ META = {
                "Centre-watch only: moving targets outrank static ones in "
                "close calls. 0 (default) off; brief flashes are ignored.",
                "int", None),
-    "on_target_dist": ("On-target distance (px)",
-                        "Clicks landing this close to a target's middle "
-                        "are left alone - you already hit it.",
-                        "int", None),
-    "glide_ms": ("Animate cursor moves",
-                  "0 (default) jumps instantly; 40-120 glides so you can "
-                  "watch. Moving the mouse yourself cancels a glide.",
-                  "int", None),
     "watcher_seconds": ("Double-click window (s)",
                         "Classic mode: a second snap near the same spot "
                         "within this time becomes a double-click on the "
@@ -492,9 +463,10 @@ META = {
                      "preferred colours'; click a box to remove it.",
                      "colors", None),
     "accent_only": ("Only assist my colour",
-                    "Only items containing your colour can be assisted; all "
-                    "other clicks pass through untouched. Needs colours set "
-                    "first.", "bool", None),
+                    "Only items containing your colour can be assisted. "
+                    "Non-matches pass through on the desktop and in Mode 2; "
+                    "in game Mode 1 the trigger stays blocked. Needs colours "
+                    "set first.", "bool", None),
     "accent_tolerance": ("Colour match strictness",
                          "How close a colour must be to count as yours "
                          "(4-90). Lower = stricter.", "int", None),
@@ -523,126 +495,69 @@ META = {
                       "refused colours'; click a box to remove it.",
                       "colors", None),
     "motion_3d": ("Track moving items robustly",
-                   "Follow moving targets by position AND size: single bad "
-                   "scans are ignored, turns are followed, and a sudden size "
-                   "jump restarts the track.",
+                   "Track measured target position and size over recent frames. "
+                   "Direction changes, starts/stops and size jumps reset stale "
+                   "motion instead of carrying it into the next aim.",
                    "bool", None),
     "motion_predict": ("Lead moving items",
-                       "For items that move while you click (scrolling "
-                       "lists, video seek bars), move slightly ahead so "
-                       "the click lands on the item, not where it was. "
-                       "Still items are unaffected.", "bool", None),
-    "motion_lead_ms": ("Lead time (ms)",
-                       "How far ahead to lead a moving item (0-300); the "
-                       "lead is capped at 80 px and switches off for slow or "
-                       "turning movement.",
-                       "int", None),
+                        "Project measured direction and speed through the "
+                        "actual capture age and output delay. Recent speed "
+                        "changes adjust the lead; stops, reversals and body "
+                        "wobble cancel it. Still items are unaffected.",
+                        "bool", None),
     "hpose_mode": ("Person detection (hpose)",
-                   "On: an ONNX person detector answers first - it knows "
-                   "facing and posture - and the edge scanner takes over "
-                   "when it finds nobody. Needs onnxruntime; models sit in "
-                   "the models folder.",
-                   "map", (('Off', 'off'), ('On', 'on'))),
-    "hpose_view": ("Required facing",
-                   "Only people facing this way are aimed at: facing the "
-                   "screen, turned away, or side profile. Any takes "
-                   "everyone.",
-                   "map", (('Any', 'any'), ('Facing the screen', 'facing'),
-                              ('Turned away', 'away'),
-                              ('Side profile', 'side'))),
-    "hpose_stance": ("Required posture",
-                      "Only people in this posture are aimed at; Low covers "
-                      "crouching and prone. Any takes everyone.",
-                      "map", (('Any', 'any'), ('Standing', 'standing'),
-                                 ('Crouching', 'crouch'), ('Prone', 'prone'),
-                                 ('Walking', 'walk'),
-                                 ('Low (crouch or prone)', 'low'))),
+                    "On: run the heavier pose model as occasional validation "
+                    "only after the fast person detector succeeds within the "
+                    "scan budget. Misses do not continuously run pose. Needs "
+                    "onnxruntime; models sit in the models folder.",
+                   "bool", None),
     "hpose_aim": ("Aim point on the body",
-                  "The middle of the body or the head; the body middle "
-                  "moves less and is steadier.",
-                  "map", (('Middle of the body', 'center'),
-                             ('Head', 'head'))),
-    "hpose_lead_ms": ("Person lead (ms)",
-                      "How far ahead to lead a moving person (0-300); 40-80 "
-                      "suits walking. Only applied to a target that is "
-                      "actually moving, capped at 120 px.",
-                      "int", None),
+                   "The middle of the body or the head; the body middle "
+                   "moves less and is steadier. Any picks the centre of "
+                   "whatever body part is visible.",
+                   "map", (('Middle of the body', 'center'),
+                              ('Head', 'head'),
+                              ('Any visible part', 'any'))),
     "hpose_min_conf": ("Minimum confidence",
                        "Detector confidence required before a person is "
                        "aimed at (10-90). Higher is pickier, lower finds "
                        "people sooner.",
                        "int", None),
-    "hpose_model": ("Detection model",
-                    "Which ONNX pose model to use, from the models folder.",
-                    "map", (('Fast (yolo26 nano)', 'yolo26n-pose.onnx'),
-                               ('Accurate (yolo26 large)',
-                                'yolo26l-pose.onnx'),
-                               ('Legacy (yolo11 nano)',
-                                'yolo11n-pose.onnx'))),
-    "blob_watch": ("Blob watcher fallback",
-                   "While person detection is on and finds nobody, also aim "
-                   "at person-shaped high-contrast blobs (about twice as "
-                   "tall as wide, 14-64 px).",
-                   "bool", None),
-
-    # YOLO26n 2D person detector (fast, no pose - pure YOLO)
-    "yolo26n_enabled": ("YOLO26n 2D person detector",
-                         "Fast 2D person bounding-box detector (YOLO26n). "
-                         "Runs at ~100+ FPS on CPU. No pose/3D, just boxes. "
-                         "Recommended as primary detector for speed.",
-                         "bool", None),
-    "yolo26n_input_size": ("YOLO26n input resolution",
-                            "Input image size for YOLO26n. Lower = faster. "
-                            "224 = fastest (~130 FPS), 320 = balanced (~50 FPS), "
-                            "640 = most accurate (~12 FPS). Requires model export.",
-                            "map", (("Fastest (224)", "224"),
-                                     ("Balanced (320)", "320"),
-                                     ("Accurate (640)", "640"))),
-    "yolo26n_conf": ("YOLO26n confidence threshold",
-                      "Minimum confidence for person detection (0.05-0.95). "
-                      "Lower finds more people, higher is stricter.",
-                      "float", None),
-    "yolo26n_fallback_to_hpose": ("Fallback to hpose when YOLO misses",
-                                     "If YOLO26n finds no person, try hpose "
-                                     "(pose/3D) as a backup. Slower but smarter.",
-                                     "bool", None),
-    "yolo26n_model": ("YOLO26n model file",
-                       "ONNX model file in the models folder.",
-                       "map", (("Standard (yolo26n.onnx)", "yolo26n.onnx"),
-                                  ("INT8 Quantized (yolo26n_int8.onnx)", "yolo26n_int8.onnx"))),
     "follow_enabled": ("Remember the last clicked item",
                        "After a successful snap, similar-looking items or "
                        "items in the same place win ties for a while - "
                        "handy for scrollbars and repeated clicks.",
                        "bool", None),
-    "watch_center_only": ("Centre-watch mode",
-                          "Search only inside a square at the screen centre "
-                          "(its width = search distance) instead of around "
-                          "the cursor: clicks inside are assisted, clicks "
-                          "outside pass through untouched. The game mode "
-                          "for a fixed centre crosshair.",
-                          "bool", None),
-    "center_follow": ("Keep the crosshair on it",
-                      "Centre-watch only: once a target inside the square is "
-                      "picked, assistance steers to keep it centred - also "
-                      "while a mouse button is held (steered by mouse deltas "
-                      "when 'Unibot aim steering' is on, by a virtual stick "
-                      "otherwise).",
-                      "bool", None),
+    "game_mode": ("Game mode",
+                   "Anchor detection and explicit click/hold steering at the "
+                   "screen centre. It never starts a background chase by "
+                   "itself. In Mode 1 one trigger is blocked, centred from "
+                   "fresh measured frames, clicked once, then finished. "
+                   "Mode 2 hold rests inside a 3 px centre radius and ignores "
+                   "small body-box wobble until movement exceeds 5 px.",
+                   "bool", None),
     "unibot_aim": ("Unibot aim steering",
                    "Centre-watch only: steer the view with exact "
-                   "relative-mouse deltas each frame, pulling the target "
-                   "onto the screen centre while a mouse button is held "
-                   "(needs the driver input backend in games). Off: steering "
-                   "goes through a virtual gamepad stick.",
+                   "relative-mouse deltas, pulling the target onto the "
+                   "screen centre for click snaps and held steering (needs "
+                   "the driver input backend in games). Off: steering goes "
+                   "through a virtual gamepad stick when available.",
                    "bool", None),
-    "aim_speed": ("Steering gain",
-                  "Multiplier on each Unibot steering delta (0.1-2.0); "
-                  "above 1 steers faster, below 1 softer.",
+    "aim_speed": ("Steering gain (X)",
+                  "Mode 2 hold only: maximum camera turn speed on the X axis "
+                  "as screen pixels per 60 Hz frame at gain 1.0 (0.1-2.0). "
+                  "It limits speed, it never multiplies the measured error, "
+                  "so a setting cannot overshoot a stationary target. Single "
+                  "clicks and Mode 1 centring are unchanged.",
                   "float", None),
-    "aim_y_speed_multiplier": ("Vertical steering gain",
-                  "Extra multiplier on the Y axis only (0.1-2.0); "
-                  "allows separate X/Y tuning like Unibot's y_speed_multiplier.",
+    "aim_y_speed_multiplier": ("Steering gain (Y)",
+                  "Mode 2 hold only: extra X-axis multiplier applied to the Y "
+                  "speed budget (0.1-2.0). Single clicks are unaffected.",
+                  "float", None),
+    "ads_steer_multiplier": ("ADS response compensation",
+                  "ADS zoom changes learned view-pixels-per-count; this is "
+                  "used only to scale the response estimate, never to multiply "
+                  "the held-target correction fraction (0-500%).",
                   "float", None),
     "motion_camera_comp": ("Camera motion compensation",
                   "Subtract estimated camera pan from motion lead so steering "
@@ -678,6 +593,10 @@ META = {
     "key_pause": ("Shortcut: pause",
                   "Your mouse and keyboard become entirely yours "
                   "again until you launch.", "str", None),
+    "key_track_target": ("Shortcut: track target (hold)",
+                  "While this key is held, scan for a person, lock on, and "
+                  "keep them at the exact screen centre. Ignores assist "
+                  "settings and modes. Release to stop.", "str", None),
     "key_record": ("Shortcut: start a recording",
                    "Captures everything you do - every key, every "
                    "mouse click and every cursor move - while your "
@@ -690,26 +609,9 @@ META = {
                         "playback.",
                         "str", None),
     "key_play": ("Shortcut: play the selected recording",
-                 "Replays the keyboard recording selected in the Macros tab, "
+                 "Replays the keyboard recording selected on Keyboard & Mouse, "
                  "or the newest one when nothing is selected. Pressed on "
                  "a repeating recording, it stops it.", "str", None),
-    "key_mode1": ("Shortcut: classic mode (up to 4 keys)",
-                  "Comma-separated, e.g. '1, f1, ctrl+f1, v'. See the "
-                  "Keybindings tab for what classic mode does.",
-                  "str", None),
-    "key_mode2": ("Shortcut: guide mode (up to 4 keys)",
-                  "Comma-separated, e.g. '2, f2, ctrl+f2, b'. See the "
-                  "Keybindings tab for what guide mode does.",
-                  "str", None),
-    "key_assist_off": ("Shortcut: turn assistance off (up to 4 keys)",
-                       "Comma-separated, e.g. 'ctrl+alt+o, end'. Pressing any "
-                       "of these stops assisting without closing the program - "
-                       "your input is yours again. Press launch or a mode key "
-                       "to assist again. Up to 4 keys.", "str", None),
-    "pad_assist_off": ("Controller: turn assistance off (up to 4 buttons)",
-                       "Comma-separated controller buttons, e.g. 'back, "
-                       "lb+rb'. Pressing any of these stops assisting without "
-                       "closing the program. Up to 4 buttons.", "pad", None),
     "capture_backend": ("Screen capture engine",
                         "How the screen is photographed. Automatic always "
                         "works (RDP, VMs); Desktop Duplication and Windows "
@@ -731,43 +633,16 @@ META = {
                       "map", (('Standard Windows', 'win32'),
                                ('Driver level (kernel)', 'driver'))),
 
-    "contrast_threshold": ("Edge threshold",
-                           "Lower finds fainter items (and more noise); "
-                           "higher needs crisper edges. Raising above the 38 "
-                           "default turns off the auto-adjust for this "
-                           "control.",
-                           "int", None),
-    "min_contrast": ("Minimum edge strength",
-                     "An item must be at least this crisp to be clickable; "
-                     "below 28 counts as 28. Raising above 48 turns off the "
-                     "auto-adjust for this control.",
-                     "int", None),
     "adaptive_threshold": ("Auto-adjust for dim screens",
                            "The detection bar lowers itself for dark themes "
                            "and washed-out content, so faint items are "
-                           "still found. Recommended on; stands aside when "
-                           "you deliberately raise either contrast control.",
+                           "still found. Recommended on.",
                            "bool", None),
     "luminance_norm": ("Judge edges by relative brightness",
                        "Edges are scored against how bright their "
                        "surroundings are, so dark-mode items rank like "
                        "light-mode ones. Recommended on.",
                        "bool", None),
-    "min_area": ("Smallest item size",
-                 "Smaller blobs are ignored as specks, unless they are "
-                 "glued to a bigger item.", "int", None),
-    "max_area": ("Largest item size",
-                 "Bigger blobs are ignored - usually whole windows or "
-                 "background, not clickable items.", "int", None),
-    "max_dim": ("Largest item width or height",
-                "Items wider or taller than this are ignored; items at "
-                "a screen edge, like scrollbars, get double.",
-                "int", None),
-    "stall_pause_seconds": ("Pause after a hiccup (s)",
-                             "If a scan ever stalls, assistance pauses this "
-                             "long and any held click is given back to you.",
-                             "float", None),
-
     "color_adapt": ("Adapt to screen lighting",
                     "Each item is white-balanced against its own "
                     "background before matching, so night light and "
@@ -789,16 +664,6 @@ META = {
                         "never-click list.",
                         "bool", None),
 
-    "snap_offset_x": ("Click offset X (px)",
-                      "Moves the click point sideways from the middle of "
-                      "the item (-200 to 200, negative goes left); for "
-                      "controls whose middle is dead.",
-                      "int", None),
-    "snap_offset_y": ("Click offset Y (px)",
-                      "Moves the click point vertically from the middle of "
-                      "the item (-200 to 200, negative goes up); for "
-                      "controls whose middle is dead.",
-                      "int", None),
     "scan_budget_ms": ("Scan budget (ms)",
                        "Milliseconds one scan of the search area may take "
                        "before it gives up and lets the click through "
@@ -827,7 +692,7 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
     META["pad_play%d" % _i] = (
         "Controller: play recording #%d" % _i,
         "Replays controller recording #%d of the numbered Controller "
-        "Recordings list in the Macros tab from a "
+        "Recordings list on the Controller tab from a "
         "controller button, by its position in that list. If the list is "
         "shorter than that, nothing happens. Empty = unbound." % _i,
         "pad", None)
@@ -846,7 +711,7 @@ for _i in range(1, MACRO_SLOTS + 1):
         "What the controller macro fires: a key combo ('ctrl+c', 'f5', "
         "'shift+tab') which works everywhere, or a controller combo written "
         "as 'pad:a+b', which needs the ViGEmBus virtual pad and is delivered "
-        "through the pad_emulate keyboard/mouse table without it. Empty = "
+        "through the built-in keyboard/mouse mapping without it. Empty = "
         "macro off.",
         "str", None)
 
@@ -854,58 +719,48 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
     META["key_play%d" % _i] = (
         "Shortcut: play recording #%d" % _i,
         "Replays keyboard recording #%d of the numbered Recordings list in "
-        "the Macros tab, "
+        "Keyboard & Mouse, "
         "by its position in that list. If the list is shorter than "
         "that, nothing happens." % _i,
         "str", None)
 
-TAB_ASSIST = ["controller_input", "pad_drive",
-              "shift_bypass", "subject_priority", "subject_only",
-              "debug_visualize",
+TAB_ASSIST = ["shift_bypass", "subject_priority", "subject_only",
               "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
-              "watch_center_only",
-              "center_follow", "unibot_aim",
-              "accent_only",
+              "unibot_aim", "accent_only",
+              "hpose_mode", "game_mode", "motion_camera_comp"]
+TAB_DETECT = ["accent_color", "exclude_color",
               "adaptive_threshold", "luminance_norm",
-              "color_adapt", "accent_variants", "accent_coherent"]
-TAB_DETECT = ["accent_color", "exclude_color"]
-TAB_RETICLE = ["reticle_enabled", "reticle_shape", "reticle_mode",
-                 "reticle_size", "reticle_gap", "reticle_thickness",
-                 "reticle_rotation", "reticle_opacity", "reticle_color",
-                 "reticle_x", "reticle_y"]
-TAB_KEYS = ["key_launch", "key_pause", "key_mode1", "key_mode2",
-            "key_assist_off",
+              "color_adapt", "accent_variants", "accent_coherent",
+              "debug_visualize", "merge_distance"]
+TAB_RETICLE = ["reticle_enabled", "reticle_shape",
+                  "reticle_size", "reticle_gap", "reticle_thickness",
+                  "reticle_rotation", "reticle_opacity", "reticle_color"]
+TAB_KEYS = ["key_launch", "key_pause", "key_track_target",
             "key_record", "key_record_stop", "key_play", "key_play1",
             "key_play2", "key_play3", "key_play4", "key_play5"]
-TAB_NAMES = ["assist", "handler", "advanced", "experimental", "keyboard",
-             "controller", "macros", "spoofer", "reticle", "latency_fix",
+TAB_NAMES = ["assist", "handler", "keyboard",
+             "controller", "spoofer", "latency_fix",
              "latency_live", "latency_tools", "help"]
 
-TAB_PAD = ["pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
-           "pad_assist_off",
+TAB_PAD = ["pad_launch", "pad_pause", "pad_track_target",
            "pad_record", "pad_record_stop", "pad_play",
            "pad_play1", "pad_play2", "pad_play3", "pad_play4", "pad_play5"]
 TAB_MOUSE = ["trigger_button", "options_button"]
 TAB_KEYBOARD = ["trigger_button", "options_button", "bypass_key",
-                "key_launch", "key_pause", "key_mode1", "key_mode2",
-                "key_assist_off",
+                "key_launch", "key_pause", "key_track_target",
                 "key_record", "key_record_stop", "key_play", "key_play1",
                 "key_play2", "key_play3", "key_play4", "key_play5"]
 TAB_CONTROLLER = ["pad_click_button", "pad_right_button", "bypass_pad",
-                  "pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
-                  "pad_assist_off",
+                  "pad_launch", "pad_pause", "pad_track_target",
                   "pad_record", "pad_record_stop", "pad_play",
                   "pad_play1", "pad_play2", "pad_play3", "pad_play4",
                   "pad_play5"]
-TAB_COLOR = ["contrast_threshold", "min_contrast",
-             "min_area", "max_area", "max_dim",
-             "accent_tolerance", "accent_soft", "accent_boost"]
-TAB_ADV = ["radius", "center_blind_area", "center_max_step", "aim_speed", "aim_y_speed_multiplier", "subject_focus_bias", "motion_sense", "motion_camera_comp", "on_target_dist", "glide_ms", "watcher_seconds",
-           "stall_pause_seconds", "merge_distance",
-           "motion_lead_ms", "follow_seconds", "scan_budget_ms",
-           "hpose_lead_ms", "hpose_min_conf",
-           "snap_offset_x", "snap_offset_y"]
+TAB_COLOR = ["accent_tolerance", "accent_soft", "accent_boost"]
+TAB_ADV = ["radius", "center_blind_area", "center_max_step", "aim_speed", "aim_y_speed_multiplier", "ads_steer_multiplier", "subject_focus_bias", "motion_sense", "watcher_seconds",
+           "follow_seconds", "scan_budget_ms",
+           "hpose_min_conf",
+]
 
 TAB_EXPERIMENTAL = [k for k in META if META[k][2] == "map" and k not in TAB_RETICLE]
 
@@ -925,8 +780,6 @@ for _i in range(1, MACRO_SLOTS + 1):
     _CAPTURE_KIND["macro%d_action" % _i] = "seq"
     _CAPTURE_KIND["pad_macro%d_key" % _i] = "pad"
     _CAPTURE_KIND["pad_macro%d_action" % _i] = "padkey"
-_CAPTURE_KIND["key_assist_off"] = "combo"
-_CAPTURE_KIND["pad_assist_off"] = "pad"
 for _k, _kind in _CAPTURE_KIND.items():
     if _k in META:
         META[_k] = (META[_k][0], META[_k][1], _kind, META[_k][3])
@@ -1005,24 +858,26 @@ PROSE = {
         "reaches the program and, after you release, the cursor moves "
         "onto the nearest clear item. Classic mode is stronger: a "
         "mis-click near an item is caught, the cursor snaps onto the "
-        "item and Snappy AI clicks it for you. 'Search distance (px)' "
+        "item and Snappy AI clicks it for you. In game Mode 1, the shot "
+        "fires only after a fresh frame confirms the target on the exact "
+        "centre pixel; otherwise the trigger stays blocked. 'Search distance "
+        "(px)' "
         "decides the search area, anchored on the screen centre in "
         "centre-watch mode - raise it when the item you want is just "
-        "out of reach, lower it when the wrong neighbour wins.Holding the bypass key (Keyboard & Mouse tab, Shift by "
+        "out of reach, lower it when the wrong neighbour wins. Holding the "
+        "bypass key (Keyboard & Mouse tab, Shift by "
         "default) lets one click through untouched in both modes, and which "
         "button assistance listens to at all is yours to move on the "
         "Keyboard & Mouse tab.",
     "help.3.t": "Nothing is found - or too much is",
     "help.3.b":
-        "On the Detection tab, 'Edge threshold' and 'Minimum edge "
-        "strength' decide which edges count at all: lower them to "
-        "find fainter items, raise them to ignore noise. 'Smallest "
-        "item size', 'Largest item size' and 'Largest item width or "
-        "height' drop specks and whole windows. 'Merge nearby blobs "
-        "(px)' joins a broken outline, or an icon beside its label, "
-        "into one item. On the Assistance tab, 'Auto-adjust for dim "
-        "screens' and 'Judge edges by relative brightness' make dark "
-        "themes behave like light ones - keep both on.",
+        "Raise 'Search distance (px)' when the target is just out of reach, "
+        "or lower it when too many neighbours compete. 'Merge nearby blobs "
+        "(px)' joins a broken outline, or an icon beside its label, into one "
+        "item. 'Auto-adjust for dim screens' and 'Judge edges by relative "
+        "brightness' make dark themes behave like light ones; 'Scan budget "
+        "(ms)' gives difficult frames more time. Use the colour and "
+        "people-only controls when you need stricter filtering.",
     "help.4.t": "Working with colours",
     "help.4.b":
         "On the Colors tab, 'My colour(s)' is the colour Snappy AI "
@@ -1048,20 +903,15 @@ PROSE = {
     "help.6.t": "Clicking moving things",
     "help.6.b":
         "'Lead moving items' measures how fast the chosen item travels "
-        "and moves ahead by the 'Lead time (ms)' setting, so the click "
-        "lands on a scrolling list or a video seek bar instead of "
-        "behind it. The lead caps at 80 pixels and switches itself off "
-        "for still or turning items.",
+        "and moves ahead automatically based on the item's speed - no "
+        "user setting needed. The lead caps at 80 pixels and switches "
+        "itself off for still or turning items.",
     "help.7.t": "How clicks feel",
     "help.7.b":
-        "'Animate cursor moves' = 0 jumps instantly; 40-120 glides so "
-        "you can watch, and moving the mouse yourself cancels the "
-        "glide. 'Double-click window (s)' turns a second snap near the "
+        "'Double-click window (s)' turns a second snap near the "
         "same spot into a double-click in classic mode. 'Assist every "
         "click in a fast burst' assists every click of a rapid series "
-        "instead of only the first. 'Pause after a hiccup' is the "
-        "safety valve that gives a held click back if a scan ever "
-        "stalls.",
+        "instead of only the first.",
     "help.8.t": "Keys, macros and recordings",
     "help.8.b":
         "The Keybindings tab explains the two modes and the recording "
@@ -1070,13 +920,15 @@ PROSE = {
         "and still type. A macro turns one blocked key press into one "
         "whole combo. Recordings capture your real input - every key, "
         "mouse click and cursor move, or every controller button and "
-        "stick move - and replay it from the Macros tab, which keeps a "
+        "stick move - and replay it on the corresponding input tabs, which keep a "
         "keyboard library and an independent controller library side by "
         "side, each with its own play-once or repeat-until-stopped "
         "switch.",
-    "help.9.t": "Interface language",
+    "help.9.t": "Interface",
     "help.9.b":
-        "The interface is English.",
+        "Use the light/dark switch in the title bar to change the interface "
+        "appearance. All editable assistance settings are shown in the tabs; "
+        "there are no additional hidden tuning settings in config.ini.",
     "help.10.t": "When it misbehaves, check in this order",
     "help.10.b":
         "1. Is it launched? Paused means nothing is intercepted - "
@@ -1085,9 +937,9 @@ PROSE = {
         "assistance was the problem.  3. Wrong item wins: lower "
         "'Search distance (px)', then set 'My colour(s)' or "
         "raise 'Colour tie-break strength'.  4. Nothing is found: "
-        "lower 'Edge threshold' and 'Minimum edge strength', raise "
-        "'Largest item width or height', or raise 'Merge nearby blobs "
-        "(px)'.  5. One thing must never be assisted: put "
+        "raise 'Merge nearby blobs (px)' to join broken outlines, "
+        "or lower 'Search distance (px)'.  5. One thing must never "
+        "be assisted: put "
         "its colour in 'Never-click colour(s)'.  6. Still wrong: tell "
         "support what you clicked and what you expected instead, and "
         "include the log file Snappy AI writes to its data folder.",
@@ -1172,7 +1024,7 @@ PROSE = {
     "theme.dark": "Dark",
     "hdr.build": "build %s",
     "st.registered": "Registered to: %s    Status: %s",
-    "mac.row": "Macro %d",
+    "mac.row": "Macro key #%d",
     "err.auth_unreachable": "The Snappy AI auth server is "
                             "unreachable:\n%s\n\nSnappy AI only runs "
                             "with a live answer from it.\nRetry?",
@@ -1275,12 +1127,12 @@ PROSE = {
 
     "pad.head": "Controller",
     "pad.note": "Controller bindings, one per action. Type a button name or "
-                "a combination ('start', 'rb+a', 'ls+rs'), or press the Press "
-                "button and then press the controller. A combination that "
+                "a combination ('start', 'rb+a', 'ls+rs'), or click the "
+                "value box and press the controller button. A combination that "
                 "contains a shorter bound combination wins, so binding "
                 "'rb+a' never also fires 'a'. Leave a box empty to unbind "
-                "that action. These need 'Enable controller input' on the "
-                "Assistance tab, and they work while launched - paused means "
+                "that action. A connected XInput controller is detected "
+                "automatically. Bindings work while launched; paused means "
                 "the controller is entirely yours.",
     "cap.btn": "Press",
     "pad.cap_title": "Controller button",
@@ -1301,7 +1153,7 @@ PROSE = {
     "cap.kept": "%s keeps its previous binding.",
     "cap.none": "unbound",
     "mac.pad_head": "Controller Macros",
-    "mac.pad_row": "Pad %d",
+    "mac.pad_row": "Macro button #%d",
     "tab.assist": "Assistance",
     "tab.reticle": "Reticle",
     "tab.spoofer": "Spoofer",
@@ -1312,14 +1164,14 @@ PROSE = {
     "xh.preset": "Preset",
     "xh.swatches": "Quick colours",
     "tab.macros": "Macros",
-    "tab.handler": "Detection",
+    "tab.handler": "Screen",
     "tab.advanced": "Advanced",
     "tab.experimental": "Experimental",
     "tab.help": "Help",
     "mac.keys_head": "Keyboard Macros",
     "mac.recordings": "Recordings",
     "mac.pad_recordings": "Controller Recordings",
-    "mac.sends": "sends",
+    "mac.sends": "presses",
     "mac.rename": "Rename",
     "mac.edit": "Edit",
     "mac.export": "Export",
@@ -1373,9 +1225,9 @@ PROSE = {
     "key.cap_pad_now": "Controller: holding %s - release to set it.",
     "help.11.t": "Using a controller",
     "help.11.b":
-        "Switch on 'Enable controller input' and a gamepad becomes a full "
-        "second input device, read through Windows' own XInput - no driver, no "
-        "extra software. The left stick steers the cursor, the right trigger "
+        "A connected gamepad automatically becomes a full second input "
+        "device, read through Windows' own XInput - no driver, no extra "
+        "software. The left stick steers the cursor, the right trigger "
         "is the press that assistance snaps from, the left trigger is a right "
         "click, and the right stick steers the view while that press is held, "
         "so the snap, guide and follow behaviour is the same code "
@@ -1388,12 +1240,9 @@ PROSE = {
         "from its own list in order. Replaying controller output as a REAL "
         "virtual gamepad needs the optional ViGEmBus driver plus its "
         "ViGEmClient.dll next to the program; without them, output falls back "
-        "to the keyboard and mouse using the pad_emulate table in config.ini. "
+        "to the built-in keyboard and mouse mapping. "
         "Which button clicks and which one carries the extra actions is on "
-        "this tab, together with the controller "
-        "bypass. Tuning lives in config.ini: pad_sensitivity, pad_deadzone, "
-        "pad_trigger_threshold, pad_poll_hz, pad_index, pad_rumble, "
-        "pad_drive and pad_output.",
+        "this tab, together with the controller bypass and output choice.",
     "help.12.t": "Telling a person from a picture of a person",
     "help.12.b":
         "The scanner normally works from edges and shapes: it finds "
@@ -1577,7 +1426,6 @@ class _SlimScrollbar(tk.Canvas):
         ty = box[1]
         by = box[3]
         travel = box[5]
-        content_span = box[6]
         if event.y < ty:
             try:
                 self._cvs.yview_scroll(-1, "pages")
@@ -2031,6 +1879,215 @@ class _RangeSlider(tk.Canvas):
         self._set(self._num() + delta * step)
         return "break"
 
+# Short UI labels only.  META, descriptions, config keys and stored map values
+# stay unchanged, so existing settings remain compatible with older releases.
+_COMPACT_UI_LABELS = {
+    "shift_bypass": "Bypass input", "subject_priority": "Subject priority",
+    "subject_only": "People only", "hold_follow": "Hold to follow",
+    "rapid_click_snap": "Rapid click assist", "follow_enabled": "Remember target",
+    "motion_predict": "Motion lead", "motion_3d": "Robust tracking",
+    "unibot_aim": "Aim steering", "accent_only": "My colors only",
+    "hpose_mode": "Pose detector", "game_mode": "Game mode",
+    "motion_camera_comp": "Camera compensation",
+    "radius": "Search radius", "center_blind_area": "Center blind zone",
+    "center_max_step": "Max steering step", "aim_speed": "Steering gain X",
+    "aim_y_speed_multiplier": "Steering gain Y",
+    "ads_steer_multiplier": "ADS response",
+    "subject_focus_bias": "Subject aim bias", "motion_sense": "Motion sense",
+    "watcher_seconds": "Double-click time", "follow_seconds": "Memory time",
+    "scan_budget_ms": "Scan budget", "hpose_min_conf": "Min confidence",
+    "pad_output": "Pad output", "mouse2_action": "Extra: tap",
+    "mouse2_hold_action": "Extra: hold", "hpose_aim": "Aim point",
+    "follow_learn": "Memory learns", "follow_boost": "Memory strength",
+    "input_backend": "Input backend", "accent_matcher": "Color matcher",
+    "capture_backend": "Screen capture",
+    "reticle_enabled": "Show reticle", "reticle_shape": "Shape",
+    "reticle_size": "Size",
+    "reticle_gap": "Gap", "reticle_thickness": "Thickness",
+    "reticle_rotation": "Rotation", "reticle_opacity": "Opacity",
+    "reticle_color": "Color",
+    "accent_color": "My colors", "exclude_color": "Avoid colors",
+    "adaptive_threshold": "Auto threshold", "luminance_norm": "Relative brightness",
+    "color_adapt": "Color adaptation", "accent_variants": "Shade variants",
+    "accent_coherent": "Ignore color specks", "debug_visualize": "Show detections",
+    "merge_distance": "Merge distance", "accent_tolerance": "Color tolerance",
+    "accent_soft": "Near shades", "accent_boost": "Color priority",
+    "trigger_button": "Assist button", "options_button": "Extra button",
+    "bypass_key": "Bypass key", "bypass_pad": "Pad bypass",
+    "pad_click_button": "Pad click", "pad_right_button": "Pad extra",
+    "key_launch": "Launch key", "key_pause": "Pause key",
+    "key_track_target": "Track target",
+    "key_record": "Record key",
+    "key_record_stop": "Stop record key", "key_play": "Play key",
+    "pad_launch": "Pad launch", "pad_pause": "Pad pause",
+    "pad_record": "Pad record",
+    "pad_record_stop": "Pad stop record", "pad_play": "Pad playback",
+}
+_COMPACT_UI_CHOICES = {
+    "pad_output": {"emulate": "Keyboard/Mouse", "vigem": "Controller"},
+    "mouse2_action": {"4": "None", "1": "Clear", "2": "Follow last", "3": "Pick & follow"},
+    "mouse2_hold_action": {"4": "None", "1": "Clear", "2": "Follow last", "3": "Pick & follow"},
+    "accent_matcher": {"oklab": "Perceptual", "hsv": "Classic"},
+    "hpose_aim": {"center": "Body", "head": "Head", "any": "Visible"},
+    "follow_learn": {"accent": "My color", "any": "Any target"},
+    "capture_backend": {"auto": "Auto", "dxcam": "Duplication", "mss": "Compatible", "wgc": "Graphics Capture"},
+    "input_backend": {"win32": "Windows", "driver": "Driver"},
+}
+
+
+def _compact_ui_label(key):
+    if key in _COMPACT_UI_LABELS:
+        return _COMPACT_UI_LABELS[key]
+    # Dynamic numbered keybindings use the established original numbering.
+    if key.startswith("key_play") and key[8:].isdigit():
+        return "Play #%s" % key[8:]
+    if key.startswith("pad_play") and key[8:].isdigit():
+        return "Pad play #%s" % key[8:]
+    label = tr_label(key)
+    for prefix, short in (("Controller: ", "Pad: "),
+                          ("Shortcut: ", ""),
+                          ("Extra-options button: ", "Extra: ")):
+        if label.startswith(prefix):
+            label = short + label[len(prefix):]
+    return label
+
+
+def _compact_ui_choice(key, pair):
+    display, actual = pair
+    return _COMPACT_UI_CHOICES.get(key, {}).get(str(actual), display)
+
+
+class _MapChoiceSwitch(tk.Frame):
+    """Two-choice configuration field.  Keep the old display StringVar intact.
+
+    Its BooleanVar is presentation-only, so save/apply still uses the exact
+    original mapped values and existing validation path.
+    """
+    def __init__(self, master, kit, var, pairs, key=None):
+        super().__init__(master, bg=kit.pal["card"])
+        self._kit = kit
+        self._key = key
+        self._var = var
+        self._pairs = list(pairs)
+        self._updating = False
+        kit.reg(self, "card")
+        self._state = tk.BooleanVar(master=self, value=False)
+        self._toggle = kit.bool_switch(self, self._state, word=False)
+        self._toggle.pack(side="right", padx=(6, 0))
+        self._caption = tk.Label(self, font=F_DESC, anchor="e", justify="right", wraplength=118,
+                                 bg=kit.pal["card"], fg=kit.pal["text"])
+        kit.reg(self._caption, "card_text")
+        self._caption.pack(side="right")
+        self._caption.bind("<Button-1>", lambda _e: self._state.set(not self._state.get()))
+        self._var.trace_add("write", self._from_var)
+        self._state.trace_add("write", self._from_toggle)
+        self._from_var()
+
+    def set_pairs(self, pairs):
+        self._pairs = list(pairs)
+        self._from_var()
+
+    def _from_var(self, *_a):
+        if not self._pairs or self._updating:
+            return
+        self._updating = True
+        try:
+            selected = str(self._var.get())
+            on = len(self._pairs) > 1 and selected == self._pairs[1][0]
+            self._state.set(on)
+            self._caption.configure(text=_compact_ui_choice(self._key, self._pairs[int(on)]))
+        finally:
+            self._updating = False
+
+    def _from_toggle(self, *_a):
+        if not self._pairs or self._updating:
+            return
+        self._updating = True
+        try:
+            index = min(int(self._state.get()), len(self._pairs) - 1)
+            want = self._pairs[index][0]
+            if str(self._var.get()) != want:
+                self._var.set(want)
+            self._caption.configure(text=_compact_ui_choice(self._key, self._pairs[index]))
+        finally:
+            self._updating = False
+
+
+class _MapChoiceSlider(tk.Frame):
+    """Discrete slider showing option NAMES, not their numeric indices."""
+    def __init__(self, master, kit, var, pairs, key=None):
+        super().__init__(master, bg=kit.pal["card"])
+        self._kit = kit
+        self._key = key
+        self._var = var
+        self._pairs = list(pairs)
+        self._updating = False
+        kit.reg(self, "card")
+        self._index = tk.StringVar(master=self, value="0")
+        self._slider = _RangeSlider(self, kit, var=self._index, lo=0,
+                                    hi=max(1, len(self._pairs) - 1),
+                                    integer=True, width=112)
+        self._slider.configure(takefocus=1)
+        self._slider.pack(side="right")
+        self._caption = tk.Label(self, text="", font=F_DESC, anchor="e", justify="right", wraplength=116,
+                                 bg=kit.pal["card"], fg=kit.pal["text"])
+        kit.reg(self._caption, "card_text")
+        self._caption.pack(side="right", padx=(0, 8))
+        self._var.trace_add("write", self._from_var)
+        self._index.trace_add("write", self._from_index)
+        self._slider.bind("<Left>", lambda _e: self._nudge(-1))
+        self._slider.bind("<Right>", lambda _e: self._nudge(1))
+        self._slider.bind("<Home>", lambda _e: self._go(0))
+        self._slider.bind("<End>", lambda _e: self._go(len(self._pairs) - 1))
+        self._from_var()
+
+    def set_pairs(self, pairs):
+        self._pairs = list(pairs)
+        self._slider._hi = float(max(1, len(self._pairs) - 1))
+        self._from_var()
+
+    def _go(self, target):
+        self._index.set(str(max(0, min(len(self._pairs) - 1, target))))
+        return "break"
+
+    def _nudge(self, delta):
+        try:
+            i = int(float(self._index.get()))
+        except (TypeError, ValueError):
+            i = 0
+        return self._go(i + delta)
+
+    def _from_var(self, *_a):
+        if not self._pairs or self._updating:
+            return
+        self._updating = True
+        try:
+            selected = str(self._var.get())
+            index = next((i for i, p in enumerate(self._pairs)
+                          if p[0] == selected), 0)
+            self._index.set(str(index))
+            self._caption.configure(text=_compact_ui_choice(self._key, self._pairs[index]))
+        finally:
+            self._updating = False
+
+    def _from_index(self, *_a):
+        if not self._pairs or self._updating:
+            return
+        self._updating = True
+        try:
+            try:
+                index = int(round(float(self._index.get())))
+            except (TypeError, ValueError):
+                index = 0
+            index = max(0, min(len(self._pairs) - 1, index))
+            want = self._pairs[index][0]
+            if str(self._var.get()) != want:
+                self._var.set(want)
+            self._caption.configure(text=_compact_ui_choice(self._key, self._pairs[index]))
+        finally:
+            self._updating = False
+
+
 def _scrollable(page, kit, pal, bar=True):
     host = tk.Frame(page, bg=pal["card"])
     kit.reg(host, "card")
@@ -2066,7 +2123,8 @@ def _scrollable(page, kit, pal, bar=True):
 
     if bar:
         sb = _SlimScrollbar(host, kit, cvs, wheel=_wheel)
-        sb.pack(side="right", fill="y")
+        # Keep equal clearance above and below the scroll rail on every tab.
+        sb.pack(side="right", fill="y", pady=(7, 7))
         cvs.configure(yscrollcommand=sb.set)
         sb.set(0.0, 1.0)
     cvs.pack(side="left", fill="both", expand=True)
@@ -2083,7 +2141,7 @@ def _scrollable(page, kit, pal, bar=True):
                     pass
                 elif w.winfo_class() not in ("TCombobox", "TSpinbox",
                                              "Spinbox", "TScrollbar",
-                                             "Listbox"):
+                                             "Listbox", "Text"):
                     w.bind("<MouseWheel>",
                            lambda e: _wheel(-int(e.delta) // 120))
                     w.bind("<Button-4>", lambda e: _wheel(-1))
@@ -2658,7 +2716,7 @@ def _mouse_capture_dialog(parent, kit, initial=""):
 CAPTURE_KINDS = ("key", "keymod", "pad", "padsingle", "padkey", "mouse",
                  "combo", "seq")
 
-def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
+def capture_button(parent, kit, root, app, key, var, kind, status_msg, R, action_only=False):
     def _capture(k=key, v=var, kd=kind):
         if kd == "pad":
             spec = _pad_capture_dialog(root, kit, app, v.get())
@@ -2684,6 +2742,9 @@ def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
         v.set(spec)
         status_msg(i18n.L("cap.set", label, spec or i18n.L("cap.none")))
 
+    if action_only:
+        return _capture
+
     entry_h = getattr(kit, "_entry_h", None)
     if entry_h is None:
         try:
@@ -2700,6 +2761,18 @@ def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
     R(lambda b=btn: kit.set_text(b, i18n.L("cap.btn")) if _live(b) else False)
     return btn
 
+def _bind_capture_entry(entry, capture):
+    """Click/Return captures a binding; Tab still allows keyboard editing.
+
+    Keep the existing Entry and StringVar: settings can still be pasted or
+    edited after tabbing into the field, and Apply works as before.
+    """
+    entry.configure(cursor="hand2", takefocus=1)
+    entry.bind("<Button-1>", lambda _e: (capture(), "break")[1])
+    entry.bind("<Return>", lambda _e: (capture(), "break")[1])
+    entry.bind("<KP_Enter>", lambda _e: (capture(), "break")[1])
+
+
 def _widget_class(root, widget):
     try:
         if isinstance(widget, str):
@@ -2707,6 +2780,326 @@ def _widget_class(root, widget):
         return widget.winfo_class()
     except Exception:
         return ""
+
+
+
+def _snappy_nav_icon_vector_fallback(canvas, name, stroke):
+    """Draw crisp, uniformly aligned navigation icons in 24x24 logical px.
+
+    Uses native Tk vector strokes rather than platform-dependent Unicode glyphs.
+    The existing labels and tab IDs are unchanged.
+    """
+    canvas.delete("all")
+    line = lambda *p, **kw: canvas.create_line(
+        *p, fill=stroke, width=1.8, capstyle="round", joinstyle="round", **kw)
+    oval = lambda *p, **kw: canvas.create_oval(
+        *p, outline=stroke, width=1.8, **kw)
+    rect = lambda *p, **kw: canvas.create_rectangle(
+        *p, outline=stroke, width=1.8, **kw)
+    poly = lambda *p, **kw: canvas.create_polygon(
+        *p, outline=stroke, fill="", width=1.8, **kw)
+    if name == "assist":
+        oval(5, 5, 19, 19)
+        oval(10.5, 10.5, 13.5, 13.5)
+        line(12, 1.5, 12, 6.5); line(12, 17.5, 12, 22.5)
+        line(1.5, 12, 6.5, 12); line(17.5, 12, 22.5, 12)
+    elif name == "handler":
+        rect(3, 4, 21, 18); line(8, 21, 16, 21); line(12, 18, 12, 21)
+        line(8, 11, 10.4, 13.4, 16, 8)
+    elif name == "advanced":
+        oval(7, 7, 17, 17); oval(10.5, 10.5, 13.5, 13.5)
+        import math
+        for i in range(8):
+            a = i * math.pi / 4
+            line(12 + 6.8 * math.cos(a), 12 + 6.8 * math.sin(a),
+                 12 + 10.1 * math.cos(a), 12 + 10.1 * math.sin(a))
+    elif name == "experimental":
+        line(9, 3, 15, 3); line(10, 3, 10, 10); line(14, 3, 14, 10)
+        poly(10, 10, 5.5, 19.5, 6.5, 21, 17.5, 21, 18.5, 19.5, 14, 10)
+        line(8, 16, 16, 16)
+    elif name == "keyboard":
+        rect(2.5, 6, 21.5, 18)
+        for x in (6.5, 11, 15.5):
+            line(x, 9, x + 1.3, 9)
+            line(x, 12, x + 1.3, 12)
+        line(8, 15.3, 16, 15.3)
+    elif name == "controller":
+        oval(3, 7, 21, 18)
+        line(7, 11, 11, 11); line(9, 9, 9, 13)
+        oval(15.5, 10, 17, 11.5); oval(18, 13, 19.5, 14.5)
+    elif name == "macros":
+        for y in (6, 12, 18):
+            oval(3, y - 1.2, 5.4, y + 1.2)
+            line(9, y, 21, y)
+    elif name == "spoofer":
+        poly(12, 2.5, 20, 6, 20, 13, 17.5, 18, 12, 21.5,
+             6.5, 18, 4, 13, 4, 6)
+        oval(9.5, 9.5, 14.5, 14.5)
+    elif name == "latency_fix":
+        oval(4, 4, 19, 19)
+        line(12, 6, 12, 12, 16, 14); line(19, 4.5, 19, 9.5)
+    elif name == "latency_live":
+        line(2, 13, 6, 13, 9, 6, 12, 19, 15, 10, 18, 13, 22, 13)
+    elif name == "latency_tools":
+        for x, y in ((6, 9), (12, 15), (18, 8)):
+            line(x, 3, x, 21)
+            rect(x - 2.6, y - 2.1, x + 2.6, y + 2.1)
+    elif name == "help":
+        oval(3.5, 3.5, 20.5, 20.5)
+        canvas.create_text(12, 12, text="?", fill=stroke,
+                           font=("Segoe UI", 12, "bold"))
+    # Strokes and font metrics vary by Tk/Windows DPI. Normalize the *actual*
+    # drawn bounds into the same 20x20 visual box for every icon.
+    bounds = canvas.bbox("all")
+    if bounds:
+        span = max(bounds[2] - bounds[0], bounds[3] - bounds[1], 1)
+        canvas.scale("all", 12, 12, min(1.0, 19.0 / span),
+                     min(1.0, 19.0 / span))
+        bounds = canvas.bbox("all")
+        canvas.move("all", 12 - (bounds[0] + bounds[2]) / 2.0,
+                    12 - (bounds[1] + bounds[3]) / 2.0)
+
+# Pixel-accurate, anti-aliased PNGs created from one consistent outline icon set.
+# These are embedded so gui.py remains a one-file replacement, and Windows
+# users do not need CairoSVG, Pillow, extra PNG files, or any icon fonts.
+_NAV_ICON_PNG = {
+    'assist': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADPklEQVRIia2W0WvbVRTHP+eXpKEgZoVpfr/ctMniw8DfixAnCuuL+rKKoJ0bWPekIPMPEASHL/og+LJ/QoWxrsjs3vbUokKNA6Uvyqq1vUnaQpeNlhCT/I4PvT+NSZsl4IEL957zvd/zO/ecc+8PxhBjzIoxZmWcPclxwMD5MfEkRgFls9kzU1NTc8BFgEwm89vk5OTB4eFh43F7ZZgtn8/Pq+o14LkTMPdE5LPt7e0lQEd2UCqVMq1W62vgglM9AO4Cb7n1TeBV4JRb30mn0wsbGxsP+7m8E8hXHfmuiLzv+37WWnspxlhrL/m+/zRwFdgD5lqt1kqpVMo8LgIxxiwDF1R1HZirVqt/xsa4gqy1s7EuCIKCiCyLSAh8a619/UQH+Xz+oqreBHZV9Vwv+TAJgqDged4a8JSIzLucAH1H5BKKiFzrJc/lcmeNMYvGmF03FnO53NnYXqvVNoFPejkGIpiZmSl1u937wAPf97OVSqUNMD09/Yyq/qSqT/Z9+AFQttb+ChCG4USj0dgFMt1u90y9Xv/jPxFEUfSim96NyQG63e4XjvxGKpUKUqlUANwAnlDVz2Pc+vr6XxxVGp7nxVyIS9xxHbpqrZ01xlSBIJlM5jY3N2sAhUIh6HQ6VaBmrc0N4xgo0/9bPGvtrLVWROQdp1u01kpciqr6A0Cn07leLBb9YrHodzqd6722mENVl5z+7Zjjnwja7fb3bvpKuVxOxfpEIvGhiDwCLrfb7Vq73a4Bl4EDEfkoxoVhOCEiLzsHMde/Sd7Z2fkduAecqtfr78b6ra2t+1EUvQDc4qhr94Bbqvp8XEEAjUbjPSAjIhVXtsBgo82r6iKwF0XRuV7gMPF9v5hIJNaA06r6RrVa/WYgAgDXgXc46sjlIAgKvfbjHhzf94vJZHIZOA3c7iUfcABoOp1eAH4RkdDzvB+NMVfDMJxw9vNuEIbhhDHmg0QisaaqzwI/N5vNK/3RDbuuvwRec6qHHDXRPICqLrmExrfn7WazeWV/f//RSA5iyefzbwIfq2r5OLuIVKIo+rT/WEZ2EIvv+0XP814Ska9cBAuq+t2oRTCyGGPUGHPs03iSjPtXsTomnr8BlFdzvk1+P0UAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAElUlEQVRIia2XXWxURRTHf2fZ3d4qLpBQE+dOIja8aKM1fGmoJFok8mlCgCcj8QUiikG0Eh+Ivkhi8KVKiQk8KTyZ+PFACiYIPoDRgMiHEGOwNPTea2oN4m5Jt9lljw87i5fb3UI3nGRyz9xz5v+fMzPnzrlCE9Le3j6jWCyeBPA8r2tgYODfqWKkmiEulUqdItIhIh2lUqmzGYymiFU1VU+fisjdOs6ZM8crlUpLgdXAfGChM50CTovIoXQ6fWxwcLB4T4iNMfeJyDZgBzDzDu7XReRD4JMgCMaaJvZ9/0ngG+Dh2OsxERlQ1Q4AEbmoqu1A6y1QkSuqujYMw3ONsBvuj7V2JXAiRnpWRNar6mxga8x1q3u3ATgLoKqPACestSsa4deN2EV6ArgfKItITxAEe4AKgDFmsYicdCRdURT9UAvE9/1twG4gDYwCz9SLfAKx29NLLtIysDYMw0MJt7S1thcgCII3nV8cY42IfAWkReQK0JHc82lJ4lwu1wOsc923wzD8vM6iVPL5fH8+n++vrUJcCoXC77lc7gbwAjBLVfOFQuFkw4hdyvxJ9fSeDcNwfhLYWrtcVXuAJ9yr86lU6qOhoaFvE/wp3/fPAJ3AP62trQ9dvnx5/JYx7unydCaAiHyQIBVjzD5VPQwsBdpcW1qpVI4YY/YlAqkAu5w+q1gsdt82q8QsV7nnWKVSORw3+L7/sohsct0R4FPXRtxEN1lrX4qPKZfL/UBtb1fGben29vYZ4+Pj81R1mogsUlVU9Qqw2BhTjKLoR6qH51U3ZkhV50VR9DeAMeY9EfkFsKq6BTgIpI0xTwOeqg6KyKOq+pQx5nkRudnS0nJGjDG/ikgHDURE9gZBsNX3/QIwHegNw3B7YjV6gW3AaBiGD1hr+1T19UaYqnqxqQ/8vZCU53ldQLeqLhORn92MLqnqMlVd4vIU4IJ7rjPGzK4BOL2WfuehmtuqusRh/OYwT6vqMqDb87yu29LJ9/29wGvAWLlcbhseHr4Rs20EPnPdv4Avnb6e6ukG2BiG4YHamLa2tunZbHYE8ESkLwiCN25FnFiBfvdsTafTt31nwzA8oKr7XfdBYItrbS6i/WEYHoyPyWazKwEvgT2ROJPJfAdcd92dCbtGUbRZRFYAR6mm0QhwNJVKLY+iaDOgCeydTr/med4xJhNr7bu+76tr2yd1nkSMMT01HGPMO0l7vVP9sfuwA+w2xqyp45O21vZZa/uo3kJJ0hddQQAwkM1m9yR9Gl2LnVSvxenATWBHGIa93MW1aIx5y5FOA0ZFZHEQBBeSHA0rEGvtClX9wpEDnAN2lcvl/kwms1BVjwOIyHOlUulUOp1eRXVPH3f+oyKyIQiCI/Xw71T6dIrI166iqEnRlT6POeJLrvTxYj5/iMjaepHWZMJ9HJdCoTCcy+X2qWpeRBZQravS/J+3OL22z9dU9f1sNvvK1atXo8mw77q8nTt3bkuxWOxW1dXAAmCRM/0kIqeBQ57nHY/fufeEOC7W2mfjexwEwfdTxWjuL0CkUk+fikzIwbuRTCZzrlgsXqzpzWD8BwgL4vfP8llXAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFm0lEQVRYhcVYbYhUVRh+3nvPOrOre12W0WHnnNnwKxAr+1NYVJZQ9iGaqwj5RWIgZpQYRD+KlAR/aGYf/gnJzdWFjD4sXKUgzDL9p1l/JD9q555BbSGccdWtueftx5zRO3fvrKuj9MKF9+uc95nz8b7vGUKdpJSaCOBbKz7h+/7JeuZz6gXEzAuYeZz9FtQ7X92AiGhEHH+zVC8gl5mbK4Ll3XompBsd0N7ePr5UKs0jojkApsUACAAcYeY9QojPe3t7T98WQJlMJktE6wAsjQFRiwIi6mTmtVpr/5YBymQyy4noAwCNEVMJwGUAlW0rAmiKAXwZwIta687rxbreGXKllO8S0bYImB4iWtTQ0DCGiDZXlES02XXdMUS0BMC+kH8jgO1SyndiwFaRGMoopdwEYHVIdZSZX87n8z9VFEqpqjG9vb1/A9gJYGc2m33EGPM+gKnWvEZKCa31q7Vi1lwhKeXzETCfMfNDYTAAwMyn4ngAyOVyBxsaGqYx866Qeo1S6oVacWPPkD3AJ3Btmz7VWj8HgOPmUEotAgDf93fV8pFS7gYw38qXiOhO3/d11DF2Pz3P2wLgPiseJaLZhULh31q/qlAoHC8UCsdr2QGgqampx3GcWQDSABqY2SsWi98MQh5VZLPZCcaYExWwzPxwdJsAIJVKNSeTyVXM/DiAu636VyL67sqVK1v7+vqK0TFKqenMfMCKQalUmnTu3LkzYZ9BZygIgg5cW7meODBtbW2TE4nEMWbeAGAGgDH2m8HMGxKJxLG2trbJ0XG+7//AzPut6AohOqI+gwAR0dwQvytqT6VSzY7j7AcwPmoL0XjHcfalUqnmqIGIukP8nOsBcgHcb/lACNETHZBIJF4B0G7FCwCWBUEwNgiCsQCWWR0A3GF9o4D2AjAAwMwPIHKOhVJqojFmruM4DhF5xhjXDuwvlUorbJ7RoRs0LzT5KquvUKdSqsTMXVbuALAe126itPp+lLO7yGaz65i5aIwxjuN8SVLKUxh6+Su0VGvdJaUsAhgFAAMDA1708La2tnqNjY2VVSpqrT0p5RIAO4YR43Td/VCUHMeJy0PDJkFEM40xC1EuiqOIaBUAMPNFAFttkN9CW3MSwL0AkEwmZwOoOvjJZHIO81VMJwFAa71TKcXGmLus/iUiGmnjfIjyFl5yHKc7modcKeUVlGtc4LruGFubrpKU8g0Ab1vxAoDVQRDsBQDXdZ8BsAXAaGt/U2u9PjxeKdXKzH+hfKFKWuskyj0UgMG3LABwpALOGPN0xI6BgYH3APRacTSA7a7rnndd9zyA7SEwf1rfKmLmWaG4h8Jg4gCBmfeE+EVRe19fX9EY8ySAoTrB08aYp+KyNTMvDIlfR+2DSkc6nR4nhPgdNj84jjM9l8sdjPrdTOmQUj4G4HsrloIgmHT27Nk/hgQEAEqpbcy83Iq/MPOD+Xz+UpzvcCmdTo8UQhwBUDnYH2mtV0T9al37t1BuOwFgKhF1ona7S0qpxUqpxUP5CCE+CYHpF0KsjXOMbT8KhULR87wcgEpdm+J53pSmpqae/v7+qjbEJr0uAB2e550qFotVbUg6nR7Z0tLSjVCGZ+aVvu//GBe7ZmLUWu8AsDmkmi+E+FkpNT3sR0QT4ngAUEo9KoQ4jOpyszGfz39cK+6QPbXW+jUpJQCssap7mPlAJpPZT0TdtlBWkc0zs5h5ITPPjIDf6Pv+60PFHNYzyPbXW1HO5mEyAC7B1jYAF61PdOX7AazUWnfhOjSsB1+xWDzW0tLSaYwZTURTQwEJQPg9PwLVP7IEYJsQYl4ulzs0nFg3/JS2eaoDwLMoP6Wj214iosPM/FUQBF9E88ztJkdKuUlKyfbbhDr/wKi3/TBEdLEiWN78n4DAzP/E8TdLt+IPq91EdMZ+u+ud7z/FMzYCP4IFTgAAAABJRU5ErkJggg==',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADIklEQVRIibWWz4scRRTHP6+nd0+SnZ3dnh97MBs9BEwCQowkkFzUi3iQrBJkySkixD9ACJhbPAj+BeLFgz9ISDao6G1PWdyDrgvGuQhBvUxPvc5Ub0JOmel+HqZnMzvObHYCPijo/va33rfqW6+qGqYIp/6OU39nmj7hNGTg7JT8gwm02ztHKOVnsOI98atkwWa9Xv7raX1l0gczE1W/gshV4OUJtG1MPqlWy7dFxA4s4L2f6/b4FnizgFKQdbB3i243wd4AygAGP82GrFYqlQdPFSiSbwDHwdSEq7XFypci0nXqDaBWrYiZzej99BLGNSAC7s6EnBsVCUZtKUZ+HKGZhXKqHi18ISLdgrJRNESkW4sqn2c9OYXQBE70enw1zpHdcK7zjlNvTjuu5f3z+5KHotVKDzv16tSbc+n5yQLqt516ayedD4bxJEmOOu3cKpKo086tJEmO7h2cv9wfnN8axuUJYecFJL8HpNVovjawxbmdF5H8N+DQyHgeBZKdjKLoT4Cm2exikiowl2dypNGY/xuG1sCC/HShuT7kOUj2GXDI4IbQawi9hsEN4Lncgk8HtGMij8HWASS007vdi60/bodu1KqVc059C2gEki1FURQXljVyK7WAuFatLO2XIxgD/j/RTvxqf5HSm8O4086aU29t9ddVta6q9bb660W1rY3lJv69AfZkBlmw2X+w181sZhe30kfAQ4ELRhgbYSxwAXgUSH5lQGuazYK8BpB3ZfM/AsXBtQ2U9X56aYDXauV7gWSvgq0BSb/ZWiDZK4MKAljU9H1gDthaWpr/Z6xNzqUrRS1rq5Ue3sfRPRHH6bJTnzj11m6nb08kmpm01f/o1JtL/B+jIuMunDhOl53zTafeVP33ozn3VJGI2GzIKnAX41gptF+d85f7/gL9UjwLfc+d8x8GJfsF4SXg91LJLo4KTDyuH/f4WuCtAnrQ30SyUsz1drGgc0WSH0olu7iwsPDwQAK7lrj0PGIfAycnULYsl2v1+vx3k3LsKzCIOE6XJbQzYnwDYMJq3pWfJ1bLs0ZRYWOvxkkx7V/FxpR8/gVYLrNRlz2qZAAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAE1ElEQVRIia2WTWxUVRTHf2dmKgWqw0w785BItCQstCoEBJVKgkUSPk0IsDIuIRJJ+AiiJsSVJAQ3KBgMLGVl4seCACYIm6IQEPkQYkJkTEwG3hv6hqktdOjM+7uYN2WmtENpOKtz7/m///+e++459xrjMN/344NlTgM0RelMJpOFx+WIjEe4VLJZiA5ER6lks8bDMS7hsj34rtZ/HLOxAjOZTHNLS3xxACuFzTVpHoDMzhk6b+JIf3/hZHt7+8ATEc5ms5NisebNgh3AlEfA7xjsLhb7v5o+ffq9cQt7Xn62TD8hnq+ZvofZDaSOCoNdRZoBTKzBZJCtdpzEpdG4R/0/nucvF+quEb2ItLZcGmgLYFMVF8CmcmmgzdA64GI43Y6p2/P8ZaPxj5ix5+VnC3UDk4GSsO1Oaso+MwsAXLdnAWanAZA6Haf114qriHvb32yyPUAM6EP21kiZPySczWYnRZuar4WZlmSsnppKHqnFSIp5ufxegHQqscXMSrXxWzl/lYkfQvHM/WJ/x6P+OZ7nf+p6vlzP161cfktDcANzcz3bqjyu6+8YHq/LOJPJNE+aHL9J5fReTKcSc6vb+2BhPUtlbEf2aoVBlwn4wnFaf67FSYp4ufwFYBaQ7y0knp0504rVeN3hammJL6ZaMtLntaKSzHX9g8KOIVsMpIAUssWYHXdd/6CkoUTMLDC0Kxwm4vF8V61WnXAAK0L3XrlcPFaf6Z33MdaHwxzGAYwDQC7cu/Wel3+vji8YPArcC7mX18Zivu/Hi2WbEwnKUcT8SnpkotGnFnieP5BKJc6YWQnTB5UQ/wal2Jxp0565DZDN9n4WjZX+AJ7D2AgclhTL5fJvSEGz0D+GvQh63XVvvxNEouUJUV0wN+f/iehgdPvaSSc3uZ7/H9BiaG863bq1fjd69grbDPQ56eTTrufvBz4cldG4Oq4G/yQs0hSlMzDrQsES4HcAxDUULDFYmE4lqiV1BSDA1mSzvW1Vgmy2t03YmnB4GcLahoUoWCL0V4VS51GwJDDraorSGQsv8VMAruefBeZitCso/eY4U/uHlij7BtObBtOjscGrbs7/vjJfWkvlhFcwQNhQuj3Pa4HYCxUCO+M4rSeGMq5L3zgauhMjkaa6PptOT/kWcSgkSSM2IjY+EOVQOj3lcP2GRpcDzaHQ0dpInXBfX+EX4E6Fx3ZKGoqbmRwnucHQMsxOUCmjHGYnkJY6TnKDmWlog6SIsJ3hovxCIXGSRuZ5/icPWmbP1obgBua6PdtrWuZHw+MPnepisf9LIANgsj23cv6q4RhJMdfz97uev19SbHj8Vi7/Lma7w+GNu3cL+4ZjRrwWXTc/C1M30AKUMe1ItyX3juVa9Dx/WygaBfoUsGDq1OSVMQkDeJ6/TPBdKA5wydCuIBg8quiEeRHpFEBg9raVi+cikaYV4T99JcT3GVqXTrceH4m/4dMnzPxHoL1mekDGDRMvAci4ZmIG4ekN7W8FrB4p06o17FyOk7h0v9jfgfgYyIfTzVVRgNCviAofseNuf+HlRqLwGM/b69c1IR7PdwlWyuw1k+YDyDhr4ryhI4VC8lTtnfvE7WYuv6haKjdz+UXj4RjXJREVwUj+49hDNTimj2K6NFjmKkAsqlHfzo3sf13HVqXHBabAAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFwklEQVRYhcWXa4xdVRXHf+uc6e2Laefezjmn1KBpoSYkCsYPBo1aJVF8ECoFSWwHQoMJIgZITYzxEUt88IGKovYLIbbSaRNLfEDS0mBCkKj0W/HxhVhaFYbes0/vy+kMM+09e/nh7jtz7pkzt+NcievTeq//WXvvtfcRBiRjWtco6fMAgv/JMFx/epB83qCALOkdwGZgs+MHooEBiWqpiF8uDQRIVX1gOKMadrplk/y3AXHc3AL2NoTtwA1AHkAKnER5BrxfRdHImbcF0EStdpWf8rAgdxWAWIxSQQ76vt27YcOGN/5ngKqmdo8gPwVW50xt4C3ml20SWFMA+C1BvhyG5YOXq9V3D6mqb0ztR4I8mQWjcFyFXaUVEqD6WCbgsZUlL0C5E3guk2q1ogfiuPHDy+2xoX7GJKnvU+ShjOqUwANRWPlDVxHHtZ6YkZGRBjAOjBvT+KiiPwGuB0B0jzFNgK8uVnPRDhnTuLsXjDydtmc+HGbAuBSvFfMQhuWXpqdaN6Acnk+je6pJ7YuL1S3cQxO12lVDqbyKWyaBXwZB+QsionlfVRVjGrscgMOL+iTNo6C3O9W079l3j46OTuR9CzvkpzzM/J45NTs7tbuoEICIaBRVxqOoMt7PR+3s3cBfnGqNtf7eQt+8Io6bVyP2VdxJEfjIwmWCJEmGVf37VfUTiLwXANW/isjvRNL9QRBMLoxpbLOqLzoxVett3bhx5GzWp6BDdkcXjMLxIjBvnj9/rVX/FYVHELkRCIAAkRsVHrHqv/Lm+fPX5uOCoPx74IQTffHTHXmfhYCEWzP84bw5SZJhP/VOAFsWfswcbfHVey5JkuEFFpUjGX57X0BuRnzAienKITmeD0h16EGEdzqxJchum64IbboiFGQ30Ook412pDj2Yj7+4yjsGWCd+MD+XxJjWNarprSJ4wDqFb7iE/xbhBx2gTHRPUGzqp4D3daIZi4JKTxfjuD6GcMiJp6Kw8v7uSRThHZ3UfBM33QW+D0yqYkX830hs6q/Rv/2ufXJXFJUPxaY+CVwB4Em6Lr95a7XaunYqLSdORmFlXRw37kT0qcvWgDMDv4fyZK0tPPpLpSHBv0nF7kR1DZ0vv9/ZLgD7AVD+FoYj3aU5jVsyi38L9G58a/3tmWFyGiAMR8aNaSjCezrp+IrAWsf/TGAKkWlR70jPHFJV3ySNGTp3XLqy5AXubpqjqml8S9DvOrElyENpOnQMwPfbn1X0x8D6TjH59saw/L1s/OutVqU0myZ0DlQ7DMqrRCTt2nuWzBlOOtGfvWQ/k2+pL+3HUf7lxPWKHvD8S8bzLxlFD3TBIPzTl/bj+fjSjL25W1fhj1kwCwC5Nj0zz7Mrbw6CYDL17aeAfi/BM6nYTxdNa0R3zrGizy4w5xXVanOzePbvzF0dsi0Myy/l/ZZzdZxLGh/3VF9wYtumsvXKK8v/6AsIwJjGk4re48Q/p+2ZD23atGm6yHepVK1W14pXOgmdjY3yRBRV7s37FR57z0u/Q+dpCnC9P7T6oKoWgldVieP6WBzXx/r5iLfyF3NgYMrz0r2FtYuUo6OjE6h8KZPy8yZpHq1Wq2vzvsY0O5NZOGRMcyxvr1ara03SfBr0tq5O0AeCIDi3ZEAAUVR+CpX59zJ6u3ilPyVJY1uvp726mIdzSeNj4pVezoJBeDQMN/x8sbp939RhOPI1Y5oguseprrOqL8amfgKVIxdXeceYaffEvN5qVUoz9mZEd6J6U49ReDQcLX+9X80l/QZ13te6n84vTpYsqtOIXAGA6gVE1rCw81Oo3BdF5UNchpZ0l4Vh+aAn6Vb3O5QdZN4cGMDx2ZxtlCc8SbcuBQws41e6Wm1uFj/dgcrn6PxK55e9DbyM6G9t2/t1fs68raSqXhzX9sWmrrGpaxzX9qnqQC+IgYJFxNJ5FXTpgtP9fwABqMjFIn65NDAgD/8ocBY46/iB6D9F+XucQCY6FwAAAABJRU5ErkJggg==',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABpElEQVRIia2US04CQRCGq42wMsxWNjw0kSt4CwNshD0Bb2LiSQBlgY8dK1wixtcVSMRENO508bmghnSamWE6oZIJ9F9//VVd1d0iHgaMgbFPjJeh5hOzk1K4DDStdRMo+xboihqgDjwSb1OgBhhf8QC4s4Q+gb617gMLa30LBD7iLxr4DrSAjPpWMwAyQBuYK/y8MYm2Jaz8FSg4/rVTBBSVC3C9KUHdqryQSF5PEu6kmkQMB9py8ApwpSJz/V9xOB2NfYgTP7AGmrHwQ+CbdfsBjixeFvhSXynE7XtwrL8jY8yfhV+ISE5EeiKS168nInsich6SjDG/IjJytFaDi7Kx+me6zlsxecVmmzRS3eStGMvrD3Dp4APFu8C+fl3FBjHc06gEZXUutjDkYtwupkpoO3iaY3qmsZOkNtWUNI+tIjquBHxo7EkS0bB8uGB5/YuOP+qpKAFvGjNMU03A8uFCq+oAWfUBq8cuq20JK38Ccmm3HAA31kC/tO+hDayBAgxTizuJqsCEeJsk9twjUQloWMINn0Pgk2g1g7S265nj3pMv/yJHNHDc3txvAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACYklEQVRIib2Xz2oUQRDGa4aF7GaFveQ1JB7EQ5CQSMD89ZLEk/oKGkmiPoWCa4Q8h7cEPClkDSSEjV50CXoyEHMYSRCDPw9Tw9Q082/HjR8MTHdVfV93T1X1rkgFAC2gq0+rCkclAOPEGK/C4VfU9jPeBw+gDswBr4GO2XEH2ABmgfogBYeBZ8ApxTgFngCNfxW9Bhw55GeaVBG6OmfRA0aris4CPw3ZHrCoJzBh5id0bkl9IgTATJWdRqK/gYeAb+xjRmDMzPvAisZE4uV2rqs/MqLzKT41oK1PLcW+YMR7pb45YSJFeFRqtek8jw3PepFznTh79+zxGp9pYBs41mcbuJ3i5wP7yvUDGMoTnjOrXHRsHrBJNjYBz4lZNvbsRCNsBBCWx7Bje2BIjtV3Q98j3HNimsSl9tIVawGTwBSwq06HOr6JJg/wXm1fgRETPwJ8U9s7natp7BTwUW0dHU8CLSHZDNLQVrJAx89TTuqF2gIdtws4u5fb4PPwH476k9o+JI7aWcQrdToDmo7NJtd30pPrvhNzBThXWzK5HEdbTkuOrUo53TX23HKyDWSf7AayRdxAtshuIAfKdUJeA9GAp2aVK7nO+TyrhmetTECDsLFD2OgXUnyKLok7wIVyfKHsLxNglLhuLwgbftlrcdWIBsDVUqKGZMaIR998mbANuj8EmppIB2Y+AKb7EnV23iOJc8I6j3BIXDIRPve90xTxBrBOeLUV4QRYo8Q39YoczAKGROSWiMyLyHURuaGmHRHZFZE3IvLW87xf/W+v/CIS37gKR9VL4k/G++WCAfxp+wuK32wv1FRk9gAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAADKUlEQVRYhcWYwUtUURTGv6cSpY2Y0KJMSHMjtOgPEK1VtSkqcKFOSAUtbJUILVwYtBKlTS1EkSCNsCAKrDZCWLQMrZYqtWjTKnTGRTP6a/Hu4J03943z5o35wcX7zj3ne99999x7zyjFBNAGrJnWFpevKi6BpG5JLaZ1xyWrhKADIf2yEEsQUC0pYZkSxvb/ALQCQ8AnIEshsmZsCGjdSyHNwHSIiDBkgSngRKXF3AQ2HS/MAOvW83qI4E2gvxJCqoGHjhfMAz1AAzBi2UeAI0Af8NYRN06cHHOI+QJ0BHzyBAXGOoGloKhyxfQHiOaAWodf0vJJOsYPAjMBrltRxTSTnzPPAS/E1zNL1LeLzwuLLw00RRE0HVimQ5Fm5OasA5Yt3slSA0+Rv1M6QvwSwD1gAfht2oKxJUJiuizeLNBSiqAhK2g+xKcdWCUcq0B7SOw7y2+wFEGfrYAex3gC+FlETA4/XF+K/E2wuJuYanaWKws0OHyGLcI/+LvxqGn9xpbDsCO+Edgy4xkC51INfg1zRf5FWy8p55CWdBuQpF+SZj3PQ9I1K37A87xZ6/kJkJX01DxflfQAf/f1SsrtrLT8S7lG0n1gQ9K2pFeieC7YSJoZblg215LUW+PrxpakNKxWoh4q0BQnuEbSeUk9kmolHZY0YMZSkh6b/ndJuaVZkXTG9C9Z9hwuW/0V83fGCD1tnu9IqjP9R/KXcFPSszwm/KTOmM+XBY4EZ8AeJ3UBgI8WYa9jPO62v275fAiOu3LotdUvEOR53oakC5LWisxrTdJF4xuEfba9KcLhA2gh/+roDPEr5+o4Z/FmgJO7CjKBU1bgEo6yIyrwL9dvFu9ElOAm8suPOeKXHy8tvhRwLOqM7OQDv56pc/jtVqDVBcQA3IgkxiIbDxAtA10Bn2Il7Fnga4BjtCwxhrDaIQr8EiKJf6YEi/xG83XfO+JGgfi3A/6Bl3a8YIv8u22DnUPPRgrHcsYVdRyYJNoPxQwwQdQEjiisBRjEP9EzISIWgbuUes5UUFwVMGaJGSNmjsQK9jxvW35VkEPK2PZHkMHfkP7+gAr/S+8fecSGbIeDO7AAAAAASUVORK5CYII=',
+        },
+    },
+    'handler': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAB7ElEQVRIieWUMWgTURjHf9/lUNJJC0J895osAR2cBHGoIFURVDoogk66iSA46OCgm5PgoA4duzp2SJGia+li1w5ChJBcHsEMLtrQ4LvPwUtI6ZlrTxfxP717373f773H3Qf/emTyoVarHffeLwJHi8CSJPmSJMlqr9fr7xFYa8+q6hpwpOhuAVS1F4bhpXa7vQUQThRepfBVVd0qAheRMyJywXv/Bri4SwCcBiiXyzebzeZOEYExZkZEvgPzo7lgon4IoCgcwDm3nQ4PZwkOGjHGzFtry9NeKiqQKIqWRGRdVZ/+dUEURS+B+8BAVd8VFhhjZqy1D40x1Qn4c+ARMBSRG865jWmMcFoRWFTV1yLyuFqtLnjvbwHPgB8icjuO47Wc9bmCBrAOnPPefwRmAa+qd7rd7koeHHKuyDm3PRwOr6SSWUBV9Z5z7u1+4LkCgH6//y2VLAF3nXPL+4VD/hWNJcCDg4BHmTzBDvz6coqAAOr1+ugPHneDyRNsAAsi0rDWvs8CqOoJABH5lFUfDAbn0+HmaG7crufm5k557z+ISKXY/sf5GgTB5U6ns7lLAFCpVI6VSqVrqnoya6WIPAFQ1RdZ9SAIPodh2Gi1Wr09J8iKtfaqqq6QdtqMDEXkehzHv20Xf9JN/5P8BCuSrg5V9BjEAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAChUlEQVRIie2WPWgUQRTH/292wyaEQCKLxNk1jYeKiBoIWKhEEISAGIwQFEHsrKzstZCUQRAsxEYEC0GDphGs1E7k/EASTQgK8WabnKTw47L3Mc8is8dx3nmzuTON/puZefPm/ebN8nYG+K9NEtUbgiC4QERnmXlHo/mUYgDzAO4qpR40BUspbxDRpTZhzXRFKXXtN7CUcpiIssb2iYieMXO5HRIRucw8BmAbgDIz742iaAEA3Bq/QzUbGc3lcrl2oImklLuI6KNhHQOwAAAicRBC+ElfKdURKAAkGRrG1mq/U4C06hjY9/2+MAwnfN/v2zTw0NDQgOd5z5n5oed5NzcF7Pt+X6VSeQJg2Ji+2KxzW7s0VxiGPcw8C+CgMc0opa7arLXKWEq5W0r5KgiC68maTCbjAXgE4Khxmx0cHDwDwKr2rTImojEAIwBGgiDY0tXVdbFQKNwHcNzMP+3u7p7MZrMlm3iAZcaO49wB8M4Mz5dKpUUAJwGAmV9orU8tLS3FtlBr8PLy8irW/zoJfLtpXxaLxRNRFP1MA7UGA4BS6msd/I3jOGP5fP5bWmgqcAKP4/gIEZ2O43jUnMSGlLqcTIYzGwUmqmZcdwW2Vd91qsaqZdQa3xOt34phGE4BuC2E0H8I2GPaQjMHZiat9WQyJqL5aj/pZDIZb21t7TUz77FLJJ2I6HMcx/tWVla+AzVHbepwHMDbv8BdYOaJBAo0fsw5Usr9AA4IIRp+a2beCeCyGU4T0WIjP611mYg+9Pf3Z+fm5oq1c1avSCnlOBHdA9DbwvUHM5+Louhxq5hWdSyEOGwBBYBe49tSVmXjuu5UuVzOa60HWmxw1XXdWzYx/z39Akfd33OwH2Z3AAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAC0UlEQVRYhe2XvWsUQRiHn3f3kCRFhCsEZ2dB0IgIKiKiWAiKEAQVRRARvwob8S+wsPQPsJU0KhYKih8g4kchNoKEQFAIUZu7vWkMKhFOjJd5LW4De0tibpNbP8BfNfN+zPswO8u8A//1j0kWclSr1cG+vr5NQH+PazaDIBhLkuRbV0DGmBi4KiLD8/l7pB/A3TAMz9dqtc8LAllrq6r6BlhdEkheE6q6zTnXnDNUsl5VvZyBmQFeA/Nu7TI0AOwAQmADcAm4OC8QsDcDd8A597THMABYa0+o6k2AIAgOZYE6PlkURbNAANBoNELAlwEEBGktAJ/WajvygZlxWTD5tTsY8kB/XPkz1DNZa4e897uB+865qW7zStmhOI63q+prERkRkVtFcnsOZK3d7L1/DKxMTQN/DMgYs0FVnwLV1PQxDMNzpQJZa9fFcWzy9jiO14rIM2BVavqiqsO1Wu1taUBRFB1T1Unv/fsoig7M2Y0xsff+GRClpq/AfufcWJH1oeBfJiLbVFVodwB3oig6WqlURlut1nNgTRrWFJGDSZK8KgoDBXdIRK4AH9LpCuBOq9V6CQyltu+qeiRJkhdLgSkMVK/XnaruyUGtTcc/VPWYc+7JUmEKAwE45+o5KIBZ4KRz7sFyYJYElIMap31mzjYajdvLhYFlXB3OuTqwpRcQWf11l2seaMG2oMS6fiEHIjIxN7bWHi+LxhizLzN9l/V1nCHv/UMR2QigqtejKLoANPm1KiKyPs2ZBFqLxPcD2zPz51lnRwtrjBkQkVHazffvkBORTUmSfJozdHwy51wzDMNdwC3ar46y5IFHqrozCwO/eAhaa/u991tZpJ8RkdPAqXR6Q1WvLwLzbWZmZnxqaurrvOstktwhY8zhIAiuqepgN/EiMu29P+Ocu9dtjaKX67luYQBUdVBEymvQVHVERKa7jReRaVUdKVLjv/45/QROlQlacA2i5AAAAABJRU5ErkJggg==',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAB/klEQVRIieWUP2gTURzHP793RxMrQnIhL38Gt6KDqzgoSFUElQ666KSbCIKDDg66OQkO6tDR1bFDihRdQxe7dpDiFLjmLvVS/1VSk/wcmksizZ96uIjf5d693+99vu897r7wr0uGXxqNRqmLsyBKNiEu7HTc5VLpSGOfQb2+dUqMWQEyCTfbR3U7eqFUyq0DuH0nY54DGYFlhfVEaNWTiJwzhpfAeRg6QRBELYSZL5+z6bk5aSXh+74/67jp70CrYL00gOlXhRmApHCAcrm80xum4jkzpneqVFWCIDpdq9UOTepLZKCqEm41FxGqqdThR3/dIAy3n6HcAX6o6pvEBr7vz4Zh854fRUcH8E9PEL2PsivotUIhtzqJ4U4qGje1oOgL5ycPgmB7XqR7XeEx0Aa5Ya23Mmn9VINuu1Vx3HQV4Qzafa/gAR0VbhZtdmkaHKZcUblc3hHal4AqggeooLeLee/1QeBTDQCstd96Jouo3LI29+qgcJhyRcMmwN0/AccaPkEL9r6cJCCAjQ2N/+B+GgzCDlYV5h0nVQnD6O1ohB7rdX8YWaV5tjdcG+LuqV6PTojhHVBMtP2BmkbMxXw+s/abAcDm5te847SvKHp8zOKHvefTUUUV/Wi0U7HW1uM5GdUYKwyjy6osxUm7n8iuCFet9cbGReI0/X/0C623qWdjww8vAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACmUlEQVRIie2WS2gTURSG/zMzbWxDax7OtJa6kqioqIWCC5UKBaEgFisURRB3rrpyrwvpUgTBhbgRwYWgRbsRXKk7kfpAqLYBs4iLdO7UaeuzTTK/i2TSqEkz6SMb/Vfn3vtzvnNm5jAX+K8GSf7csG33PMEzALZXOq9TFGAS4B3Lit+vCs7Yn68LMLJGWGWJXOowo1f+Atu220Nworj3kZCnQubWwqKIIeAAgK0Acprk95qmOQUARpntkF+IobMvHo99WgvUl1Jqp0f9AwDD8/R+AFMAoJWw5BY/jsfj6wIFAL/DIsXyI62SuRFaN7BSqm1mxh1SSrU1DDw3Nxf1qD+D8IEH/UZDwEqptsWs9xhADwAIkd5wcDqdbiH1cRAHCzscM83o5XUDO46zK2PPvrTt2WskNQBIJhlqDoUfEjhaYGLcMmOnRSTQ7Bu1LUCOMiCQXgK9tnJjqVTqQmurew/AsaLlycJCdLijQ7JB8gEBO97UpN8G8La4PNcS3jwNwYni+nk+9/NkIiGLQaGBwZFIxM0uGf0+XIBtKAQvNMkf7+rq+l4PNDAYALq722fL4QBeh5q0AdM0v9QLrQvswzXJHwHllCb5vkgk4q4GCgT8uMpV7HBstUBfyz8J0UpjQLLugqqpPFc5Yxng4Z1fhu24o7Y9f4ukVy2h5+VbAEDT9B8rcEUpd7i0ICZLsR8kkwy1t7uvINgdtJs6lRLk9lmW9RUoe9SJhCyK6IMA3mwAdEogQz4UqHCZI6k7zvx+Mn+AIlXetewAebEQylWA0xVdZI7Ee8eKTewRWfrtLEi5mYw7KBrvAgjXsH6jJ2c7O6OPauUMNMei83AAKACEi96aCjQ2zYaMZrN0CERXLBBwmwy5GSTnv6df+ZjwLy4YcboAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAADCUlEQVRYhe2Xz4sTZxjHP89MTHf3sLvZMIk7S6BgLYugUpZF6UFQBBG0tBRExFYPXkr/gh48+gd4FS9aPCgobYUi/jhILwURQRRE21Mw3Zn8WHeFWLOZ9+nByTITYsxkM7QVv6d5n1/vh+d9Z+Z94YP+Z5K3Oer1+mS7LdvBjI94ymar1XxQKpVeDQT0vF4vZQI5Bxzo5R+R1gSuZbPWd9PT08tvBSqvrMxkXwePgNmUQGJSeGLafy+4rtvs2DLRgGwrOLMOo7QQ7iHSs7XDU+gEsAuwBeatzNhp4IeeQKjsA+0MDhUL+VsjhQm1VG0cE+USgChfRIFiS+b5jQCwAApOzhYRkwaQqlp+dTkIh6ZYmLE7Pqsrdn2cFkyP2jGGbqB/XZl3hwwn31/ZamjvMe1NP7vuZG3QvFQ69FettqgE9wQ5b9trl5PkjrxDntfYQcANhCkARCaS5I+0Q7VabR7RWwgzoalqAj2VKpDvr3xSrVbdbrvnvdgSGOs2SCE0vRDkwOxs/nFqQL5fP6IET43afyxVG4c69uf1egkxt4G50PRSjR4sFHIPktSHhHtIRRZQBBgXw9WlauNrm+C+CbgDfByGNS2Rw87mmd+TwkDCDlkEZ4E/ARCyYrhq1P4NZGsY8hrVrxwnd3cYmMRAjuNU2rbujUIBW0L3moocKRbzN4eFSQwEMJfPl2NQbxQIenyzk/tlIzBDAXVBPQSaKCcLhfyVjcLABj6Mc/l8Gdg5Coio/nM/126g9WOBqqYG21U7dsyJT6o86Tx6teWjaQH5fmN/ZPgs6ovvIeE6sA1AlIue3/gekSZ9JGhGlU8BRHiqSLsvjeo4ymLEcideL6JKpTJhZcbuC8z3LTo6VVof2dtLU1ONjiG2ZK7rNsey1ucCl1FaKYIYhV/btu6OwkCfi2C5XB7PZic+A33XeeZbxPoGADU/Ahf7h1uvLCt46DjOy17eRDdTz1v+EtELwOSAKauonCgWcz8NOkeiV1tFTyWAAZgMcwZWIiBROQ+sJkhZDXM+6P3VPzhzCH3Btl9PAAAAAElFTkSuQmCC',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABQ0lEQVRIieWVMS8FURCFzxWJeNEoFBqFhoSSEApBI08UKlFo/ACtqGkUSvFD3qsUGgmNVqFQqMh7QSc2xKcwGze7e19271Zimsmdc/c7M9nsrPTXw/kHYFTShqThSF5HUts5180pwBzwSv14BKZyEwDXkuYltSXdRk4wK2lF0oVzbjU7QWIdDETCBTSM8V4kAhALD3H6aoAcsAgMRjmXgJ/ZI0elOBUNTuz6G7AQbWAvbQ8Y82qHdjUB1ko3GjDYsvIDMA4c2PkD2AxMV3mCS5OeLX8C20XwygZWH/JMvoDdEDzKwDM5BXZ6waMNqkSW439oiV1o1ICnayZJa/2efiVpWVILOA8wJizfBfQlyzdF7tP8rNq68QLMpNzsD2dE0rqkyUCH+5aPA/q9pJZz7img56Zq8rvGiyIBmr0Y0dv0/8Q3+Mscio8HJUIAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAB6UlEQVRIie2WP2gUQRjFf18MhBgDnoggaKWohWACgo2CIAoBIWARtLMLiJ21mMZSBMFC7OwEFUkjaGNKkRBFjH+KFGorERIUNPizyNy5LLe5udyfRh8sO/vm8d58szPDwH/0CVEm1IvABWBfs/42IbAI3IuIB9UqvWXvcLVpxeo4MJ+4JeA5sNZhxYPABLA7eR2OiA/lai8XRrenw8Ci78GC76U6P1DQ7Kw3IuJLt4JLFe5qFtxXdC1YHVXPqaN9C1ZrwBzwELjdl+BU4RNgPFGfex6sDgOzwLFEPQKudS1YPaS+VG+qA4kbAh4DJ5NsFjgfEVl7fzBHxPohcDQ9O9Rp4D5wJvU/BaYi4lem31+oM/Vd3qSvpr4qHASfCu05dWsL7zpm6lzWVEfEMnAKeJ2oven9AjgbEd9zfIrIXlwR8bUUvgBMRMRKu6GQ/48b4eoJ4DTwbLOhbQen8BXWt01HKE51YxuobQ+oCiWvRkaRfFNoX1fvAr838BxO7x8baAKYKnwvNhvZkPp2c5eLLCyp25oOT92vLvQg9L06Vp6KcvgW4AgwRvXiOwBcSe0bwMcK3RrwDpiPiJ8Vmmqok+pqRmWr6mSOZ+4BchwYydCNJG1LZN2b1e3ANFBrIV0G7kTEtxzffwt/AJ4VGkAXNbVSAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACLklEQVRYhe2XP2sUQRiHn0nSJIWi2CSQyj8EJUKQYLCxUasgqYKI2lj6CSwsLfwOVrHR2qA2fgIRiSjEKNiIoIWaiBcNyT0Wt3fMDXe3e96u/8ivmnnn3ff3MLvsvAO7+scUui2oe4BpYLRkzxrwLISwWShbnVQfqnWr05Z6V92X+ocEZj/wAhgvYysKaBU4EUKoNQMjScLNCGYLeAIU29riGgNOAsPAFHADuN4xU30VbevZkkFin4uRz8t4LX1lO8BQNh0OIdQrAhoCdrJpPYQw3FwbSnJb86pgOtRuY0iB/rgqA1IPq1fVA4MUaWlAmFn1S1bqcT9epe+Qehx4BOzNQmODFBtoh9Qp9UNU5qN67Je9iiSph9SJDvGD6ruoxGd1ZhCv3CR10cYZV1Pno/ik+jZ6fEOd62pUItCtKOWHOq+Oq2tR/Jt6uhdMmUAT6psEKp5/V8/lwZQGlOVMJhBNbanni8CUCtQFaltdLApTOlAEtWLjm7nUD0wvr/S0by2GELq2t2Wom9dff7i22gIbPUslSmq3tTmp6Wo0vlAVEHAmGr+OF9Ke+j5wNBsvqddoXFt6aQQ4ko3XgO2c/FFgNpq3dQPpRz0GPKXRfP8OvQemQwifmoG2V5ZdR04B92jcOqpSHXgAzMUw0PvmOgrMkN/PXAEuZ+M7wFJO/ibwPITwNScvX+qCut7h2OimdXVhYOMeQMt9wDS13I9Hv/+a28BGH/kb2TO7+n/1E+rxI5fdf+XQAAAAAElFTkSuQmCC',
+        },
+    },
+    'advanced': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADzUlEQVRIicWVXYhVVRTHf2vfe8GPg3dCkbnnHO89GWSFYHJBglIa+wKlMAJFSNOH8NXXoMcewkBEQ4he+ngIBDFMwwKZ0ILoYcZErCTqej333Dui43DO4Ahz7l49uO90HBQnKFqwOez1/6//3mvts/aG/9hkoUTf958TkRqAqnaTJPn+X1ugVqttNMacK/qstZu63e75h8Wa+zkbjUYtCILtzWazAmCMecVBF92Y8zWbzUoQBNsbjUZtQRnU6/XV/X5/FKgDv6rqt8aYPaq6DHjV0b4SkdRa+4mIvAw8AbRLpdJIu93+44EL+L5fF5HzTvwOsKgAn1XV1wBE5CTwQgEbcNuqujFJkvYAKBcXMMZsU9U6cF1EngR2WWvXGmM+juP4pwL1xTAMN1hr3zbGXAI+V9VfgLoxZhtw+EEZrBCRK8AjIrI1juOv55fwfhaG4RZVPQ3cUtXHkyS5MbfpIjFJkhsicgbAWruxsPCaIAiOB0Fw3Y3jvu+vGeADroicKYrfk0EQBE8DI8B7wOJ+v7+21+tdXrVq1WOqOuYOuWjTQLPT6VwZHh5+qlQqXQJmgHeB0U6nc2EugzAMtwDjwEFgCXCq1+tdBuj3+x848WOVSqVWqVRqwDHAU9X3ARz3lIs9CIw7zbkShe77M7BnZmbmzbkURZ4BKJfL+1utVq/VavXK5fL+IgbgYvY4jTnN+Y12U0TGJicnU/6hTU5OpiIyBtws+g2AtTZz882qejEMwyMDgqr+CJDn+aEoioajKBrO8/xQEQMIw/CIql4ENhc1B4dc9n1/t4iMADuBvFwuP3r16tXuQg650WjU8jz/k7t99YWqjiZJ8hmQlxzZZlk2nmXZiWq1uh5Ya62dyrLsXJqmtzzPOyEiPrACuA18o6o7kiS5AuB53n7gJRE52el0dmRZNg5YmNfJURQtyvN8nUu/O/AnSfIb8MaD6q+qXREBWBdF0aJWq3VngJWKRM/z9qrqbuB6rVZ7C3i2Wq1uXb58+e9TU1N3itwoioaWLl261/O8xb7vn56ent4HhKraTtN0bMC75y8SkXFXgpUTExMX3BtwdHZ29loYhgfchkphGB6YnZ29Bhw1xpybmJi4AKwEbjuNvzXnpxuG4fPuXlkCTIvIuKoOroIRV5JRNz+vqusBz4lvjeP4u6LePSUCSNO0Va1Wz6rqzVKptCuO48PVanUFsIG7zbMJWC0iH8ZxvH1oaOhTa21ujHknjuMf5ust6Mn0fX+biJwo+lT19SRJvnxY7EIffRMEwT4RWebE006n8xHuV/xf7S8lfLLbucHGDAAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAEVElEQVRIieWXX4hUVRzHP7/Ze93ZgQazLfP87soqlpvSFvkQopIQlSDogw9WouGDmD0pvvrqiwjtg5ghERphEQo9aWiQEOZbadhqWgy7e67NOOnCgrPbzHh6mDN69+7dwQ2ih35wuOf8/ny/93fPv9+F/5vIXAOMMR+IyF6gy6uazrmhOI6P/pvEOVW9AyxI6e9aa58GHjw2UCebMWanqm5sK6IoWpkgPe8bwAJvA0BVNxpjdnbCny3jnKp+Cuzw44vAl8D7wCCAc24AQESue5+rwDFgK/Ca15201u4k40tkEadJs2TYWrsSQFWvAS908M0kn/EpjDH7E6RXgCGgDuCc+wM40NXVtQZwgPP9A96G9x3ysQA7POb07GYocrn2akVEjlhr94nICufcpkKh0G+tPTgyMnKv7TMyMnLPWnuwUCj0O+c2icgKH3MkC/MhdlrR29v7RHd39w1gEWCdc8/HcXw/7ddJjDEFEfkVUOD21NTU8mq1OtEx42q1OuGcO+GHCgwk7VEUbVDVC6pa8e1CX1/fWymYAR+Lc+5EmhQyMl64cOEzQRD8ACwFblprB2gtDDHGfCwiu7KydM4dj+N4N625z6nqdeA54PdGo7G6XC5XMjNW1d2qOhwEQdmT4pwb8qSo6vYE6R3gI9/uAIjIriiKtnn7Ax8LsDQIgrKqDqvq7hkZq+oUMC/xUjedcy+351dVLwGrgVHn3CtxHFcBjDG9IvIjEAGXrLVrvL4gIj/5rNvyl7W2e1rGCdKzIrI+DMPB1KJ60T9Pt0kBfP+0Hw4m9PfDMBwUkfXA2RRH5pFWyufzl0ul0mSGbU5SKpUm8/n8ZaCUtiWJ2yfLnlqtNq6qJ1P2n/1zizGmt630/S1+eDWJraona7XaOLAnxTEN+PNEPw9sN8ZsTOiO+WefiFxT1aOqelREfqE1v0kffOx2jzWDY9p26u/vf7Zer68FjgPzgYvW2vVt3zlsJ1T1O1qXxTiwKwzD70ulUvtYzb6dVPVDYK8HHIjj+EbbFkXRBufcfuAlr7qSy+UOj46OfpPIdnni1hqy1u5LcwQZvDkRWeecA6g1Go3xpHFsbOwccC7rhdvSaDTGwzCsAT0iso7WlHa+nVR1m3NuFYCIHKpUKmUgWLx48ZOdyAC8T1CpVMoicgjAObdKVbelfWcQi8jDveicW2KM2ayqw81ms2qMOWOMWZuOMcasNcacaTabVVUdNsZsds4tycJ8qMvI+CngWx7NYZZ8Ya19x/ufAt7u4HsFeN1a+2dH4lnI79Kqrzbjt0cYhosA6vX6be8zCXwNvMGjuiyTFB6VqNNkYmKiViwWvwIWich5YKu19rNisXgJeA+g2WzOazab60TkVR/2prX2cLFY/EREcsBvwLtZpLNmPJssW7as259E+ZRpsqenZ/6tW7emHherU3k7QzzwqQzTqbmQwj/4k6BVb0dBEAQAjUajEcfxGHMo5v9T+Rvr/7QrPfgW4gAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFgUlEQVRYhe2XbWhcVRrHf8+dSWZKWmNr6zBzrrVqde1iVQzVBRVL2VYkrYIW0WWF1f0iVqoiClrcBQtWuiys0oqIaD7IUqRVKYpiFawIVmhEau1iN5SazJmZNAVfJmnzdufxQ86NJ5N7JyWCn/zDMOc8r//z9txz4He0hvwaZ2NMt4hc5ctU9ai19r3fnJAxpht4N0W9cb6kgvkSAm6fp64lsnMZlEqlm0RkM7DHWnvIU93stV93//cn6DDG/Am4R1X3ViqVz1rla7lkxpiNwD6gHVBV/a+IvAb8Dfir8x8XkfOZMvghtgXeAHpU9QER+UtsC9xlrU1b6nRCTWRa4aC1dq3z+QS4ZQ77lqQS95AxZl0Tme/TyERR9FDcce2DKbZxjHZgn8txboSAxzwy/ap6TRAEt6jqYaZGuCcIgjXW2rW1Wu1Y7FSr1Y5Za9cGQbAG2AOMq+ph53sN0O+ReiwpceKmVtWDIrLRdRcGQTAyMDDwKbAmZQAzMDAwcBi415eFYbhEVRf6OZJ8E2do8eLFLwJ9rruk0Wj881yItIKLscR1+1yOWUjd1KVS6SER2e26/7fWXuHrly5duiifz29R1fXAaif+WkQOjI6O7j59+nTdtzfGHAcuB1DVLZVK5aWkvK0K46a4oaof+Ipisbgql8t9pao7gHXAMvdbp6o7crncV8VicZXv0xRjEymYMUNhGN6gqutV9SYR2eD0USaTuaK/v/8ETM1MLpc7CixvMRiA78bGxlbHM7V8+fJLoyg6DmSm+OmHIvKZiBwol8tfxE7TM2SMuU9VDwHbReRWj+zbMRmAXC73iEfmR+D+KIoujKLoQqYq9Y9Od7GzBcDFeDueCJdju6oeMsbcN4sQcGPCKL8FtjXJ7oobIrLFWttTq9WGarXakLW2R0Qe9mzvbPLd5mI2Yzq3T8hfvpejKLrEWnultfZ4k/PKuDE6Orq/OfKZM2f2J9kCWGuPW2uvjKLoEuDlpNxpm/pIrVY7maJriSAIdC4bF/tIon+Kzy5jzJEwDHcWCoWOJl1cn8jn87OuGfl8/o4kW4BCodARhuFOY8wRYFdS4ulKLSJV1enBBcBqVV2dzWYngac9n33AtQCqutsY0xZF0XsAmUymW1X/49m+NSNZNrtNVZ9oJiEi1em2zz6bzT4N/Bm4ziP7w/j4+EVDQ0PDMP9jv2zZsoXt7e0DwPlOPwl8CXw0OTn53ODg4MgMQj4cuV7gD24Ej5bL5RdifbFYXBUEwbvApSlkTjQajY3VavV/sSAMw0e82ft2cnKyKybhI5MUbWRkZKKzszMAbnOiUr1enz4Vw8PDp3O53OttbW0/MbW8C4EzwBci8srY2NjfT506Zf2YixYtegUouAFur1ariTfH1Cusqm7wuuVmvVuK593vXFAGrvZiJ35cE09ZGIa3Ad2uGzG7OM4H21wsgG6XYxbS7kMPet1vrLVHC4VCRyaTeVxEulR1T7FY3Nvb2zuR5N/V1dVWrVY3i8g9qtobRdG/rbVHjTHf8MssPQi83+ybuKlLpdITIrLTEx0A/ggYT9YPvNjW1rb75MmTowArVqzIT0xMbAG2MvMUWuAYsN4b9JOVSuVfzbkTN3W9Xv+8s7PzAuB6J7oMOK/JrBPY0Gg0LqrX6+8AdHR0vAo86XQ+znMxABCRXdbaZ5Jyp1VqLZfLW0WkuZpWgBeAQU+2ycUJmHnPGXS2FT+AiOwql8tbmXoqzcJcT2kxxjwL3A3sHR8f3zE0NDS8cuXK3NmzZ7/DHWOm3mkAPTGZBQsWXNzX1zfmCuJTwGbgTWvtP9LInAuhVBhj9uJdRZqwz1q7eT5xf83b/uN56lpizrd9GkSkR1WvZfbn44SI9Mw37u+YCz8DZtg1hQG902MAAAAASUVORK5CYII=',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADn0lEQVRIibWVQWgcZRTHf29m18RQQnYnM9sNEoiC0VKooogHE00UhRYlIhSEVnoJkluv0hwFLUIptiDiRfQgFEpFWymCpBoPIpLYUKL24EIP3Z1vsjMhhtqYne952E2c3awkgn3wMcx7//f+7z/f972Be2yyV6Ax8TOg5VZaNQiK3/9vBMbEYwrfdSSOB0Fxfrdcp5sziqKyMfWjqppvuV5qPZdaa9unqnlj6kejKCrvSUEYrj4Idg5hWOFX0K8FOQH0q/AygChfAmuKfgzyosAjKLfAmSiVBn7/V4LbcTzsbjKPMAzcBXr/Qeo36ebGKwBuvucLVJ7PpDaxyq00z9hQsXhrK5DLEuQaMqWiw6Dmr57co/kNe9yBg6mTflQeHPwxA32hurLylGvdaQs3NnucT+/baPyCyHCuIVPA+90V3F4bdHONm0BB4EgQFL/q9l07zZj4sMIVIEkbuYeHhvpXtmJtmzw01L+CchXAwtiWP4qi0dDUL4YmNs1VvxhF0ehWfBurXM0Wb1NgTPKYFTshKm8D91tXD5Y9bzkMVx9C7ALQ39H4uiPpE77v36zW6wecVG4Af6rorKPOXBAUft5W0JSoi6JyBugTuFz2vOVmC+l7QL/CBaFRFhplhQvAPqvOuwBlz1sWuAz0icoZRReNiQ9vE6jwQKur64KccF09lhH5NIAr6ckgCGpBENRcSU9mYwCuq8dax/l6tmb7RVOtW6sLnuet8R/N87w1a3UB1XrW31QAfzQbkklxWKqZ+FyG9QeAVN2zxpj9xpj9qbpnszGAmonPicMSIpPZmtJsXHNRFL+hIhMorwMNR9IR3/ere9nkKIrKVt0KkEP4TFTnfL/4iYg0dkgNo/hSaGKtmWR2y7fbMa2ZZDY0sYZRfKmzXttNrlQqvSiHmm+2uuX3ff834LUd3WybrYKAcqhSqfSOjIzc7QqrRfXp0MQamnrYnJLxWBjGM0mSDHRikyQZCMN4xph4TFXzoamHoYm1FtWns7i2URFFq09atd8CfSjLCAdaoXWED4LBwlsAZiV5B2UG2AeQwd5xxHnW9wd+6koAUI2S5xzVK0AfsA4s0hoFVmQCwFGda8HngcdbRHesyJGyX7iWrbfjh1P2C9fU2kngtCPpaCkojiucb4FPOXCq2TTnS0Fx3JF0FDit1k52Fu+qoJuFYTKFaPsJUXm1VCp8vlvunghU1TEmeVOkeRdUWQuCwociYveSf0/tb0z4xVDZMjiLAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAEsUlEQVRIieWXT2gUVxzHP7/ZTWIF4+7GnU3WFIyQapXGUk+iUttSKgh68NAWUfAg1h6KwUsPXoUiBUMRtXgoCsX2oNCTFu0foVhvbSw22kARajc7b7Iz44oxyW7m18PMxs1mN00KpYf+YGHf79/nfd/Oe28W/m8mSy1wHO99RI+CJCKPzqAylMtlzvxrYFW1jPFdhMzcAJ5tp7MiEi62l/U3kIOu6+2q+RzH3/gMKtejDyBkHMffWMtzXW+XMf5BVW3Zv6liVbWM638GHIgEcVOULxHeAwYALJlZDxBq4l5cdgflnApvC7wa+y7a2fTBZisxD9wIbTHbkWw2vTFS599VeLFVbiv4vKUwxj9WBx0WdAioxOOiwvH2dmuriKiIaHu7tVXhOFCMcypxzXA8PhD3nGPzwCIkat9V9LRtdw0KiQ0q7C4/Sq/ptjMnUqmUX8tJpVJ+t505UX6UXqPCbiGxwba7BlX0dLOes75Gh+u6K0JN3Ad6gD9nqpMv5PP5ica8haxQKCxPJJf9BqwGxiyZWZfNZh8vqDibzT5WuBAPV7e1LV9fHzemtNNxSzcc4xnHeMZxSzccp/RWfU5csxpA4UIjtKniYvGxLVblR2At6KidzawXkVBVxRj/U4RDTWUq5207fVhENHpAvXsg/cDvGrZt6e5eYZoqdlzvcNF4I2JVnAgKqAzVnkZjgv11UBfhLMJZwI0lHDLG3wcgIiEqQ3HuWrEqTtF4I47rHZ6n2HG8KYT2OgmjM9Wpl2u/r2O8W8AWhT/CavKVfL5zHKBQKK9KJKs/Ab3ArZyd2Rr5C8sTyY6fY9W1VZnO5TIdcxTXQa9aIjsmnpQHGh6ql6ICvVyDAuTzneOCXo6HA8/8+YmJJ+UBS2QHcLWB0eTIFB4EQep2X1/f5LzYEq2vr28yCFK3ER40xurB0cmiHOlc6QeO611sOGt/iZJkb6FQXlVzFgrlVYrsjYd3an5VtRzXu9i50g9QjsxhMHepP6+DLEPZ74z7sxcEKueiNJ5PJCt3Hdc747jemUSy+ivR7zubA+CM+7tQ9gPLmjHmbCdjTDcktilyHkgp3Oy2MztiBYveTgBF430fXxaBoIdg5gfbtmvHavPbyZjSKUWOQnQLZbPZ+3WxnSrWMVQ3RR1kmDD8OJfr+rqW47ruutqtJeiQbXcNNjKS8yYe3U7b4+HTMAyD+rhtd10DrjVVHVsYhgGSeAo8p8h2VbUWcTsF+4DN8SxO5nI5R1WTQRCkF4IBBEGQVtVkLpdzUD0ZuzfHPefY/O1k6exeRKSvWPT3GNcfmZoOxx1TumKMt23+ZL1tjildmZoOx43rjxSL/h5E+pr2rLVudDx8WO5qa69+A2xqpUzgC9vOvBtDLym80yoXGK5MJ9/o7e0sLQhuClc8Ea4r7CHeHkK1Jwolx+KySYGvVHmz7mWwKbQleBbeUT0FOJWp5Ee9vZ2lMdd/zVL9NgLqJ1ED+QAgFHm9J5v+Lq77EMhVppKDzaALgpvZ6Kh2dK70A+oPhVht+VE61d8vU4vt1fL1s5n198uUopca/YpeWgoU/sE/CVW1xny/N1GxkgAzbWG1J51+uJSX+f/U/gKsszhGTeEf0QAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFl0lEQVRYhe2Xb4hc1RnGf++5s2PpbnRndu+dGaXKSrWmNjUoQcFIQjBK2GihhqJSafSTmJJUioUYUKjQSESMIRE/6QpFgiQVRKk0VZrSDxaiSIyRxJBotOv9Mzuza7OlGeee1w/z787snZ24gp98YOCe+z7v8z7nPeeeewe+x+KQb5McRZVJVX7WJSgcc938G9+5oSiqTFrl9bSYETYu1ZRZqiFruXMpsUEYaCgMK6vDcGa378/clLwvwi2ta0VfVPTFtBiA78/cFIYzu8OwsnpQvUWXzI8qG8VyECHbqMvL6pgXRO1mlF8DglKr1eZHAbLZ4dk2V/izipmS2D6AcG+Lq4a7im4+dakXNdRjpi8UDhe9/FoAP6z8Q2DNYvxBplKXzC/PrusxU+1nRh19qD129CGFw32sNDSErFgO+uXZdRdsyFj7cNuMcrbu6HWCrFH0CEpNYL8Rs6ro5deWxsaOt/JKY2PHi15+rRGzSmA/Sk3RI4KsqTt6HcrZlilj7cNptTOpM1c9jMjG5nDEZjLz3tgl/wRW9Zl9F1x39AhwT/LeZ3NzeerxSFeNtGak3Sx7+T3AKQCE/ND5+uMXYmQxDJ2vP46Qbw5PNWssQGqHrhWpBUHlGYR9DU9sALYlOVEULVN1tqjqekRWAKD6gYgcEon3ua773yS/qdGA8sy1IrW02v3PIeGOTr68mQxNl8vLrTrvK+xEZB3gAi4i6xR2WnXeny6XlydzujQS2gvLJuD75RsxznpBVwO3NeMxaq4uFEZPQ6Mz1jrHEC7vO5mG8qeGeEWrU0EweyViTwIOoMDfFPkXNj5ULI7/u5XW7lAQVO8TY94R9Ang9o5ZebVlBiDWzLaEmTlB7rfxkGfjIU+Q+4G5ZkuuiDXTXuaGhryaaMTtgj4hxrwTBNX7FhgCvTllnieM1Hd0T1zvSgy2eF5uqlRaFpVKyyLPy02h/DbB/WUyt6l1YmGZTu3kHpLE1fM2lomCl7/Gdd2TPdk/7iTHr/VKZzL6WhoXwHXdkwUvf42NZQLh+bTa6ZvacrRUyn2SGhsAa60O4pRKuU+wHE2LpRsS9gZh5WgQVXb5vj/cEz3VLo6z4DPDWucXaVwA3/eHg6iyKwgrRxH2ppVOnEP6RU/nVqCswGTrwKNtFnJQ0JXNwb4wrA7FceYNAMepTyq6O8H9S1c1k92B8shCG/pF66rtwPf9YWOyj6rKrYhenzA7K9R/5HneOVj6Yx+G4YiS+QwYbTLqqLwnon+3tvanYrE432UoCd/3h8Vk3wV+0pzp74pe7tlWfLpcXu5Y8zpwZR87p2NjN146Pv5RWzOsbpNO906ord3QMpFE6h4qFovzgjzXmaw+kIxfOj7+kZF4pcB2VN8GIiBC9W2B7UbilUkzvRqCPJdmBvq8ywAselurfQqf98abS/Fk8zcQCp8L/LylDaS+XFM7FIaVDQKTzWFskB1pvG+CpkYMIDAZhpUNabw+30M8mNhdH7ru6DHf94fFuej3WL1BDfsL47kDIvJVer4OBeXqJrHcjZF3NT7/tOuOHguj6oc0u6TKg8Bfe3NTN3UQVB5B2JWgHQL9KXBZpypnMbrnf+e+3DcxMfF/gDNnzvzghyMXb8HK1p6n8D8gx0HXJ/L/UCjkn7ogQ6oqQVTdI3TeS/2hLxW8sc0AQTgzBfKbgRmwt+DmtorIglM9dQ+JiBbc3FZlwWk6LeizIEFHXe5QVaOqBpXEd44EDS7TF2oGBvwvU1WJosofFfMrQQ9Afafneec+/lgvuviS2U9BCw0R2dwoplMtM1/OjV5x1VVyPgzDEchsV2STYF9x3fxj/cwMNLQYgrB6gOSnSLfswYKX27QU3SX/t0f1rSXFBqDvwTgItdr8VDY7vBIj3a8Pq6drtfmppep+j0H4Go2rVXafVZUSAAAAAElFTkSuQmCC',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACDUlEQVRIibWVv0scURDH5/kDJIVIsMhaWCgo2Ggh2mThOuFIIQQCVoKgIY2S3j8g2ImVWKayUMFKiJVYiwRCSGmjXEiEKEcsxE+K+26Ye7e7WcQMDMeb+X6/M2/e23dm/9lCVSDw0swSLa9CCKdP1gWQ0mlpFW5XgWACvAF6FZrT72f53xjQK2wS6xR1OwJcqMuvwCbwS+tXchTbFAZxRv4lPuzEf0cjOQaeyY+jXIa9AIbLCqwK2ACeA2vADjCTg51Rbk3YhrirZQUGgWsB65Vm2uLVxbkGBn2u7ZBDCD/M7EjL1AmMA3vAd/keMO6oGfZIGrldTAHvgSbwAEwoPuoO2dstMCbMhDhNaUwVbTGzQ5fbV2wXeCHfVWzf4Q4jjbovsKLgObAI9LvcpXKJiyWKXbpYv7jnyq10nIGZ/TSzsxDCTe4cS0ycM2m0G7AQbW/rESPaijQWfIEeYAn4CNwDd9lIqHbIiTj30lgCenK3ChxIYN3FSq8psC7OQazXVgXoM7NJLa/cfL+Z2ev86bdhJ4G+EMJdUffL6qRB65VMgXfAQA52QLlU2OypWC5sA5im9bEAfInmvQF0yzcUI8I2gemSnZoBNVfkFjhxQjV5ZieuUBOolYq7IrPAB2BI6+wKfpKDrjIwJOxsJfGCgvN02nwVbqU/faDLzN6aWfaE3JjZdgjh4XEtP6H9AR4ujlyhwzJbAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACjUlEQVRIie2Wv0tbURTHzw0BRXAQRYV2EQRd7F8gFKcKIl061kJBkGYXhC7uDrZLB7dkSSdHh+rg0uLQIS4GhEJppVJRHAJNI7WfDn5fe/Jyk7yUli79woW8c74/7s17795n9h9dABSAY+CdxjFQ+NuhOeCCVlwAuT8Z8hhYcLUZF/ZKI8GM4y1I29tkFFp0pvvAE+DQ1aY0EhyKs+9qxczhkdAYjoCgcdSFmy0cWHWiCrAJXOn6FHgKDDn+kGqn4lxJU3E+q1mC15xgWbVJYBHo66DrE2dS18vOZy1L8CDwSYITYKCrqNVjQFrkNZjmtPz3IYSamRV1ecvMplOm88AecKaxB9xL2UxLa2ZWlGfX2Y5yszHAzeaQUz0AWx0eoi0giJuTFnmNdgpcAaops4LrP3L1M+CFxpmrP3T8QsqrCqzEghsp4rG/v8Ab1T8AI64+AnxU77WrD7hVJ2jEghPsAHeB/lS/pv5mRPtMvVqq3i+vncQ86cVe7PdmdhBC+Brp9QR5HMgzDuDarboOlHA7zm/81Tl51J3vdSy4RCsWXd8/XJ+JP1xLjr8Y8Su1W/U48AC4FHHf9TK/TuInh8WlPMc73JWfok1nOJXqzQO7/NpAdkltIDSfWi0PY7vQHPBWoi/AWCZhs8eYtMgr0+m05Ga7rloedyJ10A4Bef1ej937BLGZ3HG/J4D7ZlY1s3NgG5iNBM4C22Z2bmZVaSbaeLad9TDNZ2kMZccvd+FWgOGuwW3CL4CXNL+T4xoJ6uL4j8HsoanwErCRiIE5Z/pcI8Gc021I21toh8n0pVbtV9v26ySGnj4/QwgNMytHWmX1snv1Qja7ec/N7LaZ5VX6ZmYnIYTvvXr9E/wA/z1V5MTKX1YAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAC8ElEQVRYhe2YTUgVURiGz4h/4bWF0DIQF4JS4ELQhbhwJ0qtoyTXLnSRQpS0CTet/It0EyJCCy0QFSUQ3EZQeAnxJ0NBUQIraiVKT4v7DX6czpl7Z8Z2vXBg/N7vfc9758yZH435j2gEacRAhzHmhlX+FATBUhrfxGHwoyOpb1GKTLcScukAtADDQLNV31Bn5KWMEBtWb7N4tKQN0wmcyiS/gRmgDZiWvxH+igzdOy29M1Zv52WEicKa0qwV0B8/lPwyHeabLwxQr3T1EaG0xynQFifQghLvA9eBVuC9mL0CGiP0jdJzKppW8dhXvgtxAvUr4QlQVbDY71klXiH644hLgR0lHrmEQCPKbwcojWvQowy2HXwl8BBYBb7KWJVapaN/W/n1JPlFy8pg1OLqgF382AXqLM2o4pcLDdEEDAIrXNw7zoEa68zoi9OHPX2mgBrxQrxXZK4mX5guj/Gs1TeouB9AN3BNRrfUQgxa2lnPHF2uQBOOxk2g1ur7qPi7Dp97iv9gcbXiaWPCFWhSNbwAqj1n8pfqc128VxX/0+NRLXOEmAw539M+GwTBnofLB/I1iHfWxfkCjQNZ4BlQYXGf1bHrNeO2p9cAFeKZNcaMuyYuVsdHVtCbMs6NMY8U99oY0yDHz4ESY0z4hthhjBlWvW+s+R4bYwYcOY7+qkj6IeAdcKbW9zuQUX1Jt31GvEKcyVxDjlVwhtO7oc/ik9wY+xS/mTeEI1SvMlh38HEfHevKrzdWGDFYVAapvyKAJeW3GFfcrsTnQEN+VV7PBi4eHQDtccTzermAYnLX1RPh7pDbXT59ifTMi6ZCPPSyzccJNGBdpG+BA6u2DzwAypWuXGr2LjwQDw3X9vcGCoAxCsOU0k0VqBkD4n01e0Idkvu+Ola1E6BIhn5FPZbew9RhrFBPgS1yN7CM1MusUPdl6DBl0psR7ZZ4pfp/QlTYuYglmUvqm+bbfjUhF4ni/C1eTJncQ7bGqn8R7j/+Cf4AyqLbBqyFwQQAAAAASUVORK5CYII=',
+        },
+    },
+    'experimental': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAB6ElEQVRIieWVP4sTURTFf3dmUsTYrZDk3RddWxXUTyAo2Fm4Lqx+ALHdQkX8g2AX1kXsVOxE7LSwl/0AFgHFRhAM81KtbhWFBefazCxJSDL5g5WnmXfvefece2eG9+AfQ8o2OOcuRVF0YhyXZdmXXq/3flp9UtqByBszq03g+sDhafVRmYGZXRtYt82sPY5bCqpqqmqT4mkonWBZ/AcGrVbrVL7cH0jvj3CLG5jZdv58NpB7DpBl2dOlDFR13cwuAj9F5FGRT5LkIbALnPfeX1nIwHtfBbby8G4I4UfBdbvdPeABgJk9cc4dmtsgy7LbwCrQCSG8HOVDCC/M7CPQAm7OZaCqXkRuAYjIJvBnXA/AJmAicqfZbB4bpzXpLHoM1ADMbEdVJzVYoBpFURu4WjqB9/4csAH0gU6Zcr6nD2zktVMRq2onP2vuzSAOgKreV1Vzzn1m5K0MTeCcuwGcBr5VKpXtWQ2q1eoW8FVETqrq9UHu4MKp1+u1JEm+Aysispam6btZDQC895fN7C2wKyJH0zT9PTRBHMdngRWgM684QF7zCThiZmeK/IFBkiR7+VIbjcbqvAb1ev040AQws0Jr+E5W1R2g9E8owYcQwoUiGPrIIrJmZq+BXwsI94FXcRyvL9ngfPgLVxGcoemkapsAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACuklEQVRIie2WT2sTQRyGn9+atMWixR4au9sNFYIVq0UpIip6UxD0IB686cFDjxapJ/HPRUEr7UGEUvQrFPwOKlSp/5DSFkSa7I5bKAlVa4ImGQ+dQNqmyaYN6MH3svPOvPt7dmZ3hoW/JKkjG4nH4/FqgWQymQTyDQU7jvMSOF4j9sr3/RNh6llhwcCeBmXqA1uWdRKYMXZORAZEZACYM30zJtNYcCqV+gwExirP88Y9zxsHlOkLTKax4EbrP/jfA/f29jYB3cYWy4ZK7W6TaSw4k8lcK4FF5Hmpv6zdbTKhFOrk6ujoiEWj0VmgTUSmY7HYoampqd9mOOI4zlvgIPA9Eon0zM/Pf61VM9SMo9HoA6ANQESul0Fh5WweNO0d+Xz+fpiaNWfc2dnZb1nWa/OQE77vX6yUs217QkQuAFpEjnmeN1mtbq0ZW5ZlPTG5XD6fH6qSHQR+sjKZ0j2bA9u2fQU4auzwwsLCl42ySqkkMAKgte53HOdytdobLnV7e/vOlpaWWRHZzcqWuSciy9WKaa1bgZuApbUOcrlcTzqd/lYXuKura1hrXW1pa0pEHnmedyM02LbtHhH5CDQBk8AuYG9I3hyQYeUV/dJa9ymlZteGIhs86aiBFoAB3/c/hIQC4LrugWKx+A5oEpHHwJm1mXUfl23b54Gzxo7XCwVIpVKfgKfGnnYc51xVcCKRaBaREWPTWuvb9UJL0lrfAtLGjiYSieYNwdls9hKQMDfeUUotbhaslFoUkbvGJnK53KqDZ+1SHzbXH0qpsc1CS4rFYmNAdk3t9WARWTLN7a7r7tsqOAiC/UALgNZ6qXxs1XYyX+N7YBuwDLwh5A96BUWAI0ArUCgUCn1BEExXBAPYtj0kIg8rjW1SGhjyfX+kvLNicdd1TxWLxauAvUWop7V+ppR6scU6jdMfZivnhCVDJ4YAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAADN0lEQVRYhe2Xz2tUVxTHv+e+MfZVYjaVCfdNgnSh0EiJZGFLqS40uOiiCmJL0YX1x0Yi1JW4EUEQKcVauikBEXUjdNk22PgHKBp/lQri4GLee1cCGmISAknhfl14nzwmM/PejPPoJt/VOed+7z2fuffNvDvAqlpL2p0QBME+ETlKUrVcWMSSHI/j+PeigeYA9Oa0z8dxvL6d9Vt+yia6X5AXQAdAvu/vFpHLqdI1kqMkRwFcS4oictn3/d2FA1Wr1SUAYarxc2PMLWPMLRF5nrKGzlssUNFaBcrSKlCWOgIiuTGJrbVsFKc9hQIFQTAM4ECSe553u1EM4IDzFgsE4GcAnosnwzC8mQy4eCLhA/Ar2nw9tQVUqVS+A7DDpcskx+o9InICQPKD+IXW+ttCgLTWH5I8n2r8izHmab0viqIq3u5M4vuxXC6v6zqQiJwGMOjS6Z6ennPNvEtLS2cBvHBpUCqVTuXt42VbgMHBwY9JXgdQcqWxWq12p5l/cXFxube3d0ZEvnalbX19fTfm5uZmsnrl2iFr7U8APgAAEZmK4/hq1hxjzBUACfRaa+2FPL0ygYIg2Elyj0sJ4DgAm2NtWmvfeUVk78DAQOZ1pOVXcmRkZM309PRDkp/kAMiUiDwpl8vDU1NT/zXztHyGlFInABzsBozThoWFhZn5+fnbzQxNj6y/v38DgDOp0m8Aah1A1NzcRGfc2g3V9Mi01uMicsSlVd/3t3RyAwSAoaGhntnZ2ccANgMAyXFjzLHcQFrrrSJyD24HReSrKIr+6gQmteaoiPztUquU+iwMw7v1vkZHJkqpS6mxP94XBgCMMZMA/kz6WmsvocGGrADSWn9D8kuXLovIyfeFSSQiPwBYdunnWuv9mUAi8n0Sk7wYRdGzbgFFUfSM5MVU6VAmEIBNSeB53ni3YBKl/9MppTbVjzcCep0EJNu+YOXQuzVJztYPluoLJCdE5FMXX9Fab1dKmW6QWGs1gMOp0kS9Z8VTrrX+SEQeAdDdgGihCMBwHMev0sUVR2aMeWmt3UXy3wJh/iG5qx4GaP1y9SqVyijJrSTXZ3jziEqp1yLyIAzDSeS7Mfz/egNSzSf/lfftjAAAAABJRU5ErkJggg==',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAB9klEQVRIieWUz2sTQRTHP29XEtqKpI02igH1qoL6F/Tg2UO1UP0DxGsvgvjzLKWINz2LVE8evIt3DwYUL4KXLenOrDuTKlFQ0uchm2DaZDdp8eQXBmbm+973+x7zGPjHkKKAOHGXAuX0MG5b+HT0yNzrvPwDhRUo6wozI7g2cDAvPygyUOHaX8eH2RrG7R3GOjXW6ahzHgo72C/+A4M4dmcBUH71L7N9n9uPgQSsAajok76+8BRARB8X5efC2nTJWKfGuHRj41u1d99qtWaNdUmXS6/kaYzsIIqiKUVWs6jb9fqhtMdVKhWPcq/bjTxqNpvTE1dvEv8gm/f3qhru5FU1iG36zlinJvH3J+ogTdM6qjcBApEVEensjBGRbVFZARTVW82mPzFMa+hnZ617obA8qqoRQi/n5+euFnaQJH4hE28DjTG0G0BbYTlJ/EJupKqGxrqGsU5j6+6MWTyx9Xe7b+E+qurADz3QgbX+BnAO+PKzvbU2rsH3rcoq6GeUM9b668OriOMZY93X7mz7xXHFezDGL2ZTl0RRNLWrgyAoXQCqQKNWm301qUGW8wE4XCpNn99l0Omoz7bHNzf9yUkN4rh1CjgGEIZ9rcExja17K5A/CUVQfVOrVS/2jgOP/LscXkZ5DvzYg3Qb4Vm5HC7tq8BJ8Qf2kPXY6WZnGAAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAC40lEQVRIie2Wy2tcZRjGf8+Z47RYOpnM9MwZZyERihHR0lIkUKk7BUFXLtzpwkWWFokrSXWjYAvtohRK0D+hBf+EQimUgjdsaRKKUKSeS+YStbaYnPO6OGcgiXM5SQZ04bP63vd7eH7fC9+5wL8kFTWamRtF68+O8jQaUw8kbRbJc4uCo7h7HXFqjOcm8GqRPKcoGHhuQp5dgs05bXAvK7SCmEfMg1YADO5hzumJg32/et+BAEDYQ9+rLflebUnYwzwo8P3q/YmDJ63/wf898B2zssEMgJml/X5/bTBzx6w8cfCRqPshOVhyvun3t6xnck8hFXplhmHoo6eWgSmMu43G9HFJG5C/SuPut8DLwO+OklnP834dl1lsYrlfAlNZYR/1oQCSNs1xzuTl4dScLwpljlMc906GUScJo46FUfvqMF8Yta9lnk4aBGtz43JHTmxmTkp6Ofc9sbS0MMybuDoD/AlIjnPZzEZmj9yM4977GHP5Kc43m9Wfh3lbtdoDYRfy8mQc994blT30crXb7cpmomWgCaSYfS7p0agwMzuE9AnZQIFbstl6vf7bIO/Q7/FmqsUcCuAgLdooKoC2zdHMMz4eaB3UjON4Nk1LPyLKiFuYpsGeH8fNI1eQdTHmMP5ynOSY53nLO10DJ06tdBFRBhJSzfv+9A/FoJmCoPOSHL5DlFNzLwFv7PT843IFcedt4M3s8CztFgrQbNZ+QnyVVfZ6EHfeGgleXbUDMrKbaXSSDffsbqF9JRvuIkYHQMbF1VU7MBRcqfTeBY4CSHzaalXW9gputSprkj7Ly6OHq913hoKl9ES+/MPzpq/sFdqX51WvAI8BBCe27m0Dm7GeL58Ow+4L+wVHUe9F4GCWrfWte9sep/w2fg+UgEeC21bwB32nZOYavAIcApK0ZMeeqdfvDgQDhGF7AencoL09ypAt+F79wtbmwPAo6r5m2AdIrf0h01+Evm40ajf2lTNJ/Q3S5hOwBhlk+AAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAADQ0lEQVRYhe2Yz2tcVRTHP+e9iS2KSZPMew9jERHSRcGS7pTSurChCzcKoiLdRHEVFHQlboogFBGplW7aQAh261Itmv4Bir+RiDLSRSsz817mVzqrpMk9LvLmzXRm8n6k88BFvjBwz73fc85n3h3evQwcKF6SNSEI6i8r8hYiVqxR1Qi65LrTX+YK5AeNu8CjKe1tz50az1I//lsOkcIveXg7ygzU3pg8p8hyNCFcR808auYRrndhZLm9MXkud6DZWdkUNXeiCaO3PK940/OKNzF6K+JUc2d2VjZzB8pbB0BJOgBK0v6AhCe7FSwdOu715AkUBM05kPPRhDHfDx0j53e9OQMZ9DPADpuuet70t521cHwjDG1Fr6hqpuMpE1B1vfG6wHMAKFuWbL/d7xHsd4DOC/GUX2u+lgtQuVx+WAwXezI/dxzn736f6078g8qVCFD5pFqtPjJyoELh8AcIT4Rt/DGbj/Ysam1/CFTC8HHLGns/bZ9U++v7racQswYc3k2SBdedXInLCYLmgqKdQ3hTsJ923YlSUq90T8gyn3ZggJ8d58gXSSmOc2QF4YcwPKRsf5yqVZKhWm09j/JiGKoasygiJilPRNTCWgRCr7zk+/XE60jslqnqWBA0f0M4nlQolZQ/XXdyTkTu7WWJfUJ+rbU4MhgA4bhfay3GWfYEqlTajqheiCaUqyi3M0Mot1GuRkyqFyqVtpO5ThA0l/ygoeGnVCrpocxFQq2pPuQHjb+ien7j2l7eob+hIGieVPQnwico8ILrTn2zXyAA36/PI/JdGBpjmWceKxZ/7PcNbJmqiqKXe2C+elAYAM+bXlX4utPXMtblYefcAJBfa74KnN6lYwvs9x4UptvMfne3JgDP+uuNVxKBROWNbsClNG/XtHLdiRLCpW55WUgEQvRYNFZraVQwUUPZWe4Jjw2sD2QoG91gJ/MFK0mqVm/NVv96YUjODeAEACIr1aB+xkLKo4Ax6Iwib3Zi6V7m6Jm7X+Xy3aJd2P4dmBkFRIz+vbdVmDt6dLzeOzmwZTMz47Udy5xFWMsR5g9Lds72w0DM4aqq9vp6Yx7kpIFx2cdfN/fVA7VgQ1V/dd2p1TQ3hv+F/gP7+TSpoXl4zQAAAABJRU5ErkJggg==',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABQUlEQVRIieWUvUoDQRSF7ySCxthEK1FQW/EFRCFPYBG08QmivoKitaU+glikt7IQ7C0iIhaCCLZRbDYWKfxszsIQ9292sfLAsrP3nPtdZncZsz+WywsAW2a2mmI/Oeeuqg6IzKyZYg+dczNZ/bW8AWa2661PdSV55YWU9pylIjuopH8wAFjTcuSVR2NeeQHX+qZnXu1ctZuq8B2BPoA5r94CBvK2y8IbwKsg3QR/T94bMF1mwIkAfaCe4NeAO2WOQ+GLQKTmdkZuA/gGvoClkAE9wtUrCm+rIdLryVO/yG5jeB24V/gwYMdH6nkEJrKCBwq+AFMBAyaBZ/Xup4WawLtCnaJwr7+j3gHQSApsxu80FO4xHsRYj2v+WfSp+wKwXAK+YmbzY6xfodsCf02e0s8nYBa4BIYlwBFwAbRCd19JP0N/IbiaiAMVAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAB5ElEQVRIie2WPUscURiFzzXrBwqphEQLWbFYEUmKENKlSGMT/0AKUQQrJSB2dkoqi3SxCskfSCBNijQ2CkIsJKCypBMLGyEqKhLdx2LexevEnY+dC6bwwLIz9557nneGue+MdEdyWY1ASVJfim3XOXdRrKR/wWukay1rXksOdn8gTz4BA8COXVkVmLJf1cZ2gIHgYIOvGGQlaSyL8tzqoLoH/39goE1S2U5r3lT9uGyesGBJbz3wN2+8flw2TzgBj4A/tm22gFZvrgT8srkjoCck+LPXFkdumX/lzX8KBX0GXFrolwTfV/PUgBdFoS3AugWeAQ17MdAHnJh3A2h+xwAT3i1cyOBf9PzjSd6G72PgoaSqpMeKtsw7SScp7C5J84p2y76kinPuKK3gOHiJ4lrKC60A57Z4netXXxZVuX4uzoFKHvB3W3gBPM1VdbR+GPhrGT+yLhr1qv+QF+rlLHs5r9PM7cBvMx8A3QXA3ZaBZbYnmce8KqebhXp5M17emyTjezMdE33OFgW3AqeWeeMJj3eXQ/vvlDRYFCxpSFJHLFtSrIEAw5I2JT1Q1Cx+Smr2A70k6bmipnIp6YlzbruhG5gjavShVANm45xbWybwUtKkpN4mr7auPUkfnXOrBXPC6QqP/7FThy5MDAAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACLklEQVRYhe2YvWsUURTFz1VjQElsTGMlahRSyAYRG7Fxw4K14EeliJV/hhYB/QPEEJDUooUSJVqIiFiIIrIgCMGQECyU+FGYhWR/Fk7w7macmTc7L9UeWHjcd8655+28fTOzUh/ZsFABcFbSVUnbcqhtSVNmdi92oJ+ShgrSf5nZcIh/3irT8DYStxyAQWCaf5gB6slnxtWngcFQ/x2hAjNrAYuuNG9mz5KwJ1190cxaof5lLllU9APloR8oD2UD7Xdj/jP2nHgAasCaO28abq7h6mtAbSsCPXdN51LmZ938SyD49hQS5qJr1gKOpHAOAauOdyFWmF3Agmt0M4N7y/GWgN0xAt1wTb4AezK4Q8Cy41+vOswB4LdrcKmA5rLjrwKjVQZ64MzfALnHBWDAa6e7X1WY0860DZwI0B4D1p2+ka/KNhwAmlSHJjCQ1TPvq78maaynVXViLPEMBzACrLjV3abzZ18UC4l2AyvASJlAU87kEyUeR53XTuCj87sTajBO52Y8UzaM85xwfuvA8aJCA1448cNewzjvR873FUXuc8B5J2pR4YEGjCaeGzhXRDTnBJNVhXH+k87/SRHBZyc4GCHQYec/3z2fdg79cOMYD1je83v3ZNqL4mNJR5PxXeCUpOWKwuyTdKWrVwc27XJgr6T3iTgmliTVzOybL266ZGb2VVJdUjNimA+S6t1hpIy/Y4DtkiYkjUsazuIWBPq7P99Jempm7R79tgZ/AALVBv0YNYqOAAAAAElFTkSuQmCC',
+        },
+    },
+    'keyboard': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABQ0lEQVRIie2UMUtDMRSFz80rrYj+gJK8n+DiKtWx4Obo4iTioGMXJ/+DTi4OgqubCG4+BKE/o3nt5CIoWPvucYm1xQfatChCvyW5ueGckzsEmPPXyGiRpmmzKIoVY0wSI0ZyYIxpdzqduy8GzrlLktvxWT8RkVPv/eHQIE3TpqreAHgUkXNVLSKFqwB2ASyr6nqv18sqAKCqq+HOmff+aJr0zrkByVaSJGsAMhOca2HtA4C1NrPW0lqbRdQvwWsBAMw0aX9Cpewwz/NGbO2cOx7tlb5gyhGN8f9HVGoQLm6SvAJQ/SZkX0S2vPfXZc3fGRHJ11AvfjRCotqkgqpaE5GhZgUAjDH3qgqS+9baNxF5iklLcgnAXti3gfHP7oTkQYxwCRd5nu+MGQBAvV5vGGM2QpKJEZFnkg/dbvd2FinnzIZ3g12kr2Ss4FwAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACGklEQVRIie2WvWsUQRiHn/d2c55C1g+w2XktBbFR8CNFtNDC/8DSQggEUgVSpbazUbAQFUER/4HUfkCMaSwUOwurux0QFM9c4Xne7muR2yR3uZwXdtPdU+3+dmaemXeW2YUJEw4IGQxU9XSWZRcqlUpUhsDMmsB6kiSNoWJVPWxmj4BbZQh3++2B934J6AIE+ZPp6em7wPwBSAFERGaiKPrbarVWYXvFFVX9aWaRma2GYbgA/C7DmKZpBDwDzgE/kiQ5CZgAOOcUqAOY2Zz3/mkZ0hxVnTOzJ73bU0mSNCq9WYV5IxFJAeI4XnDO/XHOZXEcvyySmVl3RwVCgMpesxSRa0B181JuFM0GCYeFvc6LZvYZOCQiK0UyMzs7OP6eK240Gt/M7C3wulqtfimajS1W1fsi8g5402633xfNxhYfNKNKvWhmV4HrtVpttmg2yJ4vF9D13q/FcXym3W7Pq2rfud7pdC6rKoNZHMcGrHjv1/LcObcvcc4LEbloZmM0BRHBzG4Cl0a1G2ePX9E72Mek2+szkhAgCIKtgUWkrwre+2VgeR/iXZhZILK5U7kr3zdxzn0HTgCfgNtBEGwUke2QHsmy7CFwBfiVJMlxwPLVGXAPuAOcBz6maVqGtw8RedxzbX+PW63WehRFR4EZhvyZlMDzqamppWaz2VfqLVTVmdmsiBwrw5Zl2UYQBB/q9frXMsabMOG//AONmiK8KBv9vQAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACTklEQVRYhe2Wv2sUQRTHP28SEoTkiJDC3E4Tf4CQBMXWJhgtDAh2KYyVECWFf4C2kkaw0MY6BIlVxICEYP6EIBKCIILNztnoEfZA0MR5Fu4dc2bvLvF2sblv9d533775MDMwD3rqqadiJVnmxMTEQLVanRKRk4UsKvLVObcD/GoLZK09oapLwCIwUARMAJV4759UKpVHIVhfWDM0NLQuIvN/+UVpUESmS6XSeK1WW2tA1INyuTwnIqvBD++AbwXBnAImGxAi1+M43gDoD8wrwQ9LzrmHBcEASBRFz4EFAFW9AWwAmKDoXBC/LRAGQIGXQX6+HvQHZuP4REQBrLVngU1VHQcOgMfOuQd5+CKyqar1Jc2hIEve+5tpkzr8/Tz9LLUFMsa8EpHPaXoAPM3Tz1J/qw8AcRx/Ak4X4Vtrp48NBIi19hYQee+9MWYtbd6132rBtkBRFM2r6jKAiKCq94AzefgicidrzbZ36H+o7Q4551asteq9nwS+G2Ne5OjbYwMBGsfxShG+tfafgIA/48je3t4bYOYo9RnaGhkZmd3d3f3ZqfBIdyhJkgtdwADMpD066khApVLpPbDVBdBW2qOjwiNrPCyq2gSabvXVLoBwzjXlqhoOh4cfNeBDEM/RYrzNUdeC+GM9COehdVVdTNOFcrl8WUS+FAQzClwM8sZ1aNqFKIqWgdsFQWRKVTcqlcos6bE1zc61Wu318PCwN8ZcAgYLZvkBPDPG3E2SZL9utronfVEUTanqaEEw1bGxsZ3t7e39zqU99dRTvvoNSs1Kboy7U68AAAAASUVORK5CYII=',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABQElEQVRIie2UsUoDURBFz40hEYmFK9nNT9jYSrQM2FnaWIlYaGlj5T9oZWMh2NqJYGcQhPyI70leISgY446FMcQYxGyCIuR0swPn3jfFwoS/Rr2Dc80asCBpKovMZG1ZrhHHc9dfApwLZ4j1zFV7g+CoEke73QDnmjWkS6CJOMF4zWZWAdkmMCtYjuOongeQtGjvyceVcrQ/Snt3H9oYe8ASUM8BmFkRQGYtAOdD3flgzof60HNqTx3nNEBulLY/IT/oYxJH1ayzc82D3t3AF4x0oj7+/4kGBgB4H1bNOEcUvq1otCTW4ji6GLT+nRNJejaAnGY+Fp1GxWGFJhXVcXYDQDdgYGx7H16Ah2x9rWTGFgKztAE9P7s7Hw4FO9nEfYjTpBxtfAoA8D5UU7QirJRNrEfS9DZJ5q/GUHPCmHgDUq28i2DTy9MAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACNElEQVRIie2WO2/UQBRGzx0vDi9F2ZjdJaRGQjQg8WgCBRT8A0oKKqQUKBINaWgQEh0gkBCk4SH+QGoeEgQaChASBQVVUsSzu3YSIRCJPZdi4w04r0V2uj3l5+t7xnMtj6FPnx1C8oG1i4edpCcEBksRqC54Hh+CIJjbUDw7O7vH373vEcqlMoQ5VNH7jdrwNRFJAEx2xff339ohKYAIcjVsLlzvBp3lqLHNOKazvW9dquPGeL/KMeqgok+AY0C7XqvWREQrAFEUHQIZBFD02chI8LUMacZ8s/1AVKaAIIqiUWDOACwvm0pWZDApQBhG42EY/Q5t5MIwelEkM2qSrH/m6s54HSLnEHxAEC4UznJUNgoBPJNOpOp9EdWB1LjpIpnnvKP5/ps+cRAEoai+SUVeDRjzrWjWs9g247sK74zq65WU90WznsU7zabieq06IXDWiZzf5TFWNMuz6cu1+mmbabVaR1ZWzBVrI2k2YwA8VZKE09ZG5LMwjLTdbk/X6wdmsl7Wxr2LMxInz0U4qdsVdlcMiZOLwKmtynqYsbwEkm3L1khW79mSCoDvuyRJOweVE/fPLhysD08Ck/8hXofDebJ6EPq+S2DtkBBr4xbCMPBZkMuqslRElqHq9orhIXAGWKzXqtXuISEiOm/jO4LeBI4r+gnpeapbIn//agiPRTqNuzNu1IZuC3oPKMe4Dn3688fijbU15Gi1WqPOyZiKDJWigyVx5mOjMfS9jH59+mzLH97fWgE2FaNtAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACXUlEQVRYhe2XzUsUYRzHP9/dRamLujv7JNSlNwhS7E+ILCohiA556AUiiOjQH1CXDuElSOjU2SSKDnVKkfwbQkSCEDp4sGbfVCjQdvbXod1xxHFdZacu+zk9853fzO/DM8+8QYcOHZJFceGCWZcrrg7WatW+RJoqXczne+clBU2FlpaWDnR3Hxwz0wNEVxIyEdaQnjuv92lULBQyM/mFyhRwMWGRrYhXh/LZ29uEvvulUaE3kdLPSKVEJMz6gYFNCbvsXG4aIBOGpnMNPcGYc9nHichQvxp+5SXiHoChK8A0QCoUEicb40D6lJTM314yS6feRgxPNYaZaF1kbAC+v3rCCGaAo0DV4Fm/yz5qR25mM42GksKJSdEEs+rV+kkAMoKH7czjaCokZT4A3+qbVYMX7czjyOy0A8C5nkXgWBL5cqFyds9C9bvhhsRhM2pS+r1zPYvtyANqsT2bCvn+yk3EhAEIjOA+cLw9ue7G9Wy6hv4Hu6yh3knfrxhiAOmXLPW6fXntyJ6FJBkwmUS+XKjsXajBglmXVyx/xDTcSv02ZLNFLztyWtrYrbSlNZQtlYb2LQNgGs6WSkOtlLYkVM7l5pDN7ltINlvO5eZaKY1eMguPj7xbAOpTfX7fQvFse3dCZIYMvoSVQW3UzGI/b9tmY3Yh7G18DfPGwPdLlwxNbR7BAmg5ERszDziz2cquO5d7t0UI4EehPIFxKxGJnZl2+b6R+qNh66J2Xt8dpCfA2j8QWcc0vrH+81pDBnb4DTKzdKGwMmgWeEmYpFKZsuf1zEv6ncT5O3To0Iw/R8hKUdng9s0AAAAASUVORK5CYII=',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAA9ElEQVRIie2UT0rDUBCHv9FSRexReoS0S6HnEOkRdNdVF93mAIUuPEIR3BkEoWdxIyikKr9uJm3SRkhfjULJt5nMm3m/+QMv0PDfWN6RdAV0gdNAvS9gYWZPOxFJ9/o94sIE3vkD8ApMge/ACdrANdABemaWZN3feeVxoPAaSRPXugU48fMzt0tPSjwpCfA/XOs8X6A2WmWHZhaF+pJG+VjpBAeuqMCRrsgTB5LSCo8qlTT4SefPVpS6vcgCZjZn8z72IbuT5gs8ux1K+gTeAoQBLoEb/14UIpLiCvuuyizT3f5dR0DfOwnhHXgxs8fA+w01sALPl2c4VAmL2AAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABjElEQVRIie2WvUoDQRSFvxvjb6EiWGlhI4iNhZpGmzS+gX1AQdDGVvAJLETBBwiKL2AtCCI2WomNhZ0WFv42IkSPRWaTSXazGna3y1ftnpm5Z+69s8NChw4ZYc2CpElgFhhMyeMNuDSzh8hRSf2SDpUNP5L2JeWjjHczMvXZbii1pBzw6sp7DqwDnymVehAoAzPAMzBqZgqyHfd2tZKSYQ1Jq178cYCcG/Nr/+0mr0v6cv05TqhVvPh53ziKItBDtR1LKWgNhE9ZnU3gBugFThJq0+0YPwFnQDdwl1ALGQMgacJrfslpB552m0STVPLeJyC+x9nTIuO8pEVJRUlDSbSojFv22MwqwIWkKWBNUvO9XpDUvKygqnhiZhdeYqH4cYcr4AiY+8c8n2VgPm7Cf3p8SuMF8BcVtyaWIOPQzRJgZlvAVhvGUXQ1baxm8gi8ACPAhqRr4COhWcAAUHLP786rjqRtZc9OaFvuE9hT9WLPgrKkvsAv6tdnDFgAhlMq9QdwZWb3KcXr0CGeX0d46gyx38OgAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAABvklEQVRYhe2Xv0ocURSHv5MNgqWwhRBLAykUfYSFNRBfIBaSt0ifKikVAhZpFxHFQjstNvgIQUIQJH/KNDGwEELU6C/FnYWz48zOMM5dUsxXnXvmzJzf3HPmzr3Q0NAQF8tySpoCFoGZSHl/AB/N7GZslKRpSZuSLhWfgaRXklp5YkzS8QSEpOl5HeYErQG77toH4KJqTQqYBRbceNXMjkciJL1zql9HEjLMZal8W8NrD1zcY2f3YwoyMwF7zvUkS5D/4gQgaV7S1+QtriW9qdF/6/J5HYkC6cRNYSfxvUw14K+6/JI6bnySr2yUQ+BbYv8F3tbszydrhmKSN0MPC24yYB14RKj5gZl9rsNfRnFWD71I1f5LXf6qPTRxxpYM2CYsAQvAb2CnRv/c2Mz/S1OXKpmkKUl9VaevsKUppGwPLQHdkrFZdJNnFFJW0CnwvrKccO9pmUDf1HL2iFAzuwJW7iEoizv/znTiM2evKSxmMXnq7POh4Tdoz4AjF/QJ+B5JTBtYduPnZrZ/J0pS7x5fUlWOcqshqaWw8R5MQMgfSRuSpr2GvGNQi3AMaletSQE/Cceg60jPb2hoyOUfjsT7i+ku2X0AAAAASUVORK5CYII=',
+        },
+    },
+    'controller': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACbklEQVRIie2TMWhTcRDGf/eaZ5uhmFJKw7vXErt2KC1CdSxCsYKCOijo1lVEVNTdQQeHCoJTHUQEETpZCwqWTt0MDtmKhua9EC0txQ5pEvvOIS8aU01bXPtN7/5377u77+7gEIf4X0jrg+d5Z0XkFjAOdO2TZxtYFpFHQRC8bXZ0NBuqel9EngIZIHGAQhPAMeBKd3c3W1tbS7s68H3/tJktAFXgbrlcfraxsfF9P+xDQ0NHK5XKNPAQcM1sslgsvv8jyPO8BVU1z/NuxwmnfN+fOkAX+L5/T1VNVecbb06jExEZB+jo6HgJYGZzZjbXjjCdTvel0+m+hi0iz+PPk8TqOAD9/f0ZoAf4WigUinFQF3sM2XGcGcdxZhp2oVAomlkJ6Ik564N0XXfMzABWVbUCHGn8pKoGVEXkfOuGRFF0ozWpiGSBKdd1R4EvTizHaOz/3K7iVpRKpbVSqbSmqr2q+kpVe4GPzZyNVRyNs78OguByU+WEYbjrVtpBRLKxGmO7EjiOk22K3d4vaRiG68AlgMHBwezOzs7vojOZTFetVisDlTAMk4BBfU3NrA+4CYz8g/uTmZ0rFourzU2oahVIpFKpTiefz28D60DnwMDA8UZUFEUl4EEbcoAREVn2PK8xQ1T1BHVlvuVyuWoCQERmzexOFEVvVPUJ0AlcB7qBRdd1L+Tz+c1m5kwmk6rVanPAhIgsqepjM6sB1+KQWYiPIZZpDmi93BepVGo6l8tV/1b+8PDwkc3NzVngaotrPplMXlxZWak0b4io6hlgwsx+iMi7MAw/tJHnF1T1lIhMUj/cxSAIFohneYg98RO8UN0LP2A5lwAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADf0lEQVRIie2V32scVRTHP2c22WSNYkoNCXMn2zXmQWwDTVYQG60/akBq3/rmU30URFAQfxXNk/ijKNYHX0TwD/CpVIUuFIkYEJIKNnla02VhJplF1hhTxll37vUhd7bjmrRJ9UXI9+Xee86Z+znnDGcG9rWvff1Hkp0cIyMjQ7lc7mkRcW/zbl9r/U0QBL/sCjw+Pt4XRdE7wAtA/jahqWIR+aS/v/9stVqNdwRb6NfAE/8S2K3K4ODgM0tLS63U0JP1RlH0dgY6r7V+dXV1dR5o74VSLpd7G43Gw1rr94GHgKfW19ffAs6mMZ2Kx8bG7o7jOADuAH4oFArHq9VqXCwWD9Tr9d/3CgcolUr9rVZrTkQeBK5HUeQ2m80NACcNiuP4UQtFRGar1Wrsuu5MkiQNpVRlr1CAWq32h4jM2uNAoVA4nvo6YGPMVLrN5/Pf2/0xtl7HY7sBeZ532vO801lbFEVzgLHHyX+AHcdJjT+vrKz8Zm07jtt2MsacM8acy9psa1esvwPuyTw0ZddQKbUJDBhjOhcopdLDt77vnwCSbnC73X5yh5wWgftEJO3qVsVKqYNAEcBxHA0M3KSw6VKpdNd2jjAMr4VheA2gWCwedl13xrqu2PWQ67r3dCo2xkyJdLr6sYhc1FofEJFHgGkb856IaGPM5Vqttn6TxADQWn8qIsfK5XIhDMMrme4dBSppqzu9b7Va3zUajS8BPM+bNcZMAwRB8NqtYFk5jvN8u912FxYW/hweHl7s6em81Umg4tigo9boNxqNMJP1pt1e3wsUoF6vLwVBcAkgDMMG4FvWJNxo9bhdr2Yfzufzn7Xb7WGt9YJS6iJw8ha8r/r6+p5Np6JLy4AyxtwLN8Zpw65eNrJWq61rrc+LyBu7gAKcjON4znXd0S67AKMAIrIBtmIRqRhjTojIYaXU677vvwsY13UnReQCoOwFl4wxi9sR7ajMABMiMq+UOuX7/o+Ao5R6E7gfQGtdSTNJv9NXMxXXgV+BI0AOwBhzPgiCl9lmfq1yrut+KCIv2nMC/AQcTKsF6lEUTTSbzY3ODHmeN2GMuQAc6rowAV7xff+jHYB/k1LqJeCDNOGMarlc7lS9Xl/qVJxqaGjozt7e3jMi8jhbP4zlJEk+X1tbW94NNNXo6OgRrfVzxpgHRGTTGHM5SZIvwjDc83Ts6/+rvwBT23CDd9AjLgAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAD4UlEQVRYhe2WXWgcVRTHf2cmH92N3WAMuswdlmEtKIJYK1UQHwQhUEWJoBaF1gpG++SD4JtIEQR98EEo+FCxpbQVK2gtfjwJWhHJQ5KqNSCNJMSZiTGU2o2YNMPM8SEz6+xmu01dfRD2/zLn3nPuOb+99+69F7rqqquuumqQtPFZjuPsFpE9wN3ADR3WugCMq+rRMAw/AJJNA5XLZc+27ZPAzg4hrqRxVX0iDMP5qwKlMN8Azn8Ek8lX1XvDMPwl39nTFCS2bR/PwVwWkTeiKDqyuLg420n1SqVSjeP4GeAloB9wgWPA/YDWAfKDHMd5REQ+TptrIjLi+/5XnYA0yxjzAPA50AsgIg/5vv9Z5rea4nfXSUXeymAcxxk1xnzqOM5op0BBEHwBHMzaSZI8lfc3AInIzpx9MmcfAR5Mvx3LsqwTrWo2AA0NDZWAm9Nm1N/f/0MubrDpuxn1GGNOG2NOA3bekeaO0ua24eHhrRuABgYGtufaP87MzFy+huIb5HnedcAuYJfneVvzvjT3dMbQ29u7vf4rMiNJkh25MRdc172kqqXmQsYYBRCRWpIkT4dheKoV0Nzc3O+u696X2S1CpoA7AGzb3gF8DY176M7MUNVyK5i8VLUkIs+2i/F9f9z3/fGsXalUriddPhGZyuWq184D5WfomIjU2hUTkZqqvtMuJi/Xde+J4/g3Y8xHAEmSTObcdaAeAM/ztkRRdEval0RRdHBpaen1LChbJoAgCNrdf5tWFEVn+/r6EtYn5TbP87bMzc2tWgBxHN9OelAB55eWlv74N4rm5fv+uG3bNwZB8ChAWuN86u5JGdaXrGlDT7FRl5q+/0jz8/MXgbhVrWwf9QCIyDbV+qp835xIVfeJyJiIvGuMeRsYo+lsaaEYOFQul1+YmJiIrhBzLjOSJKlCOkOqmh9QbB4VhuGplZWVJ4HngP2bgCGN2b+4uPhJeui20kBmiMhaHYjGZdrbnMB1XVMoFM6o6sgmQBqkqiOFQuGM67om31+tVgeBPTmgs5De9q7rFlR1FrgpAxSRl0XkpyRJ7gLeZP25kNbQA2EYvtoOxHGcV0TkAH+/KHzgRcuyJpMkuRV4jfRgVNVfLcuq+r6/Uv8LG2MeB96n/bN2DRgLguBoO5hczr3AIaCvTZiKyGO+738Iub2wvLw8PTg4GAAjbHy4AVwERoMgaHlVtNLy8vJ3pVLpW+BhoNAiZFVVnw+C4L2so2Fz1mq1yWKxeMK27UhV+0RkFZgWkcNxHO9dWFg4tyHl1aFmi8XiYdu2/2R9piJV/dmyrONxHO9bWFj48lpzdtXV/0p/AVVNbmulpl4iAAAAAElFTkSuQmCC',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACa0lEQVRIie2TO0wUURSGvzMsDzU8ZmHANRRSUFGQJSZqSYxGTDRRCy3sbI0haIyFhcbCxgITWxpjTIwJlUhiIbGik1jYSkI2MnN35w6PQnYX5ljM7rryWFBb/u6ee+73n3PuvXCoQ/2vZHvAz9vLKPcETgNtB+RsCMwDz3t70x/2NDAmfKrIo38uF0DkcZ/nPtkRNya8GBirQWCLfj4aD8Ow46BMa21nkA8nAmNLCSM8vyMpMHa2snk/MbRjxtixvyneGPswMFZ9Y2eqMQdAVYVk5jhO/AZAYVphuhFweXndW15e96prka1XAAJnK8zEIAhWTwIuSOB53o9Kfhv7XLLjlCcdpzxZXVfO+oBbYZKqOI+AIMJSENgiQkv1UGCsopREuLr9hcRx8/guvgvAmIhmgUUnMZAsABp/b1TxdmUy7flMpj2fy611+8a+zeXWugW+JMw4W+sghqwAqrzr60vfrFUO9PWmd/yVRlLVBUSIkZGagUDSAU0LdbkbB4X293eEwA2AIFhZgLjGlMXFxbajxzp/AsVezz0iIgrJM1VHPGKdAIb3YH/dSnHlRDq9VNeBmHxUAlIFz211BgYGNoAQaPXD8NTvs+IT67MGcIDhpk3mjYmy1YAx9gyQAjVDIqVUwmIK5YETy/sgH70U1VZF7wLtAnPNzXLNdd2VenIURV3lsk4rjCr62ZjwhYpTRvUOgCJTCRqojGka+PPnCq8LPe7tIZHSbuV/U23pKURTKLfq4woz66vu9cFBKdZeiKpKoRBdimMZRXRTHefj8Z6uTw3GU5Pvr5yTpvgC4Igy53nubPUuD7WvfgH3sxgQ0Gx29gAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADhUlEQVRIie2Vz2scZRjHP8/sJLWJzWZ2utlNai1BF8Q00ARPjY0/SkBqb715skdBBAXBX4ccpCgWxXrwIoJ/gKdSFQwUiVQRTAXbXIJGpGl23s3OjpsUzO7OPB52djMbszapXoR8YZnZ55n3+XyfZ993Fva1r339R5JuidXV9axlNZ4R0ZF7KazKShjaX42MDKztCry0pAcGBoILoC8i9N4LNKFNhI+qgfNWoSCbXcFLS3ogna58qfDUvwR2SmRu7fDgs2MitR3zReNf8Iyv8eeaMf4pVbX3ylHVHmMq017J/75Vzxj/7Q4vrRvf99P1BreBPlR+qFYHpwsF2QyCwEmn0+si0tirgeXl5fsO9g/MC/IYcMdO6YjrulUAq/VQLeQU0AcgorOFgmx6XnlmsxYZr1SZ2ysUYHR09M+UyGz8tb8eyXQr1wYLMhnfqm1zrZm1TgK2wBO7AXle+Zznlc8lY5al84DGjIm/gUFbwV8ymcwfAERR1+O2o0QuInIxGYpH+2sTEbXBWxsnYhIBVTzP+BtAf0c3xlea1r/JZZ3TIhJu52pkPd3F0QLoQ0h7qs2Ob92quggPNk0TbYd2lICpIAgO7ZTL5weX8/nBZYDV1fKY55Vnmmv0etMZx27frh5ud9zTU59sb3DVD0XkioIDPA5MxXXfVYhE9arjZIJuxtodpeRj4KSqHiyV/Out+qlU7QQwF49660eHxrdDQ7nPATyvPIvIFEBuKPPa3WBJRaG+YFmMiEi9WFxfEKvesjSRAHMivq7kcjkvsX4jvt7ZCxRgeNi9CdwEyOcPGc/4K8ARYALiUYvIw9rc8TeSi3t7rU9qDc1ZqdSPReNfETjzTzCFL3ptnmufig7JIugRhFGIN5dKVG3meCD5qOM4QcPSS1EjfONu0OZyztQbzK+Uy0c7DKmKoq1YdatjlTmF0yhjxvivZ7POOyKixlQmNNTL8YgA+Rp0oQt2EnQGGLdD+c6YytmhIecnVbXMWvCmwCPxWOZik+339A2IO1Z+R6gAx4FUM6SXctnMKzud37irlFfy3xfkpTgUAj8ruAJHW3VtW8dd162230zFoj8uKS6jHNtWM1TRV/NZ94NuI06qWCq/LCrvtQwn9FsU6tl403X+Hxtj7gf7eUWeBO1DZTGyo0+HXXdxN9BEE8dF5Dyij4JsoHpVtfZZPp/f8+nY1/9XfwFzYnLgqs4iMQAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAD6klEQVRYhe2WTWgdVRTHf+dOmkRtPibJm3lpDDSxRRGkbUSF4qIgBhpBKqhFoVXRlNKFC8GdSBEEXbgQqi4qEoIItqC1+LFRxKiLbJqiVpAunphC3vdMo2LykjfHxZt5b/Ly8mGfLoT338zcc84958c9994ZaKmlllpqaY1kI4eqmkzeOyrKMeBeoL/JWgWFWdBpN9F3XkSCbQMtLHi7LYtzit7TJERjCbNli8d39fX9tiXQwoK321j6PbDrP4Gp6dqqpQeH+vvnNwRSVcnmvO+Ag6FpGdXXVa2pZLI31Uz1TMYfFSk/o8iLQEdonnES9iER0YZA6Zz3sKh+UqGjZIyMJxL2N82A1Cud9h8QE3wB7AgBHnKcvs8jv4kHS6BHqXnejGAyGe9IOlv8LJPxjjQLlEz2foXKmWisypNx/xogpLaJDeZczD4lMIHoVLNAAMbIB7XcsubgVIEKhUI3yG3hcMX3e36MxfXUPbeUqrZls8WL2WzxoqpacV+YeyWM3JPL5brWAZXLZn9sfGXvXlnebvFG8n1/p8JhhcO+73fFfWHunyMGVWt/5GuLXgJhLNrrqlLIZIvXge76QplsMToRi6g85br2hUZAtm376XT+/sr7gL8+QudA9gEEyBjwLcRWSFQPxIKTjWDq1K2iz20WkEwOzCaTA7PR2Pd9O2qfYOaqtQmqteObeqxqFPM+sLgF0KKovLtFTFXpdP6+5VKQzeW8jysWvVTzShWoDSCVSnUCt4e2AEpnXMd5LQqKtQnX6dvw+/fPtHoZ2gIqi3JnKpXqHBkZWTIAnV1ddxFeVMBVx3H++HeK1pRMDsx2tBsnkbAfAQhrXA3dbSFDpWVGTbVdAnP1yYDrdc8bUm9vryci5Ua1jJoDUDtle2LzfliXSeVpFZ0UNe9lcsV3UCYBa13cWpURzjoD9vMistIoIICfqv1XRiFcIVViE/Tm+omua1/YYekTSHAC5eQ2YAAslJPZnPdp5dJtqFtqZbVUBTLoXM0ux+sT5PP5odWyzADj2wCp1/hqWWby+fxQ3FgsFnsEjtUs5jKEX/v5+fmb2jt2pkDd0Dsn8JKq+UWkfLcibwC3RsyInHYT9iubUWRy3suonqb2R3FN0BdUrUvGBHcEyqvAvtCXLi3/OTo8PPxXtYXZbOExRT5kk99alBLIpOva05vBVKEy3nHQswjtm4QpKo+6rv0RxC5Gx+k/r6IngKUNJnqqZmK7MACua0+rmgnA2yBkSZBnIxhosBrptD8iVnBKVQ8J0gcsoPplELS/NTjYldsuzNqcvzsipVOIPAgkFS2KyNfBqrw9OGj/eiM5W2rpf6O/Aeb0ew75ka7NAAAAAElFTkSuQmCC',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABeklEQVRIie2TvUpDQRCFz4jEVCqENCmE5A0iWFiKKBqw0cbKZxCxsFELRfA5xEJs1YBFtLZQn8Au8SeSwib+wWfh3LhcrrkGLHOa5X4ze2ZnZ6/UV1//LmABuATa/F1toAZU0sx3ejD9Tdu/mc95whuwCgz30PUIsAa8u8dMUlLVg+v+PQ/M/7WI79lwj9N4wICWBwvO2kA7xTAP5IPvgnu0AAsTix54CBgAKQUOgcMYu/etxRAuObzyGcT1RsILiXfg7Mz3LErSgPOyr3fdThyXmTXNrAnkgCMgJ+k69ByMFTg2s2U/CW5i6k03vo53CNDwtkoBSx1ykoCSezUikHXwGk7en+kKcJswk0i3wFisgAEfHs9E8NnBRJBYBupdzCPVgXKwb9L5Y1h1P4LAJrALvDirAaMJVzHqMTx3B9gCnpzthclZfp5XqINOm8n3nfGcuE6AIUkK79wkVSRNSfqUdG5mtfSxSsC0pFl9P/sLSVUz6/qT9tXRFzzIj068nfOjAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACQUlEQVRIie2UzYuOURjGfzfDIBmTryILZSFDjVmOz9IUmZ1/gPIPWFCysZAIi1nZSNnaaopmMkKDlJkmxsp3FmSBZopMfhbveczx9D7mfYeNmquezuk+131d9znnPg/MYQ5z+EeIqgV1FbAPWDtL7XfAjYj42BBbbVUvqt/8e3xVz6utjZje+geGZQyoC/9kfCYjD6s71ZZmzjfpLFB3qQ8yvdNV5DZ1MpEeFsejts/GPOUuUh8lzQl1WT1Sb1bd/hTrUb+rt2djnDQOZLq9RXxexukquMBwmncDLcDuBk0OqgdL4btJE2BbPeMi+DwiPqd55XOrwIX0/UJEfAFelI3zal+n47iX7qMKt9X59VzVDeqGOvFrKfdVeWFFJnznD6amO18+09bVDrUnzU9k+Suhdn8wfb8AfUA/0A7sALan+DngBzAUEZ9mMgYuAd3qYmAki3cCg0V1x7OK1mRVnyqCDRj9htKOV2f6x2C6uTrT+C4i3mf5E2mcbNY4Ip5GxECaf6D274bUYIXxxjQ+KeVfptalR9T+Ge7exGmrqGU8jdPNpw6mxLIx6np1rAHTAmPq+pJGqM/S+k2Ybq5BYC/QoZ4AzkaE6jbgOrAu8QaAxxU76gJ6gK3AfbU3IkbVecBJYFPm9auiNvVtVvVrdVSdymJ9VrzfpDE/cQpMqSPqm5LusnLiVvVVnaObUo9WGdYp4Gip4AIv1Y6CF6WkpcAhYA+whFpDXImIcZqAugU4DGym9jKGgKsR0fTrmMP/i5/Y7jt8yCuSawAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACe0lEQVRYhe2WzUtVURTF11ZDLTNrEIEUpf0DhtLEPuBRA4OQwKKJFDmI/gghmjVoVk0a2qhBIeQoigZBNjCJBtaokDDKTJ2YPvXX4J372u92331etUFwF1zeuWevvfY6X/cdKUeOHDlybAxAHXAZGANm2TpmgafAJaAuq5nDwJttMFENr4FDWcx8+YdmIkwDB2uZMeCVS/oF3ASOZJriZO0O4FbQjPASsLSk8468DJzaqpGEGgVgxdXpSyM/dMTbrr+f0obs3yZTd1ydkTTiR0fsdv3zoW9+mwx1uzofqpFagbVAWgEaXayMDEUbgNHw1MdijW7Z1oDdSQInXd23sdhmDLUBxfC0JcQnneyJqN9/oI659g9gIcmEE1lI21NmNi+pV1JvaMfhB12u7Q11ufYBSa3VigW0ShpKI5jZuJmNR+/AXrd83lC5drUZGpG0WMPQoqQHNThlAMclfZP0OHRNJBmKyE2xTdYSi2feQ0mGwn4aDe8t7hAVgSZP7nE1pxLEtmwo6PglEzDlpHukP0vml6vihAUsxH43BTP7aWZrVWp1eUNHXeBdgtYVSWOSrgH3gVVqYzVwd6R4fO/aHZLUEF6KLrAzYWRPgOeSHkk6m1LAo17SdUkdwICZJR2SXa69Um4BA25kn4GKIw+0U/khy4pJoD2muYfSFSTCBR9sBr664ATQB3QCF2OJ68BwrekBhgM3wnQYeCdwLjbAGaA5LjAQE0jCMjBYy4zTHAw5aVivmJ2YwBCwVCVxDihs1IzTLITcJCwBVz3/r9sapdvhDUmnJe2TNCPpmaS7ZvY9q6GguT9onlHpb2lO0gtJ98zs02Y0c+T4b/Ab4ASjtCxiEJMAAAAASUVORK5CYII=',
+        },
+    },
+    'macros': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAp0lEQVRIiWNgGAUEADM2QVlZWVNeXt7TvLy88p8/f95BiQUsMIa0tPRhRkZGzn///vX8+/dvNgMDAw8jIyMrJYajWMDAwMD+//9/Y0ZGxuVQ/sKnT5/mSUtLH2ZgYLAh0dwjT58+tWVgYGBggon8+fPHh4GB4QqU2/f06dNEBgaGP2Q6HDsQEhLik5GRMaeqobQGo6kIFxhNRcSD0VSEC4ymolFARQAAn/JraCH5bvgAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABoUlEQVRIie2VMYsTQRSAvzfuZRuJIVaZmSqksztBy6vUSo9TLCwsRLSx0MrCf6AgpLA9wc5CDhsbO+UED+4a8QdEmF2D1ZEiGJbdZ2EMK3eX4naLFPt1M+8xH+8NMw8aVoSo1+tdBKK6DzYnBbrdbts599EYs++9H9YtXlTivb+kqh9E5Eue54+NMTvAOoCqSt3ixYHW2kci8mq+zIA1ABF5H0XRnSzL7gE3K7gOReRJCCGBUsWtVms7y7JN4EpJ+jqE8BDInXMvgLMVxKjqV+Dlf+LRaPTbe79ZFMWOiFxT1edJkjwDdJ7ylOoVv12WYJxz5ysIVpszy4LW2qvtdnvY6XSSyWTyo07x4o4Hg0E8nU7vG2MOQgh7zrm7wDawVhQFwOc6xcc9pxnwBngwj0+BG3Ec789ms3VVXdqlkzDG/AohfDsi9t5fVtVPQFzKP1TV62ma7lprv4vIhdNIS9xOkuQdlL7MEMIecIu/FQP8FJGNNE13K8qO5chX6L3fUNWtPM+H4/F49G+/3++fq7PVK0szFmujGYvNWGxoODV/ADaKzO+pMHD2AAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAABIElEQVRYhe2UsUoEMRCG/4nCsvoCkunUexVttZPDVrARrrY+LQ8sbCzOzkqwtvBNUibpBTm5LSYW3snuNrvs7iHifN0kk8w/k/ADitIPapNkrT0CMALwGGNcbFLQdlMCM18DmOJb/AjAZJOCTK34LTN/WmvvAGwx8wzADVpOcggqhZj5A8DuKnQADkvbb0VRnGRZticip8aYSjNdEBExxrx47916rfJkKaU5EV2twrKY5zzPz0MIS2Z+JaL9lFJfPSAipJQuARys1ypdxhgnRDSvnXsIIZw555a9FbSg/qnFe3/BzO8AxgDuQwhTAD/jIKJjERkD2Bmg/sIY8zTAPf8INcYm1BjLqDF2QY3xz6HG2IQaYxk1xi6oMSqK8tt8Adl32jLeeS25AAAAAElFTkSuQmCC',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAmklEQVRIiWNgGAXkgOdv3pi+fPXu6YtXbydSahYLjPHy1bvDDAwMnP8ZGXoY/zHMZmBg4GFkZGSlmgWMDIzs/xn+GzP+Z1gOEfm/UExEKA9qsQ2J5h4RFxOyZWBgYGCCifz7x+LDwMBwBWI2Y5+YqFAiIyPjH8rcjwbevn3L9+LFG3OqGjogYDQVMYymIorBaCpiGE1Fo4CqAACw1XfsY5IY+gAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABpElEQVRIie2Vvy9DURTHv+eipaSlfX2v/gYbCZtOmEgQg8EgQiIGBpP/wCAxWEns0gix2AiDpBaxdaikpH33te/Vj0ga3juWp34vzxtI3me795yczz03ufcAAX8BZm40jGoPMzf6XVv8FKhUKlHDsA4ddrLSsNb9Ftc7KZbLvcIRByCc2k+0+GxzBkC3Gya/xfWCUpoLDGy4yycATW7G7uPD7WQkEpuGoDHPJka1QdhLiqLcfBDn8/nmSGv7HsADb7m0pSXb54jI1qV5D6DNsxgAiJe1ZGLtgxgACoVCSyjcmgEwxMCqluxYISIGAF035/3s+GucWVxf3yU8C/41ul4ZlNLcl9Lq97t2/TnlchyORq0ZZuc8lVLOdN2aAvEmA00EBoBjP8XfPacaGNsgzLrxR3bESCjkZGs2dQvHbvCmElLT4hdfxKVSuY+EOAIQfpddJWBYVeMnumFegtHlTfoq4wlVTewA777MVEo5E4RxADV3qwhGWlXjJ7+R/XyITxiGlWZ2Rm1brHd2dly97pumGfPzqv8mwVj0k2AsBmMxIMAzL47O+m3JaSu3AAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAABJUlEQVRYhe3UP0vDUBQF8HOaQEEHo5BUMqr5KrrqJsXVUejcuToKCi4OujkJfgK/SXXOe9BoRaqFNtfFP4lUUpIWEe9ve3DJPe8RDqBUNZxmyJjeJsloNHq9DMNwMM9AbtFAbJM2gI4AdN16BKA1z0C1b8uPjE1eYts7ERHHmIdjAoeY8iVnIbfI2OQZwOL7sQtg42tSbinjbaC+KjLeIfOXKUMEKencBMFSd2Kg2CanBA4m5L5+6nt7UcShsckdgLWqYTLuG8HK+schd8uGv9wS8CI3LjgPfG83ijicYYgf5X5qkqmI7Fv72AfRBHEW+F6HpHzOwNkSpk2ILFTeTg4otavK3/lXtBiLaDFmaTGWocX452gxFtFizNJiLEOLUSn1294Ak4L9MGY3IxsAAAAASUVORK5CYII=',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAeUlEQVRIie3SsQnCUBSF4f8F0zpA9hCXcIC0LiRkAydJky6kdAW3EH6bR4hYxffA5n7Vrc7lwIHwC/WkPtWhNKvZhE7qovbACHRAW/pgpc5+uquH/Hiv6asBcAEe+b4B15TSq1qD3OKonquG/kWsKFZULlYUKwp1vQErLEgVqBtoIgAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABK0lEQVRIie2VvS5EURCAv1kEDYUH8A4kthEbDbWfRqGQUKCR6LyBTqFVeAHZRKeg0WjFA2hEQkEiEUvxKfbs5q5NFLt3ZSX3q+6dSc6XOZkzAwX9gDqoTquDfykdUy+tc5z3+aWMaEZ9VqvqJHAFzKd05C1uHqjuAo3KvoCh9F0F1oANYLkL1yuwFxEPLVF1RL2wlRN1IOXf7J79torT4aPAGbAIHAIHEWHKbfek4oy8pE50IfjHqAvquTrXS8mwuqOW0/+6+pma4jxvX3YibVJ/TjX1FNii3nzvwJE6DkwBAx26niLiti2qltWPH+3/os6m/F0Oz2m14WtOroi4AVaAWgo9ApWIuO6wwl9pG4VqBVgCjiLiPhPvzVX3FRZrMUeKtVisxYKCjvkGjEPiU9wCLLYAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAA3ElEQVRYhe2UMU4CURRFzwMSEtiAC3At2EpLT8UOqNXSqImFBa0NhStgJ7AIEiPdHAvHMEyggDCSmHe6l3f/v/cX/0KS/AHqQJ2ovUtnQZ2qhT88Ne3Xqpk/qBv1WW2rj8A9EE0H+WXHSP0E+uW4BK4r6wVwC1wBQ2qPOZEC+IiI5d6t+uJ+5mq31KwOaE5ldTCu2lJntQNvaruiaTRQpzpERKGOgTUwAl6Bu4iwIrspd+f4cV/A+xnuSXYxi3FrnsVIFuORgbIY/ydmMW7NsxjJYjwyUBZjkiSX5hvmilQKJMXJsQAAAABJRU5ErkJggg==',
+        },
+    },
+    'spoofer': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACmklEQVRIibWVT0hUURTGf+c6TYo0gsiI984olARhO2mTWOugBEsjIqKIIiKiZQS2iKDAdVEEJS0sIl0IbcRFf0goiiDaBsF791FqZWhhNs5p0RvSccYmyW/z3jnnnvN955z7eLDGkEoOZbPZTap6WFUPAojIoIjcCYLg3aoJGhoaNiSTyR7giIh0ljirqvoUGJifn38wNTU1UwmBcc7tBI4A+4Da2P8NGAIGYrts3Hv/GMiXJHDOPQO2V6JwhQ7Hvfcd5QgUQEQuVjpjWLKjCwDe+9Kjd85pgWQ1KJVvVlusUqyaoK2tLWmtPeWc27wWBInp6elBEbkK9P1vAuOcu83va/pFRPr/hWAhflYBWGuPZjKZr865ntgv1trrwCFgRkR2hWH4ZnHOohoAJIoIPgHpdDrdMDEx8dEYk1DVFHDXOYeqdorIceC7MWZ3EATPC4ktLS3pXC4HMFG2AxEJAJLJ5BaAMAxvApdiIfdF5AzwQ1W7gyB4sjg3l8ttiV/DsgT5fH4MQFW7Cj7vfV9MIsBPVd0fRdEoy1HIGVsierHR1NTUbox5Ccyo6sYoiqYKMWvtAWPMhzAMHxVXbmxsTCcSiXdAraq2R1H0uoSA33DOjcRf5EixgDIQa+2wc06ttcPFwWXXdGFh4QzwBdiTyWSu/K26c65fRLqBz8DZ4nhVsWN2dna6rq7uDdAL7EilUk3Nzc2jk5OTS65fa2vr+urq6usichqYF5Fe7/2rZe2VU2at7RKRe0AN8MIYcywIgrcA2Wx2az6fvwVsA74D+733D0vVWXHG8dKHgJZY5RVVFeAcsA54r6p7V1rqX5dYX1+fqqmpuQyc5M/O8iJybW5u7ny5X2XFBAVYazuAG7F5Ioqi8Upz1xS/AOee/W5tFI5kAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADvklEQVRIic2XTWhcVRTHf+dNJ2GUZMKAmeTOS4QhFjTL4MKKijSJHxTbKtqFNOnKLFwq0oVKd24UXdiNuInJwopUW4hCW/CTCqIgCBqiZJHMu0xiSHAiM5Nk8o6LuaOTl5lkom31bO7HOef/e+++Oe+dgf/I5B/keMaYYc/zngEIw/ADa+01ILwp4EwmcxgYB8YAP+LOAe8Bk0EQzP1rcDabTW5ubp5S1XHgSMRdcmMisn9dRCbb2touzM/P/34QsGeMOSIip4Fngdt3JIh8D0yp6nSpVNpKJBIngNPA0YjeBnBZVaestZ8ClabgbDab3NjY+Aa4O3Ix+x7lPo/i5/b29vvqT2AHuK+v78EwDL9wy5KqfgRMHvDH4xljhoFxETmJexSe5z20uLj4ZS3oUH2Gqnp18ycc8KAWWmuvAFeMMcMicjWqDeA1TK1eYaWZr1XbS6Mp+GbbDQMPDg62+b5/Mp1Od98y8MDAQPva2tplVb0Yj8c/vCXgoaGheLlcviAijwCEYbhwI8GHent7h4hUARDL5/NTqnocQES+Ap47MDgMw626+V8Q3/ff8jzvO9/3Z3zfr70ivUwm8y5wyq2/LRaLx6y1xUYa9dq7wJ7nLdct76hNVFXcOKqql4wxt2UymbeBMy7kh1gs9ujq6mohopeumy/V+3YcXbFYXEokErXAO2v7IvKiqt4FjAAjIjIL9DnfT5VKZTQIgjUipqr9tXm5XN4B3nHH7ornXNJIbT+Xy5VE5Dhw1W31ufFXERnJ5/O/RaHORt04u7Kyst4U7GzGjQ8YY2qARvAFVT26uLhoGxGNMf3A/W75SdS/C6yq04ACcRF5ud6Xy+VKXV1dx0TkyUqlcq+1dq/SeQWIVyV1Oups2Aj4vv+xK5FQVR9zL/2WLZPJPEz1ZGLAxSAInorGNKxjVX0J+APwRGTKfWtbhR4G3nfQdRE52yiuITgIgjkRmXDLbuCz3t7eaHOwy3p6eu4BPnc5qOpELpf7pVFsrJlIoVD4saOjoygiI0CHiIwlk8nZQqEw2yje9/3HRWSGv+v/VWvt+Wb6TcEA6+vr15PJZJlqP9UOPN3Z2ZmOx+Nfl0qlDYBUKtWZSqXeBN6g2m2oqp611r62l3ZL7a0x5oTneZOq2um2cqr6PICInMf1WCJSCMNwzFp7aT/Nlvvq/v7+7Pb29jtU776RXYvFYhMLCwvzregd9J+EGGPOiMjrQMrtrQIvBEEwSbX+WxM6IBiA7u7udDwePwewtbV1bnl5eWmflP+P/QkHDnd/Jn4R3AAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAEYUlEQVRYheWYXWgcVRTH/+d2ko1fkxKimZ2ZjUt8UFz8SIOQKopaKKIoqFhT0KaCPhTzoEgeBBHBl76UWmhQEUwqYggNWC0pEvMggrZQU7Si4kckYefsbo1I2AFl2e0cHzLTzG5m9qOxTcH/y9x7zplzf3Pv3I8Z4AoTbTSBbdtdAB72qyccx/lrM4CUaZoPEtEeAE8CuNq3lwB8DuADwzCOzc/Ply8pkGmatyilhkRkL4AbG4TnReQoEY0z87f/GZBt212e5+0momEAd8WEnfavsX4ROaKUmmw0pHFAcUMS1roeaKIHGw7pOqBUKnWT53mzAPpiEn4K4AgzfwbgfMwDbbEs6yEAwwAeA5CIiPldKbUzm80uhI2qNsrzvKcjYE6LyAgRmcy8i5ln6sAAwHlmnmHmXURkisgI1oY1UJ/fVpW0WgMRtYtIUJ6tVCovFwqFH+s0Xlf+OzMGYMwwjFs1TTsoIjuDtmrj1/VQjU5uBKZWfq6T9WIaAV12/X+ABgYG2kzT7E+n0x2bDtTT03NNPp+fI6Iz5XL5i00FSqfTHZqmfUJE9/mmOxAxmy8LUCaTaS+Xy9MAdgQ2ERkFUGk2R9PkAJBKpUzP84aIaM5xnLO1uVZWVj4C8EhgIKJXmflwK22s6yERKYXKVQuX53lTAA6IyCnLsnaEXMqyrHGs7nuB3nQcZ39E/vZQuVTrjwL6IygT0Q0xD3IVgOM+FJmm+Q6AZ0L+A8z8esy9RqitQkMgIjoXuiFZFazUXgDZGqhpInohFPY2M4/GwFQBKaXO1TqjNtfw7juI0HuWzWYXlFIP1EA9EYqfYOYRABIDowHYHlRE5LeGQPl8/icAi361K5lMbg/7I6ACTTHz8wC8GBjYtn0PgK1+dYGZf2kI5OvEhQClXqx1hqCWAEBEPjYM41nUP5LAP4YE5ZmomMgTo2VZdwI44/s9IuqPmObo7u6+LpFI9DHz96jTMwBgmuY2IvomyAlgGzN/1xSQDzWNtWl8logGHcf5p16jcUqn0x3lcvlrAP2+aYqZh6JiY1dqEXkNQABwu+d5hy4GBgBVKpXDIZi/AcQtCdgS53Bd98/Ozs5lAI8CABEN6Lq+1XXd2VZgLMs6CGBfYBCRfblcbq5lIAAoFovzuq73YXWDBIBBXdeTvb29s8vLy3Vf4Ewm055IJN4NwwAYz+Vyb9R9gnpOX5plWR8CCB/Iv9I07amlpaV81A3+nncUwN0XGiKadBxnDxpstHV7yJfnuu4xXdfTWOupXs/zhnVdX3Jd94dwsGmaQwCOA7g5ZJ5g5ufQYFkAWvyUtizrFQD7UX1KmCail0SEABxC9cpdATDKzG8120bLPxts275fRCZQ/WXq+rmuDdkWlVLD2Wz2y1byNzNkVSoWi4ttbW3va5p2PRH1+yAJAMGxQgC8VyqVHi8UCr+2mn9D/4eSyeS9SqkxALf5pp9FZKTetL6kQMDq10WhUNgNAIZhTF7MP6ErWv8Cz8y8bo4qKhQAAAAASUVORK5CYII=',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACjElEQVRIibWVP2gUURDGf7M5YxEM5s/txjSCgiCkS6cEW0UNREVERLRQxCJYihALERSsFcVCsYggJkVKsfAPBiKCIKQKAUGLfW9v356ECDHZNxa5i+ZM7o7DTLdvvvm++WZ238IWhzQDMqa8F/LziJwFQHUc2p5F0c75lgWSJNmhWjil6AVgaAOsAu8FeSqy8rJYLC40FFDVIC6VDwWqF4CTQEcltQhMeJGnAPXyfb0734qI31DAWPcBONBMh3UcTkdh98HNBLRi5VazM4Z1O7oJEIXdG4/eWKdrIi3ERvVBq2TNRssCs6rtxrirSZLs++8CqlroTcrjCPc9bWP1sIUWyANbyp6w+ppmeO7Vw9c6yCskbQDWZheNdT+sTU9VzsXa7CHKOWBBvT8SRd1f/q6pcmziQFOQ0FrbCxgvviAqnYo8tzbFJG5IRC4BPwU5FvX1zlQrS6VSCKt91XEg3wB80L4foK/Y81jQ20BBkReCjAJLqI6EYde7ddZl234AQb7XG9FrgMAzXD0Iw56xiogAyypyOop6XtXUEfh8GMCjr9e1/PdDkpQHvfpPwEK+UtjT399ZqubixJ1RJN5V7HpTSx7HC6EEy/NAhyCDYdj1uRazFta6KWOdWuumVLXhda6qYmw6ufoVp5P/OKs9yHMZBTKF47aU3W0kYG35HsgIissLcq0RvuriiDFuyVinxriHs6rttZi5Od1ubfa4glmyNj3cFHk14iQbNtb9XCXIZuLYDazlYjdgbfaxcrktJok7uhlP3RknSXnQ4ydQdqP8Ar0LCCLXgW3AV0FO1FtqwyWmadq5kssd4Ap/duYVHrRJfmOzX2XTAtUwxh0k4FGF/nIU9Uw3W7ul8Ruwk2SFGzGIugAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADzElEQVRIic2XTWgcZRjH/887s4nRttlsMjtJcCsIBvQqHqyoSJooUmzjwR6kTU/m4FGpFVR6U8SDBwURLzFBrfjVQhXagF+oKApe1JIUD03d9p03OxObakx2Zv4eZrbdnewmG22rz2X2fT7+v+d554N3gf/IZLMFJJXn+TtF1CPJOn63WCzMiEh8VcDGmCHSGiewH8CNmfBZAd4UiSYdx5n912Df97urEfaCGAewIxNeTq9dGf/XEEzmLBwpFAq/tw0mqYwJdpDYB8GjAG7IpPxAyFS4ak13dVWrYaj2QGEfyOGM3gogxyiccvt6PhGRsCXY9/3uMMQ3BG7NwDbcyvVuhQC/2DburN+BBrDnBfcQ/DxdLoP4EODkZh6e2sMHyDgEY0hvhUDuLRZ7vqjl2fVFkUAp1hTih1y3b6YdWMN0SYMnAJzQemEnRJ2sadfnqWbFABArK2wVa9fW02gJvtp2xcA/kR1aB2Pnzy8Vrxl4bo6dfSY4BuEHoqrvXRMwydy2fHAEwP2JA2euGJikbczi7STtjN8yJpgCsTt1fRlFfz22abCKWb38O7oE8Uzwcsz4e88Ex+fn57tSqPKM/waBvUkX8p1tcdfg4OCfzTTqtdeARSzv0jRKOfWh9Dra0bnlaLlcvt5bCF4B5EDq/7GzUx7o7e290DiWcuu0dX2oYessK9RhlDAUcVPNv7ryx5MdnVtuATgCcETZ150CUUo6xM9xnBvN57cGyJgQ22vfI5HVBnDDxEnHMgsAJEdq/lKptLy6cnE3ICfT8Utp6LRS0cjAwFaThaY2mvSGU47jLLUEpxMcT1u8+7dKpQZYAwdxJrIx7DhOuRmx7PvbCdyVTC4fZ+NrwErJdNIkcnYoz9THSqXS8oKT3wXKw2TujsFCoeWrY4fyLIAcAIpgulVeg2njf6Q9n9rzI60ro20V1dk5E9ynPT9MNCrvN8tp+h4rRAcBXASgIJgyxgy1CzXGDCnG7wCwACwJ7ENtgx3HmaVgIllJMab1aXlhIXs4WGPnKpXbYlqfAVIEAAomisXuubbBANDvFN4CcTBdDlqx+lbrYKxVvuf5D6pIvgIwkPQrz/U7hbdb5W94yvQ8/ykCz6e5MYDXbItP1z4WlUplWxjLCyAm0kEI4pDrFl5cT7et463WwR4IJwFsS11nKfI4AAj5Ki6fsS4wlv39/T1HN9Js+1yt9eLNUNHroAw3V5IZxDLhuvlf29Hb1D8JkmLM4gGSL0FQSJzwReQJx8lPigg3kPhn4JpprV2o3GEAQFw97LquXr/if2R/AyShooSp2KpGAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAEVklEQVRYheWYW2gcZRTH/2c23aRJS/Y23zSBIMQXEYymILQWRS0UUfDBokmhN9A+GaQieRDEF0H6UmKhxQvFJkUMoQFvpEjNQxG0glI0JfWCcSt5yO43ewviJTUzfx8yu5nszt4SbQoeCMyec75zft/58l2B20xkowHmFxdj4b+cxwHgZlvoYk9nZ+6WA5E0tM4+CsM4DGI/gHbPtCTAZwDPm2bsQxH5+z8FymQydzmODMKQoyDuqOO+QPCCAeOcUtFv/zWg+cXFWOuScwCQIwTvDw4iXwNAbTvHllpD4/WGNBCoxpD4paICDVSw7pBWAKXThTsh7iUAvUEBAfnYEI4lEtFPRcSp0qFQJpN/zKUcAfgkgNYAt19AY59lReb8ypaKYOIOSBlMMyUHAA90CsBUjSHvpbgDAF6vCSRkGFIq3CU3xBe74rHr9SCqideBMwDOLGSzdxuOjADYV8pVJkbNaOSVrnh83TDl0hWPXwd5pZZPbaBNkP8PEMktWuf7k8lk26YDpVKpDm3npwlebd/WeXlTgZLJZJuEtnwE4CEAAHEvyYrZfEuAZsnw1o7OSVD2FnUCDIvIcqMxGiYHANu2u10Yg3Bl2rJiM34byRZtF94H8IQP5mWlYqebyVFRIRFZKiURWbNwuQxNgHISgq9SqUKpCiQNncmfA7jfR/iaUrET5fH9Mf25qgK5oF41iqrSka1iuJ+kUoW9JEXr/FsgDvqynrSs+KvBTblj9VtSdYEgkvbBda2NZRwlMO+H0nZuEoJjq+3xplKR4SodgUB8QEyX2ysrJG5p9xVil3+GWFZkTmg84ocC5ClfglGViA6JCINgvFi7S/HF+bkuUHci8T2AG153Yrad3+23B0B5rphQZuw5EXGDYAAgkynsARDxfs6ZpvlTXSBPLvq+ny83FqEg+HVFww9MM3qo2vmoKC4xVPwmOBXkE3hi1Dp/H8Grnt0F0V8+zQHAtu3trtvSq1TkWq3KrPgWdrp0v1mNKTstK/pdQ0AAkNb5Sd80nrm59Puunp6eP2slrSbJZLKtvaPzSwD9XtIJpWKDQb5VV+qQ4bwCoAjQFw53nFoPDEnp6IicLsIA+EPEqbIk1ABKJBI/QHC8pBAc0zo7QrLhqxNJse3cCMFnSzrwhaB/5oYlrXNjaZ1j6S+de3s24OhZLrNkWOv8WX/blM6+W69d3d6SbLHt/HsEBnzqLwxxnjZNcyGojW3b3S5DFwA8sBoI40pFD9fbaOvu9iKybJrRgwDO+9R7XIZmtM4+U+6fsnODLkMza2DAUaWihxrZ9Zu6Sqft7EugnMCaU4JMhgznuIjIsoNTa1duLFNkeIcZfaPRHE0/NizY+YcNcLTsZvqbF2ubT3dDIEeUin7eTPymD2hdZvRyi8E+gZwFUNyztvtgCOIdQ5y+ZmGADb4PaZ17kCuXwHs81Y+gO2RZien1xtzwg9XK7aJwAACUioyv503otpZ/AE/X7nPsWtfrAAAAAElFTkSuQmCC',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABoUlEQVRIic3Vv0uVYRQH8OfRsMmmSFoiEJokCIfAQLIhisBJovUOLf0PDbdchJaIIHQK13BwDJcGh6SxraGmoKGgssj88Wk5Vx9u1/c+Nx068PJyzvn+OM+Plzel/yEwjjbexdPG+FFFR9HCK+z5O/ai18JoregQZvAcm4XYZtRmKvpDTQbrtRM2rHC9yaATA+1xcUagr0GtcA3/8P06pvhnA4zgHi4MQqraIpzAi4AvV/NrDOIqLwf0Cy4OYrATmOHIW/iKucgzFgPzDZcL7nDUd5oMPgVoLPK7kW9jDo8j/4HpLu7Z6H1sMngToKtF7WHUOh/TL1zvwb0W/Y2y3n2L1uI92ynknO+nlOZTSjmltJ1Sup1zftljvg5nrUdvf4rJYn9Pd/XulCvr6p3B91jlpUMNArwaJqvIjeC0f/ArwVnph084H9cPFirwjwL7Gef6GgTpJraC+AwjPTAnsRSYLdyoEi8EZvEzBF5jouhNYKO4srcGEi+EJvGhmLKNB/gdtfd9D7XC5BSeYtdB7OKJ2l9lpdEVvI1n6tiEjxp/ACcpuLq+r+hAAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACQ0lEQVRIic2XP2gUQRTGvzmjEsFLIfFAMEXAA+3UVkKE4xRRYxpFC4lNWiv/FZaWioV/CNqJhUFFBRsTsZA0ksLGiFiZQ+GEIDkliCb3s/AdPjd3e7uXJfpgYHjzvu83MzvM7kr/KEJaAZCTVJJ01FLjkiZDCPUsJ+aBReASUGF5VGysmBWsBxgFpprAFqxFY8o0PWlhOWAPMAZ8a2I8DZwGNgF54CQwAdQjdd+BceAQ0JVkhTOdbGWbRzETuwPAQGQr7wJlfh+oNDtWNq1/FANxokFXWEoKi/ErOb9BPxa3ksWVguM8Em9h1pEZGFgHDAObVw0MrJf0RNJDSfdXBQyslXRP0j5LzWYGBrqA3dGLAFgj6Y6kIUu9lDTaCfin63vIVUnTkp4C3QbNSbot6ZjVvJJ0MISw0MLDey8Df3b9XtdvvMXKkh4DGyRdkzRi+deS9ocQahG/gutX1Srs7m3EeZfvBp65sVnXfwP0tvC74Oo2tgRb8TsrfB7JR+EA74EtMV4vrO5tLNSKr1jxD2BrDPwD0Bfj02ceAJeTgHfx5xU31mQ80UUB3DKPOrCzLdhEj0y0BJQTif7W7wUWzeNBGmER+GrCKik+aUxbNW0N2JZ21ifcIfoIbE+g2QF8crrjqaDO6IwzqQHDMbUHgC+u/mJHUGd4zh22JeA6kHfjeeCGjTUO09kVQZ35EWDeraYCHLbmv7HmgaH2jung/cAkrWMC6M8U6uABOAXMOeAcMAKk/ivpZAIF4Ka1QnvFfxS/AJVve3+12N5bAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACuElEQVRYheWYO2hUQRSG/9nshgSJRQrRaLcgMYUbrU0UkirRShQFO8EmjSgWppAFGxvRgIovDFpETaIgwYCgYKEEUgS0EAtDxELEJyhRQzSfxU7YcXJf+3AT8FR35/znn2/P3Llzd6UVFqZSA6BZUo/9OG6M+VypZzkQKaAbuAHMUoyfwBiwB8jUAqQVyAOviY+3wADQXm2IZqAPmIyYfDJBvs8ub1kQYUsS2YEEHSx9SYEsMB1hOAz0AnURHnVWM2xrgmIayCYB6q9my4le8v4kBnmn4AHQVipEhHeb9VyMvK9JxXhMGGNeVAvIek1EaeKAah7/DxCQAbYADcsOBKyS9FDSlKTHywpkO3JPUqcdygHpZQEC6iWNSupyho8ZY379EyCgBTgCbA7IpSUNSep1ho8bY86VMkdQK+ec63ovd1vSNkk/gF3GmEcWJiVpUNJuR3vSGHMqwN/1nPOTQR1671yvCchLUqOkMaALMJIuSjrg5E8bY06E1K51rt+FaIoB7HQe7fe9XBZ44+S/A3e88+mChQzzH3e0PWE6t2CTU/DJ3yEBUG4M2uUL804DXxz9xlggWzjjFHUE5IOgbhHxSmLrtjv6V4lgbOF5d6IQTZbii9hdErxwASOO70ApQO3Agi38TcA2t7omIBe1TI52q+eZSwxkDUadb/MMaCzJ4G+vBmAqrutxJq0UdtFiXC4TxgBXHZ9Zkt7MAWaHvBv3DBFbOgTmrOdxsCwYx/S6Z3iJwpkVV1fvdQbgWkUw1jhNYUu78QRYF1HTAjz1aoYo4dRPAuV36gOwN0C7D/joaQeJeUaVC3YUmPcmGwHWAxtYeozMA4erDuJB7WDpL9OvwDdvbAbojHesDtRq4ArFB50bCxRu/KaawHhgHcBzB+Yl0F2JZzX+sMpI2m8/3jTGzFfquaLiD5lYyViHMm3QAAAAAElFTkSuQmCC',
+        },
+    },
+    'latency_fix': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACeUlEQVRIie2VTUgVURTHf2dmCNGMUuqBd3gJ2cI+QKLsC4Ry16IWBYm5kdq4itq0ateqVS3EMgQ3UYuiFkFUGNEi+oQIs00KvXn3mYFJGUZP7zstmhfP5+jL1v4393A+/v97zpyZgRVUgFRKSKVSNb7vt4vITiAFICKfC4XCa2Aol8vN/JdAGIZ1qnoeOAWsXiRtGrjm+/6FTCYz9c8CxpgDwI34xgo8Bx6LSEZVBUgDB4E9ccm453kdURQ9rSgQhuEhVb0DrAKeiMjpbDb7LukiDQ0N+0XkOrAR+OV53pEoih4sKhCG4WZVfQPUApettWeBQhJ5KpXaEATBELAFuAccFpHvIrIjiqLRYp5XWqSqvTH5TWvtmX8g3waM5PP5E8AtVV3jnOtN7MAYsxd4BkyJSFM2m/1amphOp9c5546raq2IdAPNwPDc3Fz7xMTEF2NMPfARWOt5XmsURa/KO+iKu+gvJzfG1Dvn3gJ9InIRaFbVD0VyAGvtJDAA4JzrShpRG4CI3C0fiYgc5c/mzJT4BorkRcTLgYi0JQk0xUmJG1PkKIqIyHR5sKqqajg2NyUJVAGFXC73cwGr6m0gA9QA1UAm9s3D2NjYj9isThL4BnjGmLryQmvtpO/7LUAP0OP7fks883lobGxcH5t/3+qgJP4e2CcircD98uL4U3Cl3F+KfD6/S0RQ1ZEFHajqw/jsXIpkKYhIZ3w+ShIYBOaAjnQ6vXW55GEYbgeOAbPA4AKB8fHxTyJyFQiccyeXK6Cq3UCgqn3W2mzRX/oMmJ2dPRcEwWhxQ4wxL4DWCtwvrbW7VfWSiETOuf7S4JI/nOUIVMhZweL4DdrcBvkiMafaAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADaElEQVRIie2WT2gcVRzHP7+Z2Y2J7hrWZifObKC1OYggnkSLi0oRQZJ68aJ47CUFBZFee+hFQVCM4kFLBSmeRJAasSeL3vQkxGhBgkvmj7saFDao2TUzPw95s84ms+nWCIL0e/q9937v93m/9+b93sBN/d8l4zrOz89P9Hq9R9M0fURE7lHVIwAisqmq31qW9Xm1Wr26trbW/1fAtVqtOjk5eRY4Axy5jvvPqvpWv99/bXNzc+sfg33fXwAuAHfmuneA74HItBvAPODkfGIROR2G4ZUbBnued1ZEXsn5fKmqy/1+f2VvNrVarTo1NbWoqi8A95vuVEReDMNweWyw53nPicibACLSVdXnoyi6BOiohZp5D1mWtayq9/H3DixFUfT2dcG+758AvgAcVW07jvPYxsbG2kFAM28B+BCYEJF3VXURqAN/ikgzDMOv8v7Wnvk28I5Z7TawcKNQoJem6UUROQX0gJKqXjCxh0ADNRqNZ4ElABE5F0XRB6NgMzMzt1UqldL09PTjeSjwVBzHn3W73aharSpwEnArlcq1ra2tbwozVtUzxvzRcZzXi4Cu69Z93/+4XC53HcfZAi7noVEUfZL5lkqlV4GOaS7l4wzA9XrdBU6YBbzXarW2i8CO41wEFtn9PsTESPdCAVqt1raIXAIQkabv+3fsAzuO84AJhGVZhffP87wp4AnTTHNDqqpXi+ao6qc51oP7wCJyPOe/WhSkQBl85DXb2dkZnKuI3FUEvj2zwzD8tShIHMe/A/kMsvlXzNg+dTqdXzJbVQcMK9fZy+xGo3HLARmcBlbYzVKBFdNXKNd1J3KMwQMyVF8zI0mSo8B3IzL4CTjluu6tpv3bKChAuVw+lqa7J2JZ1oCRB3+dGbZtN0eBcws4EJgpTdNmZovIgDHY6iiKVlW1DaCqT48TdByp6jPGjIMgGFTBfAFJReR9Y580NftQ8jyvKSIPmwUMPTJ7K9cyuzWa7HU6jEQkexL/sG37jfxY/oyJ4zjwPO9lETmvql7W77ruMdu28/d8pJIkWe90Oj+YZvYD8VIQBHHer+g9tjzPe9K27dUgCNZnZ2eP2rZ9jd16PI56SZLc3W63W3Nzc8eTJLk3juPLDFe64YyN0jiOPxoTcqCCIFgH1ovGxvrLPMRW39R/r78AYvNbn2tnDHcAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAD8ElEQVRYhe2WT2gcVRzHP7+3m02UuiUlNXbeJC42giUHTz2JKCo1h4IWDwpSbGtrqUg91IsggkejIAjmkJYW60Gh1D+IYiMtqO1F6ElSb3bZnTc2TUyjBWPT3f156EycTHYmbhMvku/p/d73/X7zmffebxhY17r+Z5LbyDG+7z+sqjuA7UAF6Iu834DLwI/GmIl6vX4eaP0nQJ7n3Qm8LCKHgYF/mVYD3heRsSAI5tcMyFq7ExjrAGQZmIgcCoLg69UCGWvtKHAkNT8FnBaRc81m81KhUJgCaDab/caYYeAx4Bng7kSOisg7QRC8Ts4x5gEZz/NOisjzixVVrxhj3ty4ceOHk5OTC3lvMjQ01D0/P78HeAvoT1gnnXN7s6AKWQWtte+JyIFFcpHPC4XCjnq9fmF6erqZBwMwOzur5XJ5l4jcCxSBOyLrwXK5vOH69esT7fLa7pDv+7tU9dPE1Jhz7hVAVwKJZHzfP6qq+6L4PHAJeCleoKpPh2H4xbLE9ERfX99dqvpBYur0KmEAfnDOHVLVz+IJERnbvHnzhhWBuru7XwW2RKHr6uravxoYETnunHsDaBWLxReBXyPLK5VKh9MFlhzZ8PBwaW5urs4/3fGCc+5kDkDR9/19qvpEVGsL8FASJgiCAyQusLV2D3ACbjVJGIYDQKMtUPS9+TIKa865+4CsC1yw1p4BHm9ntoOJX8JaWwUsgDFmpF6vn4nNJUcmIk/GY1X9OAcGa+3+LBjgQgYM3NqNT+Kg1WqNJM0lQKq6PRGezYIBEJFHsjxVrWXAxLnnEmHymcsu9dZ4UCqVfsoDypMxy3pliVqt1mJtVd2a9NKZm+J11Wp1Oq+oqn6f432Xl9vb2zsVj0VkU9JLAyUveW6rO+eO0v5YzzrnjuXl9vT0JGsvYUgDzcVg/f39feSr6ZwbEZGDwCnglIgcdM6NkNMMADMzM8nac0mvmFp7GegF6Orq2gZcXQGqEQTBODC+wrolunnz5rDI4mH8kvTSXXYxHrdarUc7eUgnEpFk7YtJL/0d+jYxfo7b+8VdSQZ4Ng5UdSJtkjC/An6Pwgc8z9u51jS+7z8FDEXhtVKp9E0mUBiGfwKLHSIio5VKpWetYCqVSo+qvh3HqjperVb/ygQCaDQaoyR2aWFhYddaAUW17o/Ca8C76TXpLmNqauqq53lHROQYcMMYMxlZxlq7W0Tu6QRCVa845z4CWsaYSVW9AXSr6mthGM6k12de2sHBweFGo/FHGIZ1AM/z9orI8U5gElD7wjA8EdUZKBaL5VqtNtlu7bIdipWVsFrFL5ilTtraWGt3q+q2TgBE5Of4yDrJW9e6bld/A00neZrniGI7AAAAAElFTkSuQmCC',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAACn0lEQVRIie2UO2hTYRTHf+fmphG1bR6m14So4GOoKIhofYGg3Rx0cFDUpeguuji5OTnpUOoDR1HBUgdBVBRxEN+IVF3awTZqkpImbUW9TfIdhzxM0jRtnXumw/nO//c/3+NeWIw5QuZqSCQSy/D4usWYbSBOsaoJteStyf15Eo1Gf/2XwejERNDn5s8rcgpYPkvbFCrXfT654Pf7M/M2+DGW2Wcpt0AdQIGXAk9VGAFElNUK+4GdZYkgRzs6As/nNEilxg+oMoDQIvBMldOOE/zYaJBkcnwPFjdR1gAuqoccJ/RwVoNUamKDUngHtAp6ORwOnhUR0wieSEx1iJV7AmxEuY9wEJhEra2O4x8u91nVIsX0FuHcDoeDZ+YB3wR8FskfB7kLtCGmt+EOksn0LkReAJlpn2f9qvb28erGbDYbcF1zBGgVix5VOoFBNd7ulStbU/H4ZMjbkh8C/MYyXZEVK97U7kDkRCm7Vg+PxydDrms+IPQhXFSlU4QvZThALNaWRuUGgJgKq+aI9gKo0Xv1R+L15Q8jrAYqb16RG2X4v9CB4rHI3kYG6wGMcRu+mAq3YqJTMwbxMlhK1zUyWAKYSCTyu16Yc+1+lBFgGbAUZSTn2v31fYFA4GcpXVqu2VXrE0D7t29TQSBdLYzF2tLZbHZL6ZLx+aw7jtM248sdGxsLl5CVtWqDT8DulpZ8F/CgXlz6FVypr1eHEXu7KACfy7XqV/QIQIVjzSDNwtKiVpHHFWw5+f49s8Zj6xCAKeiWSCT0aSHwRGJ8s1i8B9T26NpQKBSv2UE0GvgKXAVsy7JOLnR6EekBbEX7ynCovQPUTJ/D4x02Nv0AyWTmFaJdTckqrx0nsKPg1UtWQUcp5K7VGDfTLsSgac9iNIu/KBT+Xctcx9cAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAADbUlEQVRIie2Wz2scZRjHP8+7+WFtXTfZzMzu2kPX9CD+PIkGg4p4kaZeBLHnXFpQEOk/UAQFQTEWD1oqSPEoSI3YW9GDYA8ixF8QgoLrZmaS3U0T0m66m/fxsDObSXa23RpBkH5Pz/PO8zyf932Ged6BO/q/SwYNXFzU0Wy2/qyKPCPCgygTUYVVVX4R1W9W3fHLD4nc+FfAtVot225zGpFTEMH6awWRDw3t9xzH2fjH4JWV+jGrnAOKieW2wKKK/AWgqocFjgJDiZiqoLOum7902+AgqJ1G5J1ujPC9wlyG7fm9p6nVatmWlRmj8rqij0fLVpE3Cu7Y3MDgMKy/qnA2ctdRec11cxdERPtttLPZ+lMIc8BjxB0QTnrO+Ee3BAdBbQqRb6NE327r88Vi/uebAaH7Wj4HRhX5RLAzIC7QssZOFycmriTjTdJR1QwiH0fQphFz7HahwJaoPW+NHge2gGFjzTlVzfQFh2HjBPBw1IozjpP7oR8sDMNDvu8f3As1wkuel/+uODFxReHNKPzRYLXxcl8wwqnIWt7cvPp+GtD3N9wwrH+pDK2LGdlQ5WIS6jjjX8Wx1zevvgsSAIhyMhUcBIEHTAEofFoul5tpYGNa5xVmOk1BFIyA3QsFKJfLTUQvRO50pbKe7wGrGXkiKkZGJPX7q1ardyu80OmO2m4uaKvVvJyWo2K+jlmjo+0ne8BgJ2OrOWIW0or0aAfe/zNrZ37qbkLl/h6wWO6N7cPZbCOtRqlUuibQOYGKQcUACFwqlUrX0nI871A9ti07jB2wyFZsVyqVu/odwNrhWYF5OqdUgXlrh2f7xQdBMNplqHYvkMR8lWrcscyBA0eAX9MKFQr3hMBx3/cPAniFwmY/aEcj5YRT7QGr8mM8x4zKdD/wzgZuBexIhOldjEjdVrtubgHwAcTyyiBFB5JwIrKqnjfWnYLJd2xR+SxynguC2tR+mWFYnwaejtxdl8yuydUesnNAM4KfZZ9SiK/E60a2P0g+S17e3JfP/xmsNN5G9QxQitd9f60s0p5kAKkOLRUKud8jt9jZgLzlOE41GddzLaqqCcO1F0EWPC+3tLzcOGIy+hudeTyItuy2PFAsjv0RBGuToI+4bu6iiNhk0NDerCjgiwEhN5Xn5ZaApbRnA/1l7qPVd/Tf629RmFPqkqIBwwAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAD60lEQVRYhe2WT2gcZRjGn2d2k1Rp485mZzbZsmJsBGvOOYkoKppDQIsHBVHbWIWK1EN7EUTwaBQPgjm0JcV40Ev9gyi22oJaL0JPknoouJLSZHdmN7OKxCbZncdDZncn251J1sSL5IFl93uf732/3zffvLMD7GpX/zOx2wRJRrlcfUDSYwLHAP8ugJnArgAsEPoZ4AXLSl0m6f8nQAsLC7cnEn2viDxOIL81eszD0PurN5en8/n83zsGVHSXJiBMbxmkAxiJY7ad/npbQJIMx6lOgTrRllYCdA7SpXpCV+s9PSUASKytZZM+R0U+DOkpgPYGLOIdO2O+HneMkUDrMN4siGdD4aKoNyuZ9Iej5GrcZq5dU19/yjsM8S1A2ZA1a1vmkSioZFRB1116D2QLhvi8r8eYTKVSXhxIQyMjWHNd3CmpAqIXgBlYzztO1QVwslNexytUKnmHQH0aCk3blvkqSW0FRpJRcqunCU0GocsQroJ4uTnH55ODg+YX7blGe8B13X2gPggxn9smDAT8aNvmMUCfNasamnYcZ++mQHUlXwMwFAxv9Pbg6PZgOJO1zDdI+n29iRcBLAZWzkfyeHuNDUc2J/Vm3KXrze4QX8hmzdkYgKRT9iYhPgqAgoYI3L8RJvVS+AZ2HO+woLPBsGhbZp5krSNQ0V2aoPBlUG3ets27SdYjYBJOeek8xEc6+h1gmptwvd8B7A8C49nswPmGb7RVebz5m/g4CgYAnLJ3NAoGwE+dYACAZA3iJ60xxsO+sXEyxkJbuRgFAwDw8WCkJ8zHPvyoS62pHAt77VfoQCup/kss0Da0llC49oGw195l6eBblmW5m9T9IdIx8H1cYjWdLjUHaq7ZESh8k8e2um2bp8EOx0pdtDPmmbjc+8K1uZGh/a+jivVHPEulvzIAnKiiJOuSxkNtD1Df2Zn0TFwzAEC5XM4AifCakUCFAAiJRO1gHFAAVQNwKvhsWb7P0eZZiL+Fvfab+kozCXiom0W6EWm0ahu6Evba2l7fNtmkZyR1/Yq7mSQZAp5uBnxeiASq1Va+AvAHABC4t1T2JnYayHGqTwAYCYbe8nL1m0igXC63DLHVIcJUoVDYs1MwhUJhD+i/HQqdGh4evhkJBABScgqhq3Tb3jsO7RTQei3eEwy9ei35bvucW94YBwf3OUWncoLgGQAr9DG3DirDdavPARrsDoNFy0p9RNKnjzkQKwD6CJ3M5frLt8yOKrO4WBn1e/Hn/oGB6wDgON4RQTPdwTQW4aRtm2cB4EalkjdW0T80NDDXaW7kO3VUwnbV2GCUttzWjSMTdLAbAIK/No6sm7xd7erf6h+hVJstKeMrrwAAAABJRU5ErkJggg==',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABk0lEQVRIie2TP0scURTFz8RybdYFtZBNEVOJqRQMVsZCFOzFDyC2IeQ7WPgXks9gkcpOVkyIILggCBqsNU2EgCaRBP9EfjZn4OG+2dmdei8Ml/fOOfe8O/c9qRM5keQRgJKkSUkjkvq8fSHpUNJukiT/CjkDPcAacE12/AFWgHJbHQATkjZ9YiQdSPos6bs1VUlvJI1Z8kPSXJIke62cfAa49Qm/AK+acMeBM3NvgKm84i/dNsA68KwJtxc4AR6ALWt+Ay+aGdRM3AQyL0BQHOdu4JPX21mi1yZcAj0RvAwsAu+B06B4r/EKcOX90ZjBR4NLEawCnD+5Qadp8YC3bGwjZpC2PBbBFoz9DQzeRXjjxo7SvXCIg87HDe5BDUnpw7qO4N+cGwdt54fYcCO/6ByoRHhdxv/HDH4ZbBAaT4e8SMbLBfpd42cM3Dc4HRO3EsCsa3xN98IZ1JznixoE2p2Y+3Pg3t9Qu5WBYWvvgIEs0ge3uFrAYDXzDQSkEvAWqHpdJz/q5latLbVzqpYNOlE4HgEJFErafOu9rwAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACKElEQVRIie2WvWtTURjGnzcVWlo/BkWxIKRm082hUC1UnISguFbEpYOL4OIgOIgOKui/4F9RQUFEMggiFSqVdhIHadQqikNrrG1+DnnTvib33lzTgCB9IOS95zwf5xzenBtpG/87LC8R6Jd0UtKEpCOS9vnUF0nzkiqSnpnZak9WBuwGbgGf6Ywl4Aawa6uhZaDaYv4LmAee+GfBxyIWgdPdhl4F6sHsBTCZtBs/lfPAy8BfB678bejlYPAduAh07AfgBDDTcgKX8oaOBeEH4GhOXRmoue4B8MnrVWC0k7gPmHPBD+BYF6E14DgwGsZeA31ZBhfCEV3rELYTGEoILQfO9eA3mWX23ElVYCCFsx+YptF4dW+itlDnDgAffb6SFnqAzS6+k7G4adqx3hoa+PcCZ28S4WwwmkgxGQTWglETa8BgiuZU4G0srhA4pVDPpe24BfWmfwbnTagPJwXvCfW3JAczW5H0KGib+sc+l4SvSRkx+GeoExvLMSXpoRq7xOupDH5/qDdeIDvCYDXURUkLSS5mtiTpDDDkz8sZoZI0kpQRdzwb6vEOZjKz5RyhrV6zbbNAgcYVCfA0h2EuABX3XCTtvgfuh9Yf60HoePC7m0U8ROOOBpjpQfAr91oBhuNcbC6Z2Xu/tW5KGg4GI/rzd56Ft2b2zuuD/n3bzKppgmZIATgHlPy5yOZLIA9qQNG1JfcqZIamLKTr4Czk+pe5haPexr/Hb8omJxkzhlSvAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACfElEQVRYhe2Wz0tUURzFz1VTk4IUkVoIQavBtcsoKCrCqKgWLoqErD9AV9G2KHDRRiHIhRgUFrUPCypbFMwqBqEWoVlqP6RtVH5aeKFvd+bd997MuIk5MLw79/s953vufffHkxpo4D+Dy0sAmiTtlXRIUr+k3ZK6ffibpPeSXkt6LGnOObdeF6cVjHQAo8Ai2bEAjABb621mIKeRSsaO1sNIEzBWocAKMA6cAgpAl/8VgNPABLAacNaBG2y88qrN3AlEl4FhoDUDvw245M1bTFVlCrgZCD0COnMO6CpQAtYCrbG8Zk4GAuNA5h3pzUwa/gvgVqB5PKvYduCTIT6o0QzANd//0PR9BLZlEbxiSEvAjhrNTOLXDNAZDPZymmAr/+6Ocyn5LcBFYAa4D8wlmTGc8ya+DLTECgyY5AWgOZLbDMySjDIzZhBLJu+wjYcEG7zrnPsdmaALkg4kxF5KGq50bTjnfkm6Z7qOxAz1m/aTiBlJ2heJLabcYU8TapYZ2mPab1IM1QKrbWuWGeryTyR9SRF9Hok9S+GuVqhZDjbuG/wzerxHFvVsbDN47haT/zOWaI/4npioz7fbfsa3k7fxX94uUyf5TQBFkxhbtDUBOGjqvLKx8LUUTXv/ZhkKtItJSQLOGOfz5LjDsoKN6+WdqXMiltwBfDfJxzbBkP2SWAPa0wj2C3E+lZDPTDvw1uhfz0LqCWZpsI6GBoPZ6Q5zyraoc+4zMCLptqQfkkperEnSWUk7c/pYkTTtr5KS12yTNOqc+5pnNH1Ar/k/RPUYMjq9QF9S3cRDzDlXyuw+B5xzH2Lx1FPVYErSuqRCTg/zkqZzchpooGr8AW5AJOm8o3ilAAAAAElFTkSuQmCC',
+        },
+    },
+    'latency_live': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABfklEQVRIie2TsWobQRRFz9silQtVEbtvRISDiiBS2oWR3LgMDsh1UuQDkn/IBxhDigRSWbh3wHIghcEIJSQ/INzYYNDuKgEVAhEsLLKTQhMMsrxCYsEpdJuZN8O753GZgaX+d3mq+k1VW4AsZJB2GQTBM2ADqBhj1jIHiMibf/skSXYyBfi+/wTYAhIHyxbged5rxrl/tNb+BErGmKeZAIrFYg54CdgkSd4BDVgspqmA0Wj0ClgBTrrd7pnneYdwO6YgCLZVdaCq7/P5/MNpXgLgnmFl8tJa+zyO40a5XH7Q7/d/ATkRKYVheO4ATRHZvGP4r1EUVdNe0fc4jj8DtNvta+AYbmIqFAqPRaQK/GYc4Z8Ur9kyxtRU1arqD1e/dfV+Wl/qP5jQF8bTrvu+/8ha+8Kd1zMBhGF45SAiInvAKnAZRVEzEwBj509urbm1jvuImQCGw+ERMHSlFZGDWT1zAXq93gA4BbDWtjqdzkWmAGf8ARgAu/P2LnU/+gtqWXfoILpK8wAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACH0lEQVRIie2UvWsUQRjGf+/eEhQJZxG4jxm9BbE6QVSIAa2CrWBOQaysJIjBK/JfiGijgoWFEWIhUUHRSlCwiEWsPNKIcLB7HwTh7OTYnbFwF5cj8Y5LVpt7mpl52ff5zfswLEw00f+W1npVKbWltZ7dCz9nROhpa+0VYMYYU/9nYGPMzWQvIuc9z9uXObhSqZRE5FKqNB2G4Xzm4CiKFoGp5AhgjFnIFFytVqeMMYsAIrIBvIn3FwA3M3Cv17ssIsX4eBd4Hu9ntNZnMwMDSwDW2k4+n38GvAJCAGNMbfBjz/MOaq3r5XL5xDBwEpdbLpfngPRrPQzMAjiO87DRaPSB70qp98A5EVkA6oBNGvr9/i0RuSYiRim1aq19ApiU589Wq7UOhAKgtb5nrb2xw+X6rut6zWazDaCUug48ABCROd/3PwEUCoUDruu2gem/TSoi933fXxr6qq21KwkUwHXdl6kpaqn6xRR0nVQS214g6dsmakhFky4qpT4CZ4CvQRAcjWvvgHmgWywWD3W7Xc8YU9nJTxhDSqll4DaAiByPouiH4zjf+P1Y7wRBsDzMY6Rf5qCiKFrjT5Q1Ebma8loZxWOsiQGUUhvASeALsB84AnwOguDUKP1jTRzrRbwei6GIyONRm8cGG2PWBkr9MAyfZg5ut9ubwGaq9LrT6WxlDo6VxI21duSYdw3O5XKPAB/4UCqV3u7Ga6KJ9ky/AIvGsVja7d8XAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACjUlEQVRYhe2Wv2sUQRTHv2+ThZzKHRYxuPPuGoOKCLaihRDBEPyB0fJQYx2sxb/ARrASbILRKFhFRWMhJo2orUWKmGyj7qxE0uSCQvBunkVmyXBuyK1u7pr7Njvv7XtvPrtvZ2aBrrrqamfVkzUhCILbxWLxVbFY3LW2tjaXNxBlCWbmQRH5DMAD0KjX68Hy8vKPPIG8LMEiMu7k9Pi+fzFPmExA/f39ewBcd33GmEsdA/J9fwxAyfUR0VClUtnbCSAionHH/m2vfqPRONd2oHK5fAbAYUtWA3AnuUdEubatJSBjzI1kLCITRPTAsYcHBgZ2tw2ImQcBjCTzA7gfRdESgHnrK/T29o6kJu8EUNNSn9FaLwIAEU0nMVu1jZlHmXlVKfWBmU+1ApRsjMTMVQAqBegW7OoSkeE4jt8AgFLqGIBPFqjW19e3LwzDdbe2UmoBwEEH/AWAjykcOoqiJwCEbPErAB5tA7+gtT6CjbbB5oUADtjJzkZR9Dq5FwTBCSJ6v01NV1e11lMt70NEdNeFsb5px7zclDLmjL8CMC3Nk1yZuWqMOZoW5HnefPJKXb9S6jg2W7Citd4PoM7MBRH5js1WnySinwAuiMhfK9Ktn+lwTXsgpdQXAGVrn9ZazzFzVUQeW9+S1vpQ88NspUyHa4rEfqgbdESjACAi15yYyVZh8gCCiEw749EgCMoAhqzLiMhUlnr/DaS1fgdgxZqKiO5h88dvNo7jb20FAlB32wbgfDIgosmsxfIAgog8a/YRUc0Y87wjQIVC4S2AVdcnIk/jOP7VEaAwDNdFZKYJ6OG/1MoFCAA8z3N37cU4jtPOrO3r5MSDUqn0EsAsEdVE5CYy7D1dddVVO/UH0U3j3msgHFYAAAAASUVORK5CYII=',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABm0lEQVRIie2TMWsUQRiGn3c3WAm5hN29EDgCSgoRSy3EpEkpBpI6KfID9D/4A0SwULAy2Ct4CikECScY7EMaA6mOnd273cAZ1MPbz+IOUYkbFhbS5K3mm3fe75kZZuBC5y2VmWbmJWneAYoonFmWZFUBU2Wm6+V3BbcB4n7/JvC5KsArM4Ue/F5YeOtVm5cCur3eNcxWgGI8Y/UCfPPuA0I8B2LQYhxnN2oB5HnewNgEbKTiCUYbQL4qn+JUwI+fxRZwGfR+PggOJHsFgP19TXGa3XNJNnBp9jSOB9FpvQTgkqwD3PnXNLE6F862980uBWnugIbwF6No+ssktwss/2fzH5vR7FLZK/rUDGbeAVyXhoi340OM1gGcO74KLAEngjYwKul1tpzL11ySmUuzvXHdf+iSzFzSf1GWK/0Hf2o4/LoDnGDc6nbzBaQNgELedi2AVqv1DbQDyJ8qHgNXgKO5oLFbCwAA2evJYA0As21JRW0Aj9Eb4PukNPBfnp2poDAMB8CHSdlpNhuHtQIATDwDBiY9qpq90PnoFx6plNyGhZXfAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACOklEQVRIie2Uv2sUURDHP/NyicpxmIS7SyKowR+VIqiggVhIsBXMKYiVlQQxmP/DxkYFSyPGQmIExU5IkSIWsVJSKFxhcft2L7vRSja3OxbZyx3hzB3Rjc19YXk7b2fmMzO8t9BVV/9b1vpz1vW9SrV64V/kM504OU71IsItIG8iM7NnYBFzv2FwtVwu708d7HneCHCjaSuXzR6cSB0cx2YKoS8xo81FJlMFf1HtQ2QqMVcE3gMoek1VM6mB8+76TWAYAOEhyOv6J6e6fik1MDCdrE41P/AqDHveAjUAUS1tdw6CoN9xgxnXDc62A2cAVDXjecGYarx1WkXkiKKbd1b16SmREFizXrCI6hWBSVWdERGtx4ShPhDhjkJsPX+OWJ+Dxo2c5lehMLAsIjUBsK7/CLjXsjQlNCYaLRQKFQBr/bsITwA0jseGh/MfARzHyYrpqwC5Ns0+HioOTrc91SIyW4cCGBO9AWIA6TGlht++603QZUDZQQKtR72ZrDGa5n3r+kvAOPBtqDh4EsDatQ+ITIDYYqH/sOf9HFXdOPqnfJmkqxqw1K77RgZdQGUcOGGtfyaK5AeilwFQXojIBvA1eVqqo1/mdsU1M8/WKLXU08vtplyzHdW+GzCAdf0V4BzwGTgAHAc+DRUHz3cSv6uOARRZSF5PJ1AEedZp/K7BsYnmt1USRlHmZergQ/n8qsDq1obou5GRnJc6OFF93KiYjsf817J2/Zh1/e+O6y+qau+egbvqaif9Bgh93VXWOQcYAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACpElEQVRYhe2VzWsTURTFz5kYpVRpkzaTmNKVjYoIbkUXQgVL8QOry6LWdXEt/gHiRnAluBGrVXBVLVIXYt2IunXRRW3daChmXprJB/gRmuS6yGRm0rQ6Y8foImeTeTf3nfvLvXnzgI466ug/U0aZNwxlflfKvP43/OknWanikKD6AYAGoCq1cDKR2KWCBNL8pVcmXXtCDK2dDRLGF5BSaqeAl5uCgnP/DAjYNgGgZ11wuFAoRALk8QYkIqwBk67QmvUZLpflVNuBlDJPENhvLUsC3HQcJNCxeesQecW1uKshdM9ZYySTyXS3DUip4hCB0UZ5Tavc0fWeZQALVqxL08Kjm2wPHsh91AnMxWKxpTqazDQyRLjh2AwjP2Yos2go8202mz/mBYh1Q6FS+XESA+sTBLiGxukSGYnH+15YxQ6B8t5KK5WKET2VYtmBFKpsYRGQva5qsxS8a6khWNH1yCOSQsv8AigPfkUuwGI8FjlAUuwOKPMjgD3WLzup69Hn9ndG7gjIN79tiV2AF+PxyLTn9xCJW26YehD22Grg+XU7Jpxi+Ayg5qkO4IwMxMENswQLjZa6w5lM7jA1Nkawqsciu0lW0ul01/Yd3V/gjPoooH2FhjMQaT2RLn9fl2uLjwiNbP4TgUEAEE07nujvfWVkzXEIHlpZy3osuq+lu5vI5+XaLKvIrB2o1cbqDLxkQ4NTXmG2DFSvTft/RGBsJZcbBGS4gVgNybQfvy0DJfp7XwNYtZYD4SpvAwhZiPMDfX3ptgKRrBC0xybAafuZMuXXb8tAdSh5skG4VFv78dSvVyBAhULkJYBiU1DwOJlMfvsnQKkUyxDMNUfl/p94BQJkAcw4z1zS9WjLneVFgQGt6tFnoMwDKEFw1c+7p6OOOmqnfgKtmvi/gPGlOQAAAABJRU5ErkJggg==',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABFElEQVRIie2UvUoDQRSFz6QQLAQrWwttUtjaKdjZrGBa3yHgExhfIkIqH0Bs/Cnsli20tRXE0lKIihDIfhYecAnJivFKmpxm5s7dOd/cuctIc81aqS4JNCQVkkpJ2yklQulAxrc2p/Fo/JBvV+ataQATBTSBEhi6godoQNfGJ8Cz5xtR5svAqytoAj0DjqIAhza8cbzr+H7ku8wH6QIrdYYF45U5vwC8eG29si+fsA+gkOr/oltJV5KUUhpIuvR6y+ZrkrYkvUu6kDT81TWNqXLfJ7tzfOz49E/GFcAi8ObGrwKPBuyEAAw5s+m5xye+npMwwMFIIzth5gYsAR82L93oWAHXBuTh5gZkQB/Y+xfAXOH6BLlpTclTkbB8AAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABj0lEQVRIie2Tv0vVURiHnxM3CUIQwsGhFMVBiKAlg5YIpzZ1FMlFxMnB/yJwCZfGFN2kaA8cGhRyCprcGi4hLU5q6uPyXu4Jb3r0cr8t91nOe3687+e8H86BLl3+N+qmeqA+q1J03CYbVQpvZMKH6r0qRAfUY//mdbt17xScWQB6Ij6LcbJd4StRe9R6dPlN/RzxgVrrpPBsZu+MOpfNX3ZSeDdE6tH9A/VPrL1rcb5PXVKfXle7Fgk14DmQv9ZHQOPPvk8pnQC/1W1gAphUl1JKZjlvgXngXN0E1oHzbP8I2EkpnTZuuuq/OVYHsq4Ws73xbP1+fLXrWIWyV72WUqpn809ZF1PZ+jTQG/EOkDtxiRS3bWX1ZWua3X0FXgD7KaXRWPsCvAJ+AQ+BIWCwpF4x6nJm3RN1UD2L+UpJjRKrW7FF08op4E1Wa+2WNctQ96LD7+p+xHul+bftGOBjjI+BkYg/tFGvDHWsxbfr77hwiP/IhLduktuO1dC0G6qwuYE6rP5Ut9W7lQl36XIVF5ieoD11wHP8AAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAB0UlEQVRYhe2Wv0scQRTHvy9KgjEgaYQgdomVYBu0CNoICkG9VMqR9PoP+AckdloLKdLYKoqCiLVpAxH8gdWRYKGFBpKQoH4sbvSe66q35LxJsd9mZ9/Mm/eZeftmR8qVK9d/JmAK+A28j80i4DlwSlknQGutYzzIOH7c+TRIGqotTgYBT4Ajrmo1JtAE1/UXeBoDxoCtBMiFijGA+h3AMfDBvS/EAFp2ANPAC/f+C2iuJ4wv9TOgI9i/Oqg3tYpXTdn7Ul8xs93QnndjRtIcgeGQ4g3gVTVAFhxN0piktpQxk5JaQrvfzNaCT5ekL8H+Q1Krmf1xMCZpW1KHm2tR0ueUGN8lzZkZF87FlJJOaisE8Tuw5/oHEn3dVczpVZSyndQzlyuoyKetkOh759olSWfVBEmmrPOGcZvyWxoEvFQlBYeSnpnZCdAkaV+VVPdI+inptaS0ikydP7MoH5glt+19wT7mbLvJVN+mrD/XKworWnSm4fB862yf/nnlWQT0ut34BrRTvppA+fxqrxtMAGoEDhzUkmuv1RXGQX28oZRHYwENpsAcA49jAT3i+uVtNgqMg5pLAHXHBio4mJ0sZ899AT0E1sO3E+/ynytXrjt0Dj/aXK4uTkPqAAAAAElFTkSuQmCC',
+        },
+    },
+    'latency_tools': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAtElEQVRIid2UwQkCQQxF/7eNDGgT3rQBu/BkBxZhB2s1gp5sQtFJHfGisAxkIMug677bJPCHn3wC/Dv0GimljZkdAci7dCe5zTmfIh/MvIaZdT1xAFiY2SEiDhQOROQMYBUVKbio6vrzcB20wt2BiFwBLIvyQ1XnkQ9cByT3JG+90pPkLiL+FdwR1YhEeNCSIxGecExrRCI8yMGoIlwdUYuLWh1Ri4s68Zi2uKhVB6OK4894AYMsVxwE77V4AAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACVElEQVRIie2VzWsTQRjGnyc2pOJHIvS0O0tjFItU6UVR9CBePHoxKpQeBVEv/gMi3j2Klx6VemjBP0AQBK0IovjRQ6v20MyuFw9tUrS4MY8Ht5LEZLNJExD0uczOPO/Mb94Z5l3gXxM7BeTz+Vy1Wr0AYA8ASKqSfGqtfTEwcAR9JWlvkyWSl621072CU3FmGIYXW0ABgJJu9AoFmjIuFArZjY2NZyTHt7JosyQtDA8Pn1xeXl7bHGvIOAxDr99QACA5Hoah1zDWHOS6blHSkWjCcQCnIutJ1I4CyEv6AeB2QvBL3/fnYsH1MsYck/S8Tdwj3/fPJAG30rY4s1wu+9ls9jOACQDZaPg7gMeSLlUqlbX2s/9SdSwgSWSMmQJQlLQDACRVSM4032tfwcaYKUn32tjn28GHmgccx/EAjCUFS7oateskl6LvAyR3ArjuOM4qgMUgCEr18xoydhzHI7kIYHtScEJ9kzRWD48tmYPUH3fc7VGTvAXgRJujnpd0E52Ouhe5rlsEMNvKkzQZBMGDlhveKhgAjDHnJE0C2A0AJNcBzFprZ/qxfl+VKGPXdU+TvCPpYDSnBuCtpGtBEMwPBDwyMrIrk8msAMi1sL9IGg2C4OuWwa7rFknu2+xLGgVwBQBIvpG0SjInaSIKuUtyJQ4i6VPsb9HzvEO1Wu1dt7tPolQqdbhUKr3/3a830+l0SdJCv6GSFtLpdHfv2BizX9KHmJAx3/eXut1Mx5Jprf0I4H4be64XKJC8gNBxnLMkj0oaIlkl+dpa+xC/ntZ/ddRPAJYBeS3nCdwAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACZklEQVRYhe2WPWhTURSAv3MDCsU0Flyad0OtZBKdFHSqrUPronQVf7bq6OTsoOAiuDlUQajUuYODf2gLBTs4iW5CG7nvGUhBSB2qJPc4NMXYNs+XX6z0m17uOXnn4557Dw/22GVIkqR8Pr9/fX39tqpeBgbrQl9E5LFz7g5Q6YRQKklSX1/fXVW9CaS3hDLAaCaT0XK5PN8JIZMkqbYzcfGpTsjADi2z1uaBl6o63KkiOxYWWQbGnXOf69e37ZD3frLbMgCqOuy9n9y6vk3IGDNXs+8qIrJsjJnbtp7kz0EQOCCISQnDMLStytWT6FCLyKO4uKo+6YQMJLz25XJ5MZ1OexE5wsZV3yRS1QcDAwO3SqVStVNS/xSJzlCz5HK5iWq1etwYkwJQ1YqIvHfOLfRcyFr7VFUvNghPh2F4vWdC2Wx2XERexBYUGY3bqZ2ExFp7ifhr3ogxVZ2oPReAldrzYWCoJvQcmAdC59wsoLFCQRBcAWZakGmFq2EY/jEyEs2hXtKwZd77Y02/TOQ0cKb2s75lQ2y0DWBBVZeMMR8TtawdgiAYA97E5ajqeBRFrxrFE03qpKytra309/cPAicbyMxGUXQv7h3dGowj3vsRVT0AICLfVXUpiqLX3ajXVZraIWvtKVW9D5wA9tWWfwDvROSGc+5Dz4RyuVzWe/8JONggZbVarR4tFouldoQSzyHv/fkYGYBDxpgL7cjA3kf+b/6vj3wAa+2Uqk7/pcg159zDVgQ3SXyoK5XKHLAak/ItlUo9a0emKaFisVgSkbPAWzZmzyY/gUUROVcoFL62K7THruMX8UH2doWhTOgAAAAASUVORK5CYII=',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAvElEQVRIiWNgGOqAEZfEq1fvvP4zMMxiYGCQhgo9+MfImCgpKniAFAuYcEn8Z2CYiWQ4AwMDgwLzf4YuUgxnYEDzwctX7w4zMDDYkGoIGjgiLiZkC+Pg9AG1AJ44eH/qP8N/UxTB/wyPxMWF5EmxAKcP/jIylDEwMNxHmM3wmJHxfzophtMF4AwifICUJExWJJOShIdxMsUHSEnCZPlgUCVhvEFEjRIVbxBRo0Qd5smUGiUqXh8MquQ4YAAA/cdaEG8yvvoAAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACZklEQVRIieWVS2sTURSAv3MbA2K1adJMh0qporRIFTeKogtx49KNVaF0Kfja+AdE3LsUNy6VumjBH9CVoJWCKD66aNVNi5hJmkyLRWU6M8dFU0niNJmkKS767e49d8537mPuhZ2GNBrgum7K8/WKKN0AKuproC9tu2dm28Su66a8NX0LHKwJqYpet7OZx62KTb2g5+vVCCmAoHK3Vel6ggpKpVLXWsArlOGtJI2wzO7q4Gw6nV7Z6KqasefR33YpgDLsefRX11JDPl8cUeQEgIicVtVz5YEvQkCQAdADoAHIgzheQd9YVmayrriSXG7plBjzOnqcTPVa3RfiiKOoe7hsu2cG4QbKwt9OxQOZChJ6rVXpf6XhBRIHxymNYRgB2QOAhj8Exmv3ta1ixymNITyJTq6XN5Mnaju+FYv9CV+H4qv1FgiqumqMmQdQ1UGgU5E7jrO07Cdkbn8ms1hdVK00kDlgd3xxLH75HTpUKa97qreTf/a46aUWcx84A6yKyDxAGIaDItIJTKPhvYZL3Qrlm24iKqbCqJ1NP4usd6tiAMcpXkIYRcy+snJVYcLOpsfbkb+txJrx94J73oT6EOFI+ZsQ+IDq7d7ezPS2iAuFwt5QOxaAVER4KfB/D/T19f3csjifL46AHNpoqzKAcHO9wXsVlkVJIRwvJ3gEFY9IJPq17rOYy5WOiuFjs9XHQUOO2Xb600a76gJJJllEmG27VZhNJmnuP87nVw4rwefN4kaCoWw2O99sLQ2vTMvq+oLwNDoqk61IIebvpKriOMsXjdGTCgkBX1XfWVb6uYiErYh3Hn8Aoz7jhwChCLwAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAACYElEQVRYhe2WPUwTYRjHf88VcRGlhetZNQKJkx+Tg04oDuCicTV+DCbo6ORkYjQ6uTiLJiYSnBkc/IpIYiKDk9EJE8CIcNdCNXGBlPs7tBIa6OVKSyOG33S95997fnne994cbLHJsDih8XFt39mav4u4CGSWC+Ib6Ek6nbpnZoWGCfnZ+fuIGxUD0h3Pa7tdDyEnVqo4mcqY9ddDBtaYUBD8OiCWXgFd9WpSgQkj0ZtO7/q68uaqCUmFcw2QAegq9SpjlZBZ0zAw0QChiVKv8v5x/ukH89+BvRGRaS+d2rdes5XE3NR6HFmGwXrIQMwJSWoKcj9vEuoKxv4VpR/AYM5N3jpktlgvqX+KWBOqFt+f6wOOmFkCQKaCg/PRdZOjDRfy/flnGOfXLIoBz0tda5iQ78/1YvYyKuOYnYya1CohSRYE+Qtmka/5mkjqwayveM0UxmSxQKcZHaWGL4B3EtPpdHLIzBQp5Pv5S5ieViuzLmSXPS9ZdmTEO4caSMUlwzhc9cPMjks6UfyhKckmi02sA9RZyoxKGkN8jrVktTCTzfc40tvIkNTreW2vK5XrumQZNzmCeFhZhqEoGdiggzEI8t0hdBvaUfSw36alMc9rf7MR/TaUqiY0O5s7Zo7zAHEUo7l0e8Hgg8R1z0t9aphQNpvdEyrxBWitEMmFS9sOZjIt2VqEYm/qkMSZCBmAdkssnq1FBrY+8sv4jz7yAWazc/0mG4jKyHR1t9v2aD12f4m9qVVoHgZyEZF8gvB5LTJVCWUyLVmFnDIYARaWC2IReB864WnXdWdqFdpi0/EHT6PfphsnfAUAAAAASUVORK5CYII=',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAAZElEQVRIie2SywmAMBAFg5XlGGw7txRh8NPHeNOAISC7aFgyBcx7h3HOLMAMHNxkwGsO7DxJUmmsSN8SS+ckeiQBSJV3q+aAB5ZCvgFBbeBX+k3YVqYtRsIX/ebYEBrLdOT4CScUtOih0pnzhwAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAABsElEQVRIieWWPWsVQRRAzxUbP/ME23yAISkSsFGUNOIfSOMiRGyNYJV/EKz1XwhpItinE0QQhCDkFRES0JQWBgyIkORYOMb1Zd/uvs3bNDnNzgw798zO3LksnDWi6gW1AzwErqWhfeBdRHxobVVqR932OIfqkzbFTwukf/k6TNGIulEia8qGOpJ3netxjwIzQ/uSf8yk2EccSy41A26l7l3gXmq/Tc9xYAI4AF7WFH+MiNe1l6neSYlUxFrtQE1QF9UvOeEvdU0da1XcFpUFpA7qYyADLqWhH8DKQOfaRFpyjbJ+884XBBoFpgdwP0vPPeBzak8Bl4EldRfYjIid/KT/tjpJN4ELA4jr8BOYzst7C8ipUVRABt3q58AcxVv9HlimYKtPjJqVJNdCv3nDuk4PgEfA1TS0B6xGxMow4p8+6n21m6vbB+q6Otem9Ir6vc8ZflMvNolbVEAy4EZuaBzopPYnYDf1bwLXgRdW/41slZZPdbYkQ0/KbN7VW0B2gG7F6pvQTbHro05WfMlUCws9kr/qI11tGrNWAVEDmAdu8ych94F14E1EHDaVny1+A18+M5El6SIVAAAAAElFTkSuQmCC',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAABp0lEQVRYhe2Wv04UURhHz9UNNhYWbKEWSEIplEi1hAKpMPaGknegg9LwBJLQ8afeByAYQmIoKKlXSVgaE20sJDE5FjPE3XWcGXZ3blayp7qZydzfmfvd+ebCmPuI+kjdVq/t5lLdUmuxhbbNZyu2UO/K9NKuMnxGbRUIDIOWOtOb/yDD6S0wXdkb/2E6zeoiS6gJfK5cJ8lo9vWkelWw/FfDssxaoSx2C+7vDSpyJ9SaumnSdzppq+/ViahCMQlVTKquALPAw/TSL+A8hHBSRV6RzGHO5t+JLfO6RENczJvjr5+iGoB3wPM+nJY6xpfAl3T8AphKxxvqAtAGDkII5s6orpV4y2Gx1ptftg9FI+scsw8IvOxjvgXgdo90lmyKpGwAJ8AZcAEc9JFRHnWpRJmWK5XIkPqQI7Nf9HxVjbEBNIDH6aUfwFkI4aiKvNFBfaV+Um86yvBT/ajOxZZ5pn7P2R9f1fqgOXfpQ6vAk5z7k8CbwXQycHzI7+b/POQDqOslyrA+PN9iobrJl/QvvqlPowmlUrPqsUnvueVGPVXno8qMGRV+A/izV4qRKKWqAAAAAElFTkSuQmCC',
+        },
+    },
+    'help': {
+        'light': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADI0lEQVRIidWVz2sdVRTHP2de3kswfRhwkTD3UjSKCCMu+sSFoJsQQUF8NeAf4C+otVApVRS3gia4VtAuBRdNSbooQltBEMEfz0XbuNCKts4dEwgSmUjea+bNcdE75SbvpdFlDwzcOd9zzvd8D3PPwJ1ucjswSZLGxsZGW0TaqnoIsB5KReRHVV2amJhYWllZufG/Cay1c6o6D0zv0+SvIvJmmqZnhoHRMJ+1dkFVT/vil0XkeL/fT4qiOFAUxYFarfawiBwHrgD3q+qitXZ+j3oDnS8YY9QY0zPGHNknKYrj+DUfq9baD3YH7BiRH8tp4AbwtHPuywqbnp6+u9vtPhlFUR34Nk1TV2HGmBngHNBQ1cNZli0NjChJkoafOar6RljcGPNCr9e7JiJnVXVRVX8zxrxb4c65i6p6AkBEFlqtVr3CatWh0WjMAa8Cl7MsewVQr+oR4AvgLuBr4BLwIDDTbDZ/zvP8CkCe551mszknIg9tbm5eyvP8px0KgMO+g0+BfuVU1VmgDnzknHvCOfcscBQgiqIjQX5fRE75nHblHAkCDgEURXEh8FEUxcf1en11e3v71lxV9SsRQVUPhrFRFJ0vyxIReXQYQQzQ7/evh0lra2v/AJ9V78aYe4BPvNpvwtitra1ro6OjAGYYwb42OTl5H3CBm/fjelmWb4V4WZbiictbqgI8A6jVajtkhzYyMvK5L/69iDyeZdkfIT4+Pn4QQFX/HCBQ1R98kdlhxf1oHgP+7vV6M+E9CBQ85Y/fDRCIyLInepng863MOfcX8KGqvrO+vp4P6aGmqi/689kBNEmShjHmqjFG4zg+OkzF7cxae8yvmF/Ci7Z7VTyvqovcXBXPOOcuhri/veqce2+XP1wV7SzLlitsxyJL0/SMiCwADeBcHMevs3Nc6p/KatbaY1VxEZkPiw8oqEitte+r6kkAVV0RkVNRFJ3vdru/A4yNjd1bluWsqr4kIgmAiMynafo2UIbF9vzhxHHc9moe2CvG21VVPRlu0P9EANBqteqrq6vPqWpbRFoEv0xV7YjI0tTU1HKn09nep4k72P4F25dWcMBRrK4AAAAASUVORK5CYII=',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAEHklEQVRIie2Wz2sdVRTHP2duklbhvbQWNZmZF19rI+KvqrUVLLoQFcVCiuhG0Z24cWM07dJdsf7oH6AudKFgqaaJDYLuRKvUpmL9AUIbNW/utEoUmkEweZk5Lt6d52TyXppSd/pd3Tnn3PM9d+ac7x34r0EuMr4nCIIdIrJFVa8CEJHfVHXGWvsVsPSvEgdBcCswCjwMXNEl7A9gCnjNWvvNJREPDAxcaYw5CDwOeGspEsiAd1R1NI7juYsmrtVqN6nqpKpudqZFYFxVJ4Cv0zRtABhjap7n3a6qI8AeoM/Fz3ieN9JoNL5bM3EYhjcDn6lq1ZkOG2P2zc7OzqxyUmq12rVZlr0MPOJM540xu2ZnZ7+/ILF7vceBOpACe621B1cjLMP3/RdE5ACtzzMD7LTW/l6MMeVN1Wr1dRG5xz2uIPV9//JKpfJ0f3//c9Vq9clKpTK8YcOG0/Pz80kekyTJsUql8peI3A9sBK5OkuRI1xO77p12lR621j5W8l8HfARsKdWbqOoTcRx/WDSGYTiuqnuATERui6LoVO4rd+qosy0aY/YVHfV6fT1wtEAaAT+6dUVE3nOFFTFGqyk9VR0tOorEPbTmFGC83EhLS0sPAcPucb+19hpr7fWum1PgMuD54p4oik4DE+5xt+NYTuz7/k6cOLiRWQYROQWcBb6w1r5Ia16J43hSVT9x+3Z12Jfn2hQEwR3FU7Yq8LzNqpqvT5QTNBqNM4BftgOeiGx0JGnZmWXZCZFWK6lqHfhyGXGWZYN5wMLCwtkOBCtQr9fXLy4uvgnc6UxHyzHNZtP29bU0RUTahbeJRUTztapeUMODINjUbDanRCQnPbWwsPBSOS5N045S2zaKSPuUfX19nV5pEaKqH+BOqqqfAvfOzc0l5cB169YF+VpV7QriLMt+bhs9b/tqrLVa7e5cZFT13cHBwfvKypTDGNPOJSK/rCCO4/g4rasNNyJdkWXZQKHIvdPT081usYVcc+7OXk5M6xKfcus9Q0NDZXVqo7e3dxLYLyLPRFFku8WFYTgM5MRTtOYdWCmZ24CTrqD3rbWPdku6FoRheCQXGCeZ3+a+ZZdEkiS/VqvVrcA24IZKpfJnkiTHuiR9sFqtbp2fnz/dxb9PVZ8FEJG3oih6o+hf0epOU2fchgO+7491Sqyqh1T1UCef7/t7VXW/ezxDS7OXoeO8Dg0N3Zim6edAvyMZN8aMOfXKkz8AEMfxx4VTDgOvFBrqfJqmd507d+6HNREXyCf55zZaBCZEZCJN05NLS0sNgJ6enpoxZrsjGwF685MaY0Y6/X2sSgwtdQJeBZ7i4n723gbGus32BYlzhGF4i/v2u4FNXcLmgCkRea3YvZdEXIAJgmCHqm4WkQEAVT3red5PURSdoDCn/6OMvwFiK7Dy38VWpgAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFJklEQVRYhe1Yb4hUVRT/nTczO7vl7sK47qz3vqnBwKKgwBVC7KNfsnQNaSnS0BD6UGEmVFZoVoYY+SeEPkgEka1Ksa4hfgiKoD+QRBGSBFnTet/bmVYk5uVs4/Pd0wffzNx5O8+ZrD4Unk/33PM79/7uOfeee98Drsl/TOgqfBK5XG6p1nqEmRcTURaAHdrOMvOvRHRSaz0xNTX1BYDgXyFk23YPgI3MvBnAQIdu00T0OoA3lFIz/xghKeUogN0AZIdEoqIAbHIc5/2/S8gSQuwgomcj/ZPMPJFIJI4HQVAIgkABQCKRsBOJRJ6Z72XmEQA5w4cB7HQc5wUA+moIWVLKQwDuN/oUM291XfcdtN8bCSHEOiLajubIHnEc58E4Uom40YQQrxLRozWdmcd9319WKpW+wuXVthP2PO+bdDp9IJVK3QrglrD/tr6+vpTneR93TEhKOUpE+4yuva7rbqhUKtVW+OHh4RQRdXue50dtlUrlYrlcPtLb25shojvD7rv6+/tPlcvl01H8rJTZtt3DzD8gzD8RHVVKrcbsEFthSh4DcEe4uAKAsVQqtatQKPwWxUspxwGsDHWHmRe6rltpArVY8EY0NqOqVqtro2Ty+Xy3lPJDInoLwCI0Ip0HsMX3/W+llAsj4+pqtboGgBvqEsDj0cmjhBLM/FRNYeat09PTv0edfN/fC2C50RUAMNN5I4Bj+Xy+2/Q7d+6cR0TbajoRbUZk2zQRyuVySwHMC9XJ8DQ1iRDiBgAbjEF3zczMZBzHuZ6ZHwBwITTd7Pv++qi/UuptXK5LADAohFgSS0hrvarWZuajaHG0tdZzjFWdUEo9c/78+TKAwHXdw0T0vDHGSNQfQEBEE3UCltWEiaZskQE80WIwFIvF74loDYDdlmVtaAH5xBgj18IOAMcN0sOmIRkBCqP9Y8xgUEodBHCwlY2ZR432VCuM1vonovoBN+ecFaH5tUa1Wi3GEYoRS0r5MoB6yojoUCug7/uOoTbdj9EIdVKBZ4kQ4jrLst6L7JmPwg08S4IgqAeCiJpKSjRC9RCn0+n56EyIiMYiZE5cunTpPsTcd93d3fU0MbNr2qKETONNnbARQqxEo/qCiF5zHGdFqVS6EOdjWdYCQ23aZ1FCX9caWuvl6ECIaLnR3q+UehptXgLMfI/hczKWkNZ6wgCuwhVeAwaubKhtH2C4vG/rEdVaH4slFL6Bp0M1J4RY1270arW6HcBzAB5WSn3aDm/b9no03uAl13W/NO3RCHB/f78FYBkAENFwOp0+UKlULsZNUKlULnqe95nned+1I5PJZPqSyeQHAHoBgJm3e573uYmZddsnk8l9ACZDVabT6cMtiDfJ4OBgNpvNDrbhY/X09LyLRq37paura/8sULSjUCj8AWAzGjXpbiHEnlZYAMhms4OpVOpMMpk8MzQ0NK8VBoBl2/Y+ACtCnYloUzjXlQkBQPh1sLOmE9ETUsrxgYGB3pgJYwtqJpPpk1JOMLP59nlFKTXeCt/ukT8GYNToc4loW1iB60c7m80OEhEXi8VpA5u0bfsRZn4RxpVERGNKqYfiFtH2Myi8n7ZEsGeJ6BiA41rrn33fVwCQSqVsy7IWhHVmJRqnCSGBHY7jbI0j0wkhAIBt26uZeQ+av7P+ikwS0ZNxaTKlbeEDgHK5fHru3LlvBkHgEdHtAOZ0SKTEzC91dXWtnZycPNWJw1X9bBBCLLEsa4SZFwMYQiM1CkCx9rMhLHqxX6nX5H8hfwKFGfqfbzY0hQAAAABJRU5ErkJggg==',
+        },
+        'dark': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAADIklEQVRIid2VzYscVRTFf7dqulcR7enpDxwRHd2NCEZxIehmGCELsYOYhUt1ky/IwkTU/AE6o24VNEtRYQwzLrJJEAQR1ChInJUJaGy16nXmdRtxkZ6uOi66ulM91XZwqRcK3rvn3nvuPcV7D/7rZrPAbalc6/iWZC2M/cBdGdRGfGemzU5tfnPZrP+vCeJ45xnM1oClWzR5BdmpRqNydhoY7HVICuKOX8dsIyt+SdiJNNSy0v4+pf19aaIHhJ0AfgDuw/RJ3PFrkgr1ip13/HrsvOLY34hjf3hWkqQgjv2ROPY3YucVd/wbe2MmJMpk2UD0FQYHmgt3fDbCvPe39xOesNRKYZh8tbCw8OsIi6Leill6DqOM7GCjUdksdLMtlWPnr2TdH8ljzu0cip3vxc4r+/qR656ejPHHMuxHSaXCBM7tHBL2MXCpXqs8ZGbJcCr/IMZFoAR8YdATHABCGc81a/MfZnKF7lr3e8SyoWfr9eoGTPxkOzhktPdHxQEItAqUMN5p1Ocfr9fnn8I4CmDi8DjbLBE6MySz1sg/N1oI2w8iCdML+dGV7L5rYTlS0h/rGlr6eaIAjLsndE7sPAFgPFIgAN0JECbJ1XxOs9n8C/hgtG+3r1eTdPAeAClf5mPDMPk5VQiwOIXg1hZFvXstGFwAlhBXB3N6OY8HQWBpklGPfDdh+w0gCcPJsXNmpo+AJcO+CcP0scVq9Zc8vrtro9zfiwTSRQBLgtVpxdvt61VMjwJ/mA1W8udg3ECoJ4cLvi4QmGlriOlFaShk3hYXb/PI3kK8WqvV/tyLD3PseQCTPi10mB20y7Hzcs4fnTbFLHOue3zaQRtPsGzWR3Zq2A1vR1FvZW+RyHVPR86/VvBHvRVJbwIotZfMbLdAANBoVM5irGOUzdJzzvljk3JJgG7uFDrXPT6+h4y1ZrOyla9ZeA8kBe5a93XEySxiW+gMiZ0PgsFPAGk6dw+hVg17AbGcxa3VFyqvmFmarzfjwem2MK0D9/9TTGaXkZ2ceoPOIsimKXU6/mnJWjIetuzJFLRNfGumzVptfiuv+f/P/gaDC5hAWJxITQAAAABJRU5ErkJggg==',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAAEN0lEQVRIie2W3W8UVRjGf+/MtNQmArvL7GwRImAgJoqiCCaiXnhhMJCUmHijieHO+0rbS++IKOBfwIUkmkiItZXGRO+MRsOHRvxITKSrAbo7s91ZSsMFuzPn9WJntst+0DZ6p+/VmXOe8zzvcz7eOfBfC1kLWFWdIAj3YckORfNNAgkwOpfPZy+JSPSvCgdBbY+KjmE4hJDtnRUhFrMYOeV5mZ/+kXCptORaTuM0yuuAtZokAYPwUdxwxjZvXr+wZuFyOXxcLGaA7QAodRGmjDDtiPkxiqLrAI7jbI3UehplVJQjCIMJxZwaRguF7C+rFi6Xw91i8Q2wPoGdR2XS8zbO3c+q7996BInfA3k16Vo0sR4YGcn9uqJwqbTkWnbjIrANiBGd8Nzc6fsJdidQPYbICZrbM9eoO/u3bFlfbcc4nZMsq/FBIgqik52i8/Pzw7Y9dBR4HothkCsW0RnXdedTjOflTvp+aCGcAHYMDDZOAUf7Og6C2h5FrzQzlfNePvNa+3ilUtll1P4C2NGR75IKbxTc7Of3OK+EUyhHAIPylOdlr7YMtgNVdAywUOqoTLaPFYvFIaPWhTbRG8DvSftBUT6pVCq77nGl9jhKHbBocreiJayqDoZDACJMdR6k4eGNr4DsTJbpeN7NPOzls4+qyCgQAw8YY7/dPief3/AHItNJGodVtbW1LeEgCPenxcEI03SFXAVKwHeum3lHRAxAwc3MAF8lbAe6p2nKlfP98Jm0e/lwWbIdTZpqX+6c73kbrwGbO/tV1QoWahkUUOLOcYv4ssFuftiyDfj+HscYHVmG3y11Zd4jisXiUBDUzqI8CyBwoUdiN9O2oK3E2xyjqWMRWbGG37hxOzewLppNRYGrIvG7nTjbtq2oax3aDxfS7rJrSdtDVWVgMPq0TfTrRt15yXXdpU7sXdWHlufRct9yLEb/JDEaY+9l+ap0RaVy6wXgxSTjj/P5zFERafTC2rG1t1UtDH+l/S3H+Xz2IkqYkI32tdtkKLSIbTPRT7TpSFKuBc/LXuoSFpEIi1kAUY74/q3O6tSKO3duzwgcR3hr06ZNN/vhgmBxJ2girLMi0mO3Ad+vPekHYewHofpB7XxfF6sMvxJ+1uQKo3I53L0S+GwCVt+vHuuHC4LqwSCoHuw/Hk6mPOWgdqZzvOtVETecMaBZLkVO+H443otYkXOKnOuZvB9OKBxPPq811lldHD3va6lUfcyy5VtgQyIzhdrjSfVKyKsvA3he7stll4s7VeL32w7norH1uZFc7rdVCbeJz5D+jZQ6ItOITsdifnCMuQ4QWdbW5pWR0eQgDaROTayjvV4f9xWGpDoNNk6CvMkaHnuKfhjVB8Y7Xx2rFk7D98Mnmv9TOQzk+sAWQGfVyKlCIfvzSpxrfdDbvh/uw5btoEkRkRKxKXpe7nLfe/p/AH8DWwTKnjT0U1AAAAAASUVORK5CYII=',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAAFGUlEQVRYhe2Y3W8UVRjGn3emTUsrH7PbmWkLVYoJxCsT5IbwF/gBxRAbjUjAcKcGkQiiBiSKElQQwq0hQbFgMKUYwoUXxhu4ICReGU3EYluWnTnsbqG2UN2Zx4vu7pyd7nQXPy40vMkmc8553vf85ny8c84C9+0/ZnKvDiRNpcbXkOiDcBUAF8ASACAwKoAPymURDtm2dVFEgn8FaHR0dF5LS/s2AjsAdDTopgT4eHp68mhPT8+dfwzI93P9hBwCsLhBkLiNCbjdcdJn/hYQScNThf0CvFHdgBEKhoQ8bxjhtSAIxgDANM0lYWgspchTAPoE6KkKBxxwbettEQnvGYik4avxUwCf0arHBLLHthedqLc2SJqeym8WyD5oI0vgS9e2nkuCSgTK+vkPqkeGg4Jgk+M4v80FEjel1PwQ5mcg+rRO33ec1FsNB/H9XL/n51n++X7uMEkjSU+yOZPJtM3RbmT9/FEtZuh5uQ21tLNGaHR0dF5zS/tPlfkXnHU6rA3xISZpKJXfTMhLAB4FYAK4RmCgpVkOWpY1Htf7fmEQgnWlqutB8e7y7u7uKV03661bWtq3aYtxTFh8IQ4zPDzc6qnC14R8CmBlCQYAlgqw+/civ1dKLa96c5HQMIKNADKlqsWm2fpyvP8qIJImgdcqQSB7aq2ZtraFnwjwhFYVAJiOAuGhkOa54eHhVt3Ptu0JCvdGlNxB0tQ1VUBKja8BYJeCjtj2ohNxmEw+/yAEW6OgONhkMuXYVjvBZwFMllpWtLUt3BL3dztSxwGMlZwdpQqrE4FIrK88C8/W2tpCPoBoii64dmpXOp2+LSJBp5M+TUi0eyTaWZWqmZhDUT/Vmmog4Uqt4UI8GAB0pdM/QLARlEOGBFvj7UJ+GwWsSowaJ85HejymtzVVC9kdbbymn2sFAwDXTp0EcLJmZ4J+lgsGb9TWBL+Ulw6B7kQgQLqi5+lsElAtK6WBfQQqU0bgVIL2ulas+j42xbX3AlG2TCbT5t8sfAGIth7kG7fDOl5Lb5qmUYxWZ1VKieUh0Ya4pQsNGEkxzdYB/dMA4ALD6aeTvnckK9PEKC/NBhJQayw+3AiQ542v07IvIPjQsa21nZ2dk0k+YWgs0wCq1lls28uVihNET3yJJsKKjsAx107trHsSAJ6sPAsuJwKJcEgrro9n0Zpm4Hb50RSpewAj2QRoIxriXCKQbVsXASgAEKDHU/nN9ToQFvcJ8CYom2zb+q6e3ruZ34LSGRwQz3GsS1Xx4g6+n99F4ECpeN2Q4BHbtifqddSI5XK5BcVAfgQws2HI1103/ZGumfW1n5y8dQTESKm4OKR5ut7UeZ7nZrMTzlwakkYQyOcVGMGvU1O3j8V1s4B6e3vvinAHopz0uKcKiQe0bHbCgTRfFeOPqzduTNhJMJ4qHCGwtlyFULb39vberQsEAI6TPqNNGwR4xfcLg0qp+bX0mCOh5nK5BUoVhgSIzj7ke65rDdbSz3nI91RhQIB+rTpD4V63I3Vc39rZ7IRDgl1d85Xm3+TfLLwI4h2Up2kGfcBxrOdFpOZL1L0GKVV4l8BuXVu6oZ4T4LxhhMNhGI4BgGEYS8LQWFbKM+tQ2U0zbgLut+3UniSYukBl87zcBoocjt2zGjdiBJBXk6ZJt8SbhG6um/7qzuSt5SB2AeI1TiIeiJ1TU7dWNAID/OU/GwqrKegTYlUIdEr0Z8OYAWQpuIwQQ45jXZrrlnrf/hf2J/dXORT6PFLWAAAAAElFTkSuQmCC',
+        },
+        'active': {
+            24: 'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAABzklEQVRIidWVsWqUQRSFz+ySbTZqkVIt7CQGCwUfwEU7ybJKQHwAMUYl2Jm8QKK1TyDaRnwDrRI0RZJCiYKC9oZUicJnsWfh7mR2/z92uTD8/OecuWe43LkjnfRI40igJanrdUXSOVM/JW1KWpO0llI6PLYzcBv4RnV8BXrHSdwAnocEW8ATYBpoe10yth10q0CjjsEg+QHwYNwmH2beWoCVOmUZJL+ecWeAW0APOJtxnWDSHZW8FWo+n3FzwO9QjkNgOdMsmNsFJkoGc6HmzYBfdkKAD8A74K//7wZdE9gxfqdk8Mbk4wx/avxlwO4be59pF42/Khl8MTmd4W3gHtAO2EVrv2faGeOfSwb7JiePkMO6KZcK4HXGnTK+/18GwIXQCD+A8xl/2txeaXOxRJlm3ZoNslY1f6RE8RJ99PfGiORTkq5J2pPUSSn9Kshu+rtRSjBo021CmwY+AS/I7kjgK9u0RX9wATwsJRkXwCPvLV80i3oWHQCdAr8MLBXwOCpmq06yGkwWGL7VS8Cz8N/0yesNO29qBBNc10V3yKTXjLGdoFuhzrgORl3Xsyp2GTVBVf1kTkiaVf/JvKrhJ/OT+k/m25TSn9onP3HxDyxP9wedq+EdAAAAAElFTkSuQmCC',
+            30: 'iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAYAAAA7MK6iAAAABmJLR0QA/wD/AP+gvaeTAAACmElEQVRIie2Wz0tVQRTHv/N0IdWm1KjcpKZo/oSIIqhFhLgpaBOYrVu0LLNVS6F/oUUlFqJZ1qJo3yKCXEWLCH8UUUL2oAwCxcenxZ3nO9439777wl0duDD3nO/5fs/cO3NmpH/NXDVgoFbSUUktkvZ69zdJi5LeOOc2trU6oB+YAPIkW95j+rZDsBG4DxRSBONW8AU0/K1oN7BoCNeAKWAI6AB2+qcDuAhMe0zRFoDuakV7gJ+GZAZoyZDXCjw2eT+ArqyijcCST9wArlZVdcQxYn7PAlCfJemBqfhaIL4DuAJMAk+Bm8CBAG7U8IxXEu03lc4E4u1+BnFbBc4G8E98vAD0pglPmIXUEovVAR+M2GfgvXn/DbTHcg5RWnDhWQO1lPbpVCB+3oiMATnvP+fXAsDtQN5DH/tO1IDKACcM8VAg3gp8BV7FCYAXPu9dIG/Y8B4v+i1BsxnPxQmccwuSQosoJ2m3fy2UzWgr10FJryUpZ5z7zXg5QFBmQJ2kCUnHvOtZAPbFjDcLtzPGjCseHkR787kRfSvpVgCaC/i2OO0syz5pTNRJmjWiLyWdds79CsCbzHhz9lb4oxkfSROWdFLSKT+elHTGOZdPwFquT2XR2HaaTlMFLpiV2lQBO+NxK0BNEiixgcRwdX4vX64g2gaspzYQD+yj1DIfpZFmMaJejm8wPZXAxVkDjKTgBoHBlPgNw3MnS5UNlA6CAnA9AbcKrCbERs2Xmwf2VBT2iV1Eh3jRZoHWGGYAGIj52sznxXMcziQaE7dH4BpRwx8GOoFd/ukELvnVu27w82S9fQTE64F7VH/Zu0uWW0eGAnqBcaKjLclWPCZ99Xqr9kJfo+hC3yxpn3cvS1qSNOecC51O/02S9Acn8e2oM5RhjgAAAABJRU5ErkJggg==',
+            36: 'iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAABmJLR0QA/wD/AP+gvaeTAAADCElEQVRYhe2YvU9UQRTF79vVZIGF2AjGGAu/IBZWNgY/ShWjxkCwMBYImljZKGIrgjFEjYCJf4EJFioaiTHGWGlBKI1oIx8LIlaKJhbIz+K9zd4d3szOW2lIOMkmk51zz5x5d+7MvCeyhlWGIGkAkBaRRhE5KSJ7RaRORLZE3dMiMi8ioyIyLCLvgiD4uzJWlxupALqA7/hjHrgKVKy0mVYgl8CIiWmgZSWMpICbMQNMAv3AYaAeqIp+9dF/A8CUEbME9AKp/zHzKGambYTrqFR8GmiPebJDZZmKeTKPgWwZOtXAU0OrJ6lIqyFw1zUrYD1Q6ehPRSnW6Wv2NVNh5P9JnJlokHPAGLAYcb9E62SDhT+sdHOuSejALmPNLEsTkAFeYMcEsCsmrhqYUbzOUmbShHtHHm0W3gPDwCLwx/hvHMjExHYozjdcBQIcVOTJODKwlUKKAG4BNdFkTgO/VN9Fy6SnFWe/y9AdRbxn4exWnJGY/kuq/6VFY1Bx+lyG3iriEQfvDHAb2BzTt0dpfLDEH1WcNy5DnxVxh5XoAHBDaby2cOoVZ9wltqCIiTZBwrLuphgdFm5WcRZcoj/LMQRUsnw3foWlggiLII8fLuFPirjT00xA8YYHMAJUOWIaFPej7jN34FnV3u5jSERORL88+kTkeBAEvx0x21T7q8vQmGo3eRrSvMEgCDo9bonHVHvUygIOqEc5ZVsDRkyfijnkwV9H8cbY6CKbR0e7xwBZ4BpwthQ34p9X+nOUuhsR3oHzyAHVPgN5mqkBZpX+ZZ+gDOE5pivGmTqgDqgtwUkBz5TuBDGHry24hfASlUe/7dECtYQH6gKw0WFmQOktAae8zCiRXooxHJe+yNCCzVCUpueG1vVEZtSshgyhGcL7TNrg1ppmCKvpgrFmAB4CiV9QtakeI30QbgmDhKd2A2GlZaN2E3Cf4tLOp6m7bDOGsWaWv2clwSRJ14yHqQzQSbh3+GIOuIJvNUn5Hxv2SeFjwyYpfGzIicicFD42vA+CYCnpGGtYVfgHq/8zJZB6jwYAAAAASUVORK5CYII=',
+        },
+    },
+}
+
+
+def _snappy_nav_icon(canvas, name, stroke):
+    """Render a crisp, exact-size sidebar icon with theme-aware coloring.
+
+    Each canvas owns its cached PhotoImage references; they must stay alive
+    or Tk displays an empty icon.  Fall back to native vectors on an old Tk.
+    """
+    try:
+        px = int(getattr(canvas, "_snappy_icon_size", 24))
+        px = px if px in (24, 30, 36) else 24
+        color = str(stroke).lower()
+        if color == "#ffffff":
+            role = "active"
+        elif color == THEMES["dark"]["text"].lower():
+            role = "dark"
+        else:
+            role = "light"
+        token = (name, role, px)
+        cache = getattr(canvas, "_snappy_png_cache", None)
+        if cache is None:
+            cache = {}
+            canvas._snappy_png_cache = cache
+        photo = cache.get(token)
+        if photo is None:
+            encoded = _NAV_ICON_PNG[name][role][px]
+            photo = tk.PhotoImage(master=canvas, data=encoded, format="png")
+            cache[token] = photo
+        canvas.delete("all")
+        canvas.create_image(px / 2, px / 2, image=photo, anchor="center")
+    except (KeyError, ValueError, tk.TclError):
+        _snappy_nav_icon_vector_fallback(canvas, name, stroke)
 
 class ThemeKit:
 
@@ -2781,6 +3174,10 @@ class ThemeKit:
         if role == "bg":
             w.configure(bg=pal["bg"])
         elif role == "tab_bg":
+            w.configure(bg=pal["tab_bg"])
+        elif role == "sidebar_heading":
+            w.configure(bg=pal["tab_bg"], fg=pal["text"])
+        elif role == "sidebar_canvas":
             w.configure(bg=pal["tab_bg"])
         elif role == "bg_text":
             w.configure(bg=pal["bg"], fg=pal["text"])
@@ -3312,9 +3709,16 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
 
-    gw, gh = min(980, max(640, sw - 24)), min(770, max(480, sh - 24))
+    # An ordinary, non-maximizable window.  Size is constrained by the
+    # screen's work area, so low-resolution displays are not cut off.
+    UI_MAX_WIDTH = 1340
+    UI_SIDEBAR_WIDTH = 232
+    gw = min(1260, max(1, sw - 40))
+    gh = min(884, max(1, sh - 75))
     root.geometry("%dx%d" % (gw, gh))
-    root.minsize(min(860, gw), min(640, gh))
+    root.minsize(gw, gh)
+    root.maxsize(gw, gh)
+    root.resizable(False, False)
     try:
         root.iconbitmap(logo.ico_path())
     except Exception:
@@ -3364,9 +3768,26 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.repaint(restyle_tt)
     restyle_tt()
 
-    topbar = tk.Frame(root, bg=pal["card"])
+    # Bounded, horizontally centered workspace: full screen adds neutral
+    # margins, not massive gaps between settings and their controls.
+    shell = tk.Frame(root, bg=pal["bg"])
+    kit.reg(shell, "bg")
+    shell.place(relx=0.5, y=0, anchor="n",
+                width=min(UI_MAX_WIDTH, gw), relheight=1.0)
+
+    def _size_shell(event):
+        if event.widget is not root:
+            return
+        try:
+            shell.place_configure(width=max(1, min(UI_MAX_WIDTH, event.width)))
+        except tk.TclError:
+            pass
+
+    root.bind("<Configure>", _size_shell, add="+")
+
+    topbar = tk.Frame(shell, bg=pal["card"])
     kit.reg(topbar, "card")
-    topbar.pack(fill="x", padx=10, pady=(0, 6))
+    topbar.pack(fill="x", padx=10, pady=(9, 7))
 
     topbar.configure(height=TOPBAR_H)
     topbar.pack_propagate(False)
@@ -3437,27 +3858,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             pass
         close_all("logout")
 
-    _mode_lbl = tk.Label(right, text="", font=F_BOLD, bg=pal["card"],
-                         fg=pal["text"])
-    kit.reg(_mode_lbl, "card_bold")
-
-    def _mode_tick():
-        if not _live(_mode_lbl):
-            return
-        try:
-            m = int(cfg.get("mode", 2))
-        except (TypeError, ValueError):
-            m = 2
-        want = i18n.L("top.mode1" if m == 1 else "top.mode2")
-        try:
-            if _mode_lbl.cget("text") != want:
-                _mode_lbl.configure(text=want)
-        except tk.TclError:
-            return
-        root.after(500, _mode_tick)
-
-    _mode_lbl.pack(side="left", padx=(0, 14))
-    _mode_tick()
     kit.switch_widget(right, kit.toggle).pack(side="left", padx=(0, 10))
     _b_logout = kit.button(right, i18n.L("btn.logout"), do_logout)
     _b_logout.pack(side="left", padx=(0, 18))
@@ -3472,124 +3872,182 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         R(lambda b=_b, k=_k: kit.set_text(b, i18n.L(k)) if _live(b)
           else False)
 
-    bar = tk.Frame(root, bg=pal["tab_bg"])
-    kit.reg(bar, "tab_bg")
-    bar.pack(fill="x", padx=10)
+    # Fixed-width tab sidebar, with its own vertical scrolling on short
+    # screens. All names come from the existing TAB_NAMES/i18n catalogue.
+    workspace = tk.Frame(shell, bg=pal["bg"])
+    kit.reg(workspace, "bg")
+    workspace.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+    sidebar = tk.Frame(workspace, bg=pal["tab_bg"],
+                       width=UI_SIDEBAR_WIDTH)
+    kit.reg(sidebar, "tab_bg")
+    sidebar.pack(side="left", fill="y", padx=(0, 9))
+    sidebar.pack_propagate(False)
+
+    sidebar_cap = tk.Label(sidebar, text=APP_NAME, font=F_TAB,
+                           anchor="w", padx=13, pady=14,
+                           bg=pal["tab_bg"], fg=pal["text"])
+    kit.reg(sidebar_cap, "sidebar_heading")
+    sidebar_cap.pack(fill="x")
+
+    nav_host = tk.Frame(sidebar, bg=pal["tab_bg"])
+    kit.reg(nav_host, "tab_bg")
+    nav_host.pack(fill="both", expand=True, pady=(0, 7))
+    nav_canvas = tk.Canvas(nav_host, bg=pal["tab_bg"], bd=0,
+                           highlightthickness=0, takefocus=0)
+    kit.reg(nav_canvas, "sidebar_canvas")
+    nav_canvas.pack(side="left", fill="both", expand=True)
+    # The scrollbar calls the same guarded wheel handler as the menu:
+    # yview_scroll() alone can shift a short list into blank canvas space.
+    nav_scroll = _SlimScrollbar(nav_host, kit, nav_canvas,
+                                wheel=lambda step: _nav_scroll(step))
+    nav_scroll.pack(side="right", fill="y")
+    nav_canvas.configure(yscrollcommand=nav_scroll.set)
+    nav_content = tk.Frame(nav_canvas, bg=pal["tab_bg"])
+    kit.reg(nav_content, "tab_bg")
+    nav_win = nav_canvas.create_window(0, 0, window=nav_content, anchor="nw")
+
+    def _nav_size():
+        # Requested content height is stable even when the canvas view was
+        # previously scrolled away.  Do not derive it from bbox("all").
+        inner_h = max(1, nav_content.winfo_reqheight())
+        viewport_h = max(1, nav_canvas.winfo_height())
+        return inner_h, viewport_h, max(0, inner_h - viewport_h)
+
+    def _nav_scroll(steps):
+        try:
+            inner_h, viewport_h, travel = _nav_size()
+            if not travel:
+                nav_canvas.yview_moveto(0.0)
+                return
+            y = max(0.0, min(float(travel), nav_canvas.canvasy(0)))
+            y = max(0.0, min(float(travel), y + int(steps) * 45))
+            nav_canvas.yview_moveto(y / inner_h)
+        except (ValueError, tk.TclError):
+            pass
+
+    def _nav_fit(_event=None):
+        try:
+            inner_h, viewport_h, travel = _nav_size()
+            viewport_w = max(1, nav_canvas.winfo_width())
+            nav_canvas.itemconfigure(nav_win, width=viewport_w)
+            # A non-overflowing list has a region equal to its viewport:
+            # no scrollable whitespace exists above or below the menu.
+            nav_canvas.configure(scrollregion=(
+                0, 0, viewport_w, max(inner_h, viewport_h)))
+            if not travel:
+                nav_canvas.yview_moveto(0.0)
+                if nav_scroll.winfo_manager():
+                    nav_scroll.pack_forget()
+            else:
+                if not nav_scroll.winfo_manager():
+                    nav_scroll.pack(side="right", fill="y")
+                y = max(0.0, min(float(travel), nav_canvas.canvasy(0)))
+                nav_canvas.yview_moveto(y / inner_h)
+        except tk.TclError:
+            pass
+
+    nav_canvas.bind("<Configure>", _nav_fit)
+    nav_content.bind("<Configure>", _nav_fit)
+
+    def _nav_wheel(event):
+        d = getattr(event, "delta", 0)
+        count = (-int(d / 120) if d else
+                 (-1 if getattr(event, "num", 0) == 4 else 1))
+        _nav_scroll(count or (-1 if d > 0 else 1))
+        return "break"
+
+    for widget in (nav_canvas, nav_content, sidebar_cap):
+        widget.bind("<MouseWheel>", _nav_wheel)
+        widget.bind("<Button-4>", _nav_wheel)
+        widget.bind("<Button-5>", _nav_wheel)
+
+    main_column = tk.Frame(workspace, bg=pal["card"],
+                           highlightbackground=pal["entry_bd"],
+                           highlightthickness=1)
+    kit.reg(main_column, "panel")
+    main_column.pack(side="left", fill="both", expand=True)
 
     tab_names = list(TAB_NAMES)
     tab_btns = {}
     pages = {}
     current = {"tab": tab_names[0]}
 
-    content_host = tk.Frame(root, bg=pal["card"])
+    content_host = tk.Frame(main_column, bg=pal["card"])
     kit.reg(content_host, "card")
-    content_host.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+    content_host.pack(fill="both", expand=True, padx=7, pady=(0, 7))
+
+    # Each tab uses an identical-size, high-quality outline icon. Choose a
+    # premade asset at the display's DPI instead of resizing one small bitmap.
+    try:
+        _icon_dpi = float(root.tk.call("tk", "scaling")) / (96.0 / 72.0)
+    except (ValueError, tk.TclError):
+        _icon_dpi = 1.0
+    nav_icon_px = min((24, 30, 36), key=lambda n: abs(n - 24 * _icon_dpi))
+    nav_row_px = max(42, nav_icon_px + 16)
 
     def show_tab(name):
+        if name not in pages:
+            return
         current["tab"] = name
-        for tn, b in tab_btns.items():
-            sel = (tn == name)
-            fill = pal["card"] if sel else pal["tab_bg"]
-            b.configure(font=(F_TAB if sel else F_TAB_OFF),
-                        fg=(pal["accent"] if sel else pal["muted"]),
-                        bg=pal["tab_bg"], activebackground=pal["tab_bg"],
-                        activeforeground=(pal["accent"] if sel
-                                          else pal["muted"]),
-                        bd=0)
-            meta = getattr(b, "_tmeta", None)
-            if meta and HAVE_PIL:
-                try:
-                    img = kit.rounded(meta[0], 34 if sel else 28, fill, 6)
-                    b.configure(image=img, compound="center")
-                    b._img = img
-                except Exception:
-                    pass
+        for tn, (surface, ico, label) in tab_btns.items():
+            selected = (tn == name)
+            bg = pal["accent"] if selected else pal["tab_bg"]
+            fg = "#ffffff" if selected else pal["text"]
+            surface.configure(bg=bg)
+            ico.configure(bg=bg)
+            _snappy_nav_icon(ico, tn, fg)
+            label.configure(bg=bg, fg=fg, activebackground=bg,
+                            activeforeground=fg,
+                            font=F_TAB if selected else F_TAB_OFF)
         for tn, pg in pages.items():
             if tn == name:
                 pg.pack(fill="both", expand=True)
             else:
                 pg.pack_forget()
+
     kit.repaint(lambda: show_tab(current["tab"]))
 
-    tab_rows = []
-    for _i in range(len(tab_names)):
-        fr = tk.Frame(bar, bg=pal["tab_bg"])
-        kit.reg(fr, "bg")
-        tab_rows.append(fr)
-
-    def _tab_row(i):
-        return tab_rows[i]
-
     for tn in tab_names:
-        text = "  %s  " % i18n.L("tab." + tn)
-        b = tk.Button(bar, text=text, takefocus=0, bd=0,
-                      highlightthickness=0, relief="flat",
-                      cursor="hand2",
+        surface = tk.Frame(nav_content, bg=pal["tab_bg"], height=nav_row_px,
+                           cursor="hand2")
+        surface.pack(fill="x", padx=(8, 7), pady=(2, 3))
+        surface.pack_propagate(False)
+        ico = tk.Canvas(surface, width=nav_icon_px, height=nav_icon_px, bd=0,
+                        bg=pal["tab_bg"], highlightthickness=0,
+                        takefocus=0, cursor="hand2")
+        ico._snappy_icon_size = nav_icon_px
+        ico.pack(side="left", padx=(12, 10))
+        b = tk.Button(surface, text=i18n.L("tab." + tn), takefocus=1,
+                      bd=0, font=F_TAB_OFF, anchor="w", padx=0, pady=0,
+                      relief="flat", highlightthickness=0, cursor="hand2",
+                      bg=pal["tab_bg"], fg=pal["text"],
                       command=lambda n=tn: show_tab(n))
-        f = tkfont.Font(font=F_TAB)
-        b._tmeta = (int(f.measure(text)) + 12,)
-        b._tabrow = None
-        b._tabside = None
-        tab_btns[tn] = b
+        b.pack(side="left", fill="both", expand=True)
+        for w in (surface, ico):
+            w.bind("<Button-1>", lambda e, n=tn: show_tab(n))
+        for w in (surface, ico, b):
+            w.bind("<MouseWheel>", _nav_wheel)
+            w.bind("<Button-4>", _nav_wheel)
+            w.bind("<Button-5>", _nav_wheel)
+        tab_btns[tn] = (surface, ico, b)
         pages[tn] = tk.Frame(content_host, bg=pal["card"])
         kit.reg(pages[tn], "card")
+        R(lambda b=b, tn=tn: b.configure(text=i18n.L("tab." + tn))
+          if _live(b) else False)
 
-        def _retab(b=b, tn=tn):
-            if not _live(b):
-                return False
-            t = "  %s  " % i18n.L("tab." + tn)
-            b.configure(text=t)
-            b._tmeta = (int(tkfont.Font(font=F_TAB).measure(t)) + 12,)
-            layout_tabs()
-        R(_retab)
+    root.after_idle(_nav_fit)
 
-    def layout_tabs(_event=None):
-        try:
-            avail = bar.winfo_width()
-            if avail < 200:
-                avail = root.winfo_width() - 24
-            if avail < 200:
-                return
-        except Exception:
-            return
-        row = 0
-        used = 0
-        for tn in tab_names:
-            b = tab_btns[tn]
-            w = b._tmeta[0] + 8
-            if used and used + w > avail:
-                row += 1
-                row = min(row, len(tab_rows) - 1)
-                used = 0
-            used += w
-            side = "left"
-            gap = (3, 0)
-            if b._tabrow != row or b._tabside != side:
-                b.pack_forget()
-                b.pack(in_=_tab_row(row), side=side, padx=gap)
-                b._tabrow = row
-                b._tabside = side
-        for i, fr in enumerate(tab_rows):
-            if i <= row:
-                fr.pack(fill="x")
-            else:
-                fr.pack_forget()
-
-    bar.bind("<Configure>", layout_tabs)
-    try:
-        root.after(60, layout_tabs)
-    except Exception:
-        pass
-
-    desc_row = tk.Frame(root, bg=pal["desc_bg"])
+    desc_row = tk.Frame(shell, bg=pal["desc_bg"])
     kit.reg(desc_row, "desc_frame")
-    desc_row.pack(fill="x", padx=10)
+    desc_row.pack(fill="x", padx=(10, 12), pady=(0, 9))
 
     desc_var = tk.StringVar(value=i18n.L("desc.default"))
 
     desc_bar = tk.Label(desc_row, textvariable=desc_var, font=F_DESC,
                         bg=pal["desc_bg"], fg=pal["muted"], anchor="w",
-                        justify="left", padx=12, pady=6, wraplength=660)
+                        justify="left", width=1, padx=9, pady=5,
+                        wraplength=500)
     kit.reg(desc_bar, "desc")
     desc_bar.pack(side="left", fill="both", expand=True)
 
@@ -3597,9 +4055,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def _desc_height(_event=None):
         try:
-            w = desc_row.winfo_width()
+            w = desc_bar.winfo_width()
             if w > 80:
-                want = max(160, w - 24)
+                want = max(70, w - 22)
                 if str(desc_bar.cget("wraplength")) != str(want):
                     desc_bar.configure(wraplength=want)
                 txt = desc_var.get()
@@ -3618,6 +4076,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             pass
 
     desc_row.bind("<Configure>", _desc_height)
+    desc_bar.bind("<Configure>", _desc_height, add="+")
     _desc_height()
 
     desc_src = [None]
@@ -3642,7 +4101,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: kit.set_text(apply_btn, i18n.L("btn.apply"))
       if _live(apply_btn) else False)
 
-    footer = tk.Frame(root, bg=pal["bg"])
+    footer = tk.Frame(shell, bg=pal["bg"])
     kit.reg(footer, "bg")
     footer.pack(fill="x", padx=10, pady=(2, 4))
 
@@ -3821,9 +4280,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     light_dot = light.create_oval(3, 3, 13, 13, fill=pal["amber"],
                                   outline="")
 
-    status_row = tk.Frame(root, bg=pal["status_bg"])
+    status_row = tk.Frame(shell, bg=pal["status_bg"])
     kit.reg(status_row, "status_frame")
-    status_row.pack(fill="x", side="bottom")
+    status_row.pack(fill="x", side="bottom", padx=(10, 12), pady=(0, 9))
 
     sb = tk.Label(status_row, textvariable=status_var, font=F_DESC,
                   anchor="w", bg=pal["status_bg"], fg=pal["muted"],
@@ -3858,80 +4317,54 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     ranges = type(cfg)._RANGES
 
-    def make_row(parent, key, row):
+    def make_row(parent, key, row, column=0, card_layout=False):
         label, desc, kind, choices = META[key]
         if key not in vars_:
             cur = cfg.get(key)
             var = (tk.BooleanVar(value=bool(cur)) if kind == "bool"
-                       else tk.StringVar(value=map_display(key, cur) if kind == "map" else str(cur)))
+                   else tk.StringVar(value=map_display(key, cur)
+                                     if kind == "map" else str(cur)))
             vars_[key] = (kind, var)
             var.trace_add("write", mark_dirty)
         else:
             kind, var = vars_[key]
 
-        cell = tk.Frame(parent, bg=pal["card"])
-        kit.reg(cell, "card")
-        cell.grid(row=row, column=0, sticky="we", padx=10, pady=4)
+        cell = tk.Frame(parent, bg=pal["card"],
+                        highlightbackground=pal["entry_bd"],
+                        highlightthickness=1, padx=9, pady=6)
+        kit.reg(cell, "panel")
+        cell.grid(row=row, column=column, sticky="nsew", padx=4, pady=3)
         cell.columnconfigure(0, weight=1)
 
-        lbl = tk.Label(cell, text=tr_label(key), font=F_BOLD,
-                       bg=pal["card"], fg=pal["text"], anchor="w")
+        lbl = tk.Label(cell, text=_compact_ui_label(key), font=F_BOLD,
+                       bg=pal["card"], fg=pal["text"], anchor="w",
+                       justify="left", wraplength=190)
         kit.reg(lbl, "card_bold")
-        lbl.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        lbl.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         lbl.bind("<Enter>", lambda e, k=key: set_desc(
             lambda: tr_desc(k)))
         lbl.bind("<Leave>", lambda e: set_desc(None))
-        R(lambda l=lbl, k=key: l.configure(text=tr_label(k))
+        R(lambda l=lbl, k=key: l.configure(text=_compact_ui_label(k))
           if _live(l) else False)
 
         if kind == "bool":
-
-            w = kit.bool_switch(cell, var)
+            w = kit.bool_switch(cell, var, word=False)
         elif kind == "map":
-
-            w = _ChoiceDropdown(cell, kit, var=var)
-            w.set_pairs(map_pairs_live(key))
-
+            pairs = map_pairs_live(key)
+            if len(pairs) == 2:
+                w = _MapChoiceSwitch(cell, kit, var, pairs, key=key)
+            elif len(pairs) >= 3:
+                w = _MapChoiceSlider(cell, kit, var, pairs, key=key)
+            else:
+                w = _ChoiceDropdown(cell, kit, var=var)
+                w.set_pairs(pairs)
             def _revals(w=w, k=key):
                 if not _live(w):
                     return False
                 w.set_pairs(map_pairs_live(k))
                 return True
-
             R(_revals)
-
-            if key == "input_backend":
-
-                note = tk.Label(cell, text="", font=F_DESC,
-                                bg=pal["card"], fg=pal["muted"],
-                                anchor="e", justify="right")
-                kit.reg(note, "card_muted")
-                note.grid(row=1, column=0, columnspan=2, sticky="e")
-
-                def _avail_probe(txt=note):
-                    try:
-                        from input import InterceptionBackend
-                        driver_ok = InterceptionBackend.available()
-                    except Exception:
-                        driver_ok = False
-
-                    def _paint(driver_ok=driver_ok, txt=txt):
-                        if not _live(txt):
-                            return False
-                        txt.configure(text=(
-                            "Driver ready."
-                            if driver_ok else
-                            "No driver found here: that choice keeps "
-                            "the standard Windows method."))
-                        return True
-                    try:
-                        root.after(0, _paint)
-                    except Exception:
-                        pass
-
-                threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
-
             w = tk.Frame(cell, bg=pal["card"])
             kit.reg(w, "card")
             _chip_strips[key] = (w, var)
@@ -3944,9 +4377,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                          highlightbackground=pal["entry_bd"],
                          highlightthickness=1)
             kit.reg(w, "entry")
-            capture_button(cell, kit, root, app, key, var, kind,
-                           status_msg, R).grid(row=0, column=2, sticky="ns",
-                                               padx=(6, 0))
+            capture = capture_button(cell, kit, root, app, key, var,
+                                     kind, status_msg, R, action_only=True)
+            _bind_capture_entry(w, capture)
         else:
             rng = ranges.get(key)
             dflt = DEFAULT_CONFIG.get(key)
@@ -3960,20 +4393,22 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                              highlightthickness=1)
                 kit.reg(w, "entry")
         w.grid(row=0, column=1, sticky="e")
+        return cell
 
     def _range_widget(cell, key, var, rng, dflt):
         lo, hi = rng
         integer = not isinstance(dflt, float)
         host = tk.Frame(cell, bg=pal["card"])
         kit.reg(host, "card")
-        sl = _RangeSlider(host, kit, var=var, lo=lo, hi=hi, integer=integer)
+        sl = _RangeSlider(host, kit, var=var, lo=lo, hi=hi,
+                          integer=integer, width=124)
         sl.pack(side="right")
         sl.bind("<Enter>", lambda e, k=key: set_desc(lambda: tr_desc(k)))
         sl.bind("<Leave>", lambda e: set_desc(None))
-        val = tk.Label(host, width=VAL_W, font=F_BASE, anchor="e",
+        val = tk.Label(host, width=6, font=F_BASE, anchor="e",
                        bg=pal["card"], fg=pal["text"])
         kit.reg(val, "card_text")
-        val.pack(side="right", padx=(0, 10))
+        val.pack(side="right", padx=(0, 7))
         val.bind("<Enter>", lambda e, k=key: set_desc(lambda: tr_desc(k)))
         val.bind("<Leave>", lambda e: set_desc(None))
 
@@ -4096,13 +4531,86 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         if scroll:
             bind_wheel(grid)
         kit.reg(grid, "card")
-        grid.pack(fill="x", padx=6, pady=8)
-        grid.columnconfigure(0, weight=1)
-        for i, key in enumerate(keys):
-            make_row(grid, key, i)
+        grid.pack(fill="x", padx=5, pady=5)
+        grid.columnconfigure(0, weight=1, uniform="settings")
+        grid.columnconfigure(1, weight=0)
+        cells = [make_row(grid, key, i, card_layout=True)
+                 for i, key in enumerate(keys)]
+        layout = {"columns": 1}
 
+        def arrange_cards(event=None):
+            width = event.width if event is not None else grid.winfo_width()
+            cols = 2 if width >= 940 else 1
+            if cols == layout["columns"]:
+                return
+            layout["columns"] = cols
+            grid.columnconfigure(1, weight=1 if cols == 2 else 0,
+                                 uniform="settings" if cols == 2 else "")
+            for i, cell in enumerate(cells):
+                cell.grid_configure(row=i // cols, column=i % cols)
+
+        grid.bind("<Configure>", arrange_cards, add="+")
+        return grid
+
+    # Assistance includes the former Advanced and Experimental settings.
+    # Switches (bool + two-choice maps) on the left; numeric and named
+    # sliders (three+ choices) on the right. No duplicate section headings.
+    _exp_screen_keys = ("accent_matcher", "capture_backend")
+    _exp_assist_keys = [k for k in TAB_EXPERIMENTAL
+                        if k not in _exp_screen_keys]
+    _assist_all_keys = list(dict.fromkeys(TAB_ASSIST + TAB_ADV +
+                                          _exp_assist_keys))
+    _assist_switch_keys = [k for k in _assist_all_keys
+                           if META[k][2] == "bool" or
+                           (META[k][2] == "map" and len(META[k][3]) == 2)]
+    _assist_slider_keys = [k for k in _assist_all_keys
+                           if k not in _assist_switch_keys]
     assist_page = pages["assist"]
-    fill_list(assist_page, TAB_ASSIST)
+    assist_host, assist_wheel = _scrollable(assist_page, kit, pal)
+    _FIT.append(assist_host)
+    assist_grid = tk.Frame(assist_host, bg=pal["card"])
+    kit.reg(assist_grid, "card")
+    assist_grid.pack(fill="x", padx=6, pady=(6, 8))
+    assist_wheel(assist_grid)
+    assist_grid.columnconfigure(0, weight=1, uniform="assist_columns")
+    assist_grid.columnconfigure(1, weight=1, uniform="assist_columns")
+
+    assist_switch_cells = [make_row(assist_grid, key, i, column=0,
+                                    card_layout=True)
+                           for i, key in enumerate(_assist_switch_keys)]
+    assist_slider_cells = [make_row(assist_grid, key, i, column=1,
+                                    card_layout=True)
+                           for i, key in enumerate(_assist_slider_keys)]
+
+    def _fit_assist(event=None):
+        width = event.width if event is not None else assist_grid.winfo_width()
+        wide = width >= 820
+        if wide:
+            assist_grid.columnconfigure(0, weight=1,
+                                        uniform="assist_columns")
+            assist_grid.columnconfigure(1, weight=1,
+                                        uniform="assist_columns")
+            for i, cell in enumerate(assist_switch_cells):
+                cell.grid_configure(row=i, column=0)
+            for i, cell in enumerate(assist_slider_cells):
+                cell.grid_configure(row=i, column=1)
+        else:
+            assist_grid.columnconfigure(0, weight=1, uniform="")
+            assist_grid.columnconfigure(1, weight=0, uniform="")
+            for i, cell in enumerate(assist_switch_cells):
+                cell.grid_configure(row=i, column=0)
+            for i, cell in enumerate(assist_slider_cells):
+                cell.grid_configure(row=len(assist_switch_cells) + i, column=0)
+
+    _assist_wide = {"value": None}
+    def _fit_assist_once(event=None):
+        width = event.width if event is not None else assist_grid.winfo_width()
+        wide = width >= 820
+        if _assist_wide["value"] != wide:
+            _assist_wide["value"] = wide
+            _fit_assist(event)
+    assist_grid.bind("<Configure>", _fit_assist_once, add="+")
+    assist_grid.after_idle(_fit_assist_once)
 
     try:
         build_spoofer_page(
@@ -4120,354 +4628,195 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         kit.reg(_sp_error, "card")
         _sp_error.pack(fill="both", expand=True)
 
-    ch_page = pages["reticle"]
-    ch_host, ch_bind = _scrollable(ch_page, kit, pal)
-    _FIT.append(ch_host)
-    ch_grid = tk.Frame(ch_host, bg=pal["card"])
-    kit.reg(ch_grid, "card")
-    ch_grid.pack(fill="x", padx=6, pady=8)
-    ch_grid.columnconfigure(0, weight=1)
-
-    _ch_pv = tk.Canvas(ch_grid, width=240, height=140, bg=pal["entry"],
-                       highlightthickness=1,
-                       highlightbackground=pal["entry_bd"], takefocus=0)
-    _ch_pv.grid(row=0, column=0, pady=(0, 4))
-
-    def _ch_val(key, default=None):
-        try:
-            kind, var = vars_[key]
-            val = var.get()
-            if kind == "map":
-                got = map_value(key, val)
-                return got if got is not None else default
-            if kind == "bool":
-                return bool(val)
-            return val
-        except (KeyError, tk.TclError):
-            pass
-        return cfg.get(key, default)
-
-    def ch_preview():
-        if not _live(_ch_pv):
-            return False
-        try:
-            _ch_pv.configure(bg=pal["entry"],
-                             highlightbackground=pal["entry_bd"])
-            _ch_pv.delete("all")
-            w = _ch_pv.winfo_width()
-            h = _ch_pv.winfo_height()
-            if w < 40 or h < 40:
-                return True
-            try:
-                size = max(1.0, float(_ch_val("reticle_size", 24) or 24))
-            except (TypeError, ValueError):
-                size = 24.0
-            try:
-                gap = max(0.0, float(_ch_val("reticle_gap", 6) or 0))
-            except (TypeError, ValueError):
-                gap = 0.0
-            sc = min(1.0, (min(w, h) - 16) / max(1.0, size + gap * 2 + 16))
-            reticle.render(
-                _ch_pv, w / 2, h / 2, _ch_val("reticle_shape", "cross"),
-                size * sc, gap * sc,
-                int(float(_ch_val("reticle_thickness", 2) or 2)),
-                float(_ch_val("reticle_rotation", 0) or 0),
-                reticle.to_hex(reticle.parse_color(
-                    _ch_val("reticle_color", "0,255,0"))))
-
-            # Show where the reticle will land on screen: centred mode draws at
-            # the screen centre (canvas centre here); custom mode shows the
-            # configured offset from screen centre so the preview matches the
-            # on-screen position instead of always drawing in the middle.
-            try:
-                mode = str(_ch_val("reticle_mode", "center") or "center")
-            except (TypeError, ValueError):
-                mode = "center"
-            if mode.strip().lower() == "custom":
-                try:
-                    px = int(_ch_val("reticle_x", 0) or 0)
-                    py = int(_ch_val("reticle_y", 0) or 0)
-                except (TypeError, ValueError):
-                    px = py = 0
-                sw = _ch_pv.winfo_screenwidth()
-                sh = _ch_pv.winfo_screenheight()
-                if sw > 0 and sh > 0:
-                    scale = min(1.0, (min(w, h) - 16) / max(1.0, float(max(sw, sh))))
-                    ox = w / 2 + (px - sw / 2) * scale
-                    oy = h / 2 + (py - sh / 2) * scale
-                    r0 = max(2.0, 4.0 * sc)
-                    _ch_pv.create_oval(ox - r0, oy - r0, ox + r0, oy + r0,
-                                       fill=pal["accent"], outline="")
-                    _ch_pv.create_text(ox, oy - r0 - 6, anchor="s",
-                                       text="custom", font=F_DESC,
-                                       fill=pal["accent"])
-        except Exception:
-            pass
-        return True
-    kit.repaint(ch_preview)
-
-    for _i, _key in enumerate(TAB_RETICLE):
-        make_row(ch_grid, _key, _i + 1)
-    for _key in TAB_RETICLE:
-        try:
-            vars_[_key][1].trace_add(
-                "write", lambda *_a: ch_preview())
-        except (KeyError, tk.TclError):
-            pass
-    ch_preview()
-
-    _ch_sw = tk.Frame(ch_grid, bg=pal["card"])
-    kit.reg(_ch_sw, "card")
-    _ch_sw.grid(row=len(TAB_RETICLE) + 1, column=0, sticky="we",
-                padx=10, pady=4)
-    _ch_sw_lbl = tk.Label(_ch_sw, text=i18n.L("xh.swatches"), font=F_BOLD,
-                          bg=pal["card"], fg=pal["text"], anchor="w")
-    kit.reg(_ch_sw_lbl, "card_bold")
-    _ch_sw_lbl.pack(side="left", padx=(0, 8))
-    R(lambda l=_ch_sw_lbl: l.configure(text=i18n.L("xh.swatches"))
-      if _live(l) else False)
-    for _tok in ("255,0,0", "0,255,0", "0,128,255", "255,255,0",
-                 "255,0,255", "0,255,255", "255,255,255"):
-        try:
-            _rgb = tuple(int(p) for p in _tok.split(","))
-        except ValueError:
-            continue
-        _b = tk.Button(_ch_sw,
-                       bg="#%02x%02x%02x" % _rgb, activebackground="#%02x%02x%02x" % _rgb,
-                       width=3, relief="solid", borderwidth=1,
-                       cursor="hand2", takefocus=0,
-                       command=lambda t=_tok: vars_["reticle_color"][1].set(t)
-                       if "reticle_color" in vars_ else None)
-        try:
-            kit.reg(_b, "hl")
-        except Exception:
-            pass
-        _b.pack(side="left", padx=2)
-
-    _ch_pos = tk.Frame(ch_grid, bg=pal["card"])
-    kit.reg(_ch_pos, "card")
-    _ch_pos.grid(row=len(TAB_RETICLE) + 2, column=0, sticky="we",
-                 padx=10, pady=4)
-
-    def _ch_to_cursor():
-        if get_cursor_pos is None:
-            status_msg("Cursor position is unavailable on this platform.")
-            return
-        try:
-            x, y = get_cursor_pos()
-        except Exception as exc:
-            status_msg("Could not read the cursor (%r)." % (exc,))
-            return
-        try:
-            vars_["reticle_x"][1].set(str(int(x)))
-            vars_["reticle_y"][1].set(str(int(y)))
-            vars_["reticle_mode"][1].set(
-                map_display("reticle_mode", "custom"))
-        except (KeyError, tk.TclError, ValueError):
-            pass
-
-    _b_cur = kit.button(_ch_pos, i18n.L("xh.set_cursor"), _ch_to_cursor)
-    _b_cur.pack(side="left", padx=(0, 6))
-    R(lambda: kit.set_text(_b_cur, i18n.L("xh.set_cursor"))
-      if _live(_b_cur) else False)
-
-    _ch_pre_lab = tk.Label(_ch_pos, text=i18n.L("xh.preset"), font=F_BOLD,
-                           bg=pal["card"], fg=pal["text"])
-    kit.reg(_ch_pre_lab, "card_bold")
-    _ch_pre_lab.pack(side="left", padx=(6, 4))
-    R(lambda l=_ch_pre_lab: l.configure(text=i18n.L("xh.preset"))
-      if _live(l) else False)
-    _ch_pre_var = tk.StringVar(value="")
-    _ch_pre_box = _ChoiceDropdown(_ch_pos, kit, var=_ch_pre_var,
-                                  width=176,
-                                  on_select=lambda: _ch_pre_load())
-    _ch_pre_box.pack(side="left")
-
-    def _ch_pre_names():
-        try:
-            return sorted(reticle.list_presets())
-        except Exception:
-            return []
-
-    def _ch_pre_sync():
-        if not _live(_ch_pre_box):
-            return False
-        _ch_pre_box.set_pairs([(n, n) for n in _ch_pre_names()])
-        return True
-    R(_ch_pre_sync)
-
-    def _ch_pre_load(_event=None):
-        name = _ch_pre_var.get()
-        try:
-            data = reticle.load_preset(name)
-        except Exception:
-            data = None
-        if not data:
-            return
-        for k, v in data.items():
-            if k not in TAB_RETICLE or k not in vars_:
-                continue
-            try:
-                kind, var = vars_[k]
-                if kind == "map":
-                    var.set(map_display(k, v))
-                elif kind == "bool":
-                    var.set(bool(v))
-                else:
-                    var.set(str(v))
-            except (tk.TclError, ValueError):
-                pass
-        _ch_name_var.set(name)
-
-    _ch_name_var = tk.StringVar(value="")
-    _ch_name = tk.Entry(_ch_pos, textvariable=_ch_name_var, width=14,
-                        font=F_ENTRY, relief="solid", borderwidth=1,
-                        bg=pal["entry"], fg=pal["text"],
-                        insertbackground=pal["text"],
-                        highlightbackground=pal["entry_bd"],
-                        highlightthickness=1)
-    kit.reg(_ch_name, "entry")
-    _ch_name.pack(side="left", padx=(6, 4))
-
-    def _ch_pre_save():
-        name = _ch_name_var.get().strip()
-        if not name:
-            status_msg(i18n.L("xh.preset_name"))
-            return
-        vals = {}
-        for k in TAB_RETICLE:
-            if k in vars_:
-                try:
-                    kind, var = vars_[k]
-                    vals[k] = map_value(k, var.get()) \
-                        if kind == "map" else var.get()
-                except (tk.TclError, ValueError):
-                    pass
-            else:
-                vals[k] = cfg.get(k)
-        try:
-            reticle.save_preset(name, vals)
-        except (OSError, ValueError) as exc:
-            status_msg("Preset not saved (%r)." % (exc,))
-            return
-        _ch_pre_var.set(name)
-        _ch_pre_sync()
-
-    def _ch_pre_delete():
-        name = _ch_pre_var.get().strip() or _ch_name_var.get().strip()
-        if not name:
-            return
-        if not messagebox.askyesno(
-                APP_NAME, i18n.L("st.delete_confirm", name), parent=root):
-            return
-        try:
-            if reticle.delete_preset(name):
-                _ch_pre_var.set("")
-                _ch_pre_sync()
-        except OSError:
-            pass
-
-    _b_save = kit.button(_ch_pos, i18n.L("xh.save"), _ch_pre_save)
-    _b_save.pack(side="left", padx=(0, 6))
-    R(lambda: kit.set_text(_b_save, i18n.L("xh.save"))
-      if _live(_b_save) else False)
-    _b_del = kit.button(_ch_pos, i18n.L("xh.delete"), _ch_pre_delete)
-    _b_del.pack(side="left")
-    R(lambda: kit.set_text(_b_del, i18n.L("xh.delete"))
-      if _live(_b_del) else False)
-    _ch_pre_sync()
-
+    # Screen: compact, left-aligned preview + picker + colour actions.
+    # The original picker functions and config variables remain in use.
     chp = pages["handler"]
     chinner, chbind = _scrollable(chp, kit, pal)
     _FIT.append(chinner)
-    cp = chinner
-
-    cgrid = tk.Frame(cp, bg=pal["card"])
-    kit.reg(cgrid, "card")
-    cgrid.pack(fill="x", padx=6, pady=(8, 2))
-    cgrid.columnconfigure(0, weight=1)
-    for _ri, _ckey in enumerate(TAB_DETECT):
-        make_row(cgrid, _ckey, _ri)
-
-    rgb_vars = {}
-    for _ch, _dflt in (("r", "198"), ("g", "40"), ("b", "40")):
-        rgb_vars[_ch] = tk.StringVar(value=_dflt)
-
-    rgb_cell = tk.Frame(cgrid, bg=pal["card"])
-    kit.reg(rgb_cell, "card")
-    rgb_cell.grid(row=len(TAB_DETECT), column=0, sticky="we", padx=10, pady=4)
-    rgb_cell.columnconfigure(0, weight=1)
-    rgb_lbl = tk.Label(rgb_cell, text=i18n.L("col.rgb.name"),
-                       font=F_BOLD, bg=pal["card"], fg=pal["text"],
-                       anchor="w")
-    kit.reg(rgb_lbl, "card_bold")
-    rgb_lbl.grid(row=0, column=0, sticky="w", padx=(0, 10))
-    rgb_lbl.bind("<Enter>", lambda e: set_desc(
-        lambda: i18n.L("col.rgb.desc")))
-    rgb_lbl.bind("<Leave>", lambda e: set_desc(None))
-    R(lambda l=rgb_lbl: l.configure(text=i18n.L("col.rgb.name"))
-      if _live(l) else False)
-
-    RGB_SLOT = 5 * (CHIP_SW + 2 + 2 * CHIP_PAD)
-    RGB_BW, RGB_BH = RGB_SLOT - 2 * CHIP_PAD - 2, 22
-    rgb_box = tk.Frame(rgb_cell, bg=pal["card"])
-    kit.reg(rgb_box, "card")
-    rgb_box.grid(row=0, column=1, sticky="e")
-    rgb_chips = {}
-    for _ch in ("r", "g", "b"):
-        _bx = tk.Canvas(rgb_box, width=RGB_BW, height=RGB_BH,
-                        bg="#000000", highlightthickness=1,
-                        highlightbackground=pal["entry_bd"], takefocus=0)
-        kit.reg(_bx, "hl")
-        _bx.pack(side="left", padx=CHIP_PAD)
-        rgb_chips[_ch] = _bx
-
-    def paint_rgb_chips():
-        try:
-            vals = {"r": max(0, min(255, int(rgb_vars["r"].get()))),
-                    "g": max(0, min(255, int(rgb_vars["g"].get()))),
-                    "b": max(0, min(255, int(rgb_vars["b"].get())))}
-        except (ValueError, tk.TclError):
-            return
-        for ch, val in vals.items():
-            box = rgb_chips.get(ch)
-            if box is None or not _live(box):
-                continue
-            try:
-                if ch == "r":
-                    box.configure(bg="#%02x0000" % val)
-                elif ch == "g":
-                    box.configure(bg="#00%02x00" % val)
-                else:
-                    box.configure(bg="#0000%02x" % val)
-            except tk.TclError:
-                pass
+    cp = tk.Frame(chinner, bg=pal["card"], highlightthickness=1,
+                  highlightbackground=pal["entry_bd"])
+    kit.reg(cp, "panel")
+    cp.pack(fill="x", padx=10, pady=(7, 10))
 
     host = tk.Frame(cp, bg=pal["card"])
     kit.reg(host, "card")
-    host.pack(fill="x", padx=6, pady=(0, 8))
-
+    # Match the left and right edges of the setting cards below (7+4 px).
+    host.pack(fill="x", padx=11, pady=(9, 4))
+    host.grid_anchor("w")
     host.columnconfigure(0, weight=1)
 
-    left = tk.Frame(host, bg=pal["card"])
+    top_pair = tk.Frame(host, bg=pal["card"])
+    kit.reg(top_pair, "card")
+    top_pair.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    top_pair.columnconfigure(0, weight=1)
+    preview_frame = tk.Frame(top_pair, bg=pal["card"])
+    kit.reg(preview_frame, "card")
+    preview_frame.grid(row=0, column=0, sticky="new", padx=(0, 10))
+    # The preview canvas is the same total height as the square picker, its
+    # 6px separation, and the hue slider (including 1px canvas borders).
+    # Internal canvas height: 200 + 6 + 22 + 2 = 230px.
+    _ch_pv = tk.Canvas(preview_frame, width=230, height=230, bg=pal["entry"],
+                       highlightthickness=1,
+                       highlightbackground=pal["entry_bd"],
+                       highlightcolor=pal["entry_bd"],
+                       bd=0, relief="flat", takefocus=0)
+    _ch_pv.pack(fill="x", anchor="nw")
+
+    # The existing HSV picker appears immediately to the right of the preview.
+    left = tk.Frame(top_pair, bg=pal["card"])
     kit.reg(left, "card")
-    left.grid(row=0, column=0, sticky="nw")
+    left.grid(row=0, column=1, sticky="nw")
+    right = tk.Frame(host, bg=pal["card"])
+    kit.reg(right, "card")
+    right.grid(row=0, column=1, sticky="ne")
 
     SV = 200
     sv_canvas = tk.Canvas(left, width=SV, height=SV, cursor="crosshair",
                           highlightthickness=1,
-                          highlightbackground=pal["entry_bd"], takefocus=0)
-    sv_canvas.pack(anchor="w", pady=(6, 0), padx=(10, 0))
+                          highlightbackground=pal["entry_bd"],
+                          highlightcolor=pal["entry_bd"],
+                          bd=0, relief="flat",
+                          bg=pal["entry"], takefocus=0)
+    sv_canvas.pack(anchor="w", pady=(0, 6))
     kit.reg(sv_canvas, "hl")
     hue_canvas = tk.Canvas(left, width=SV, height=22, cursor="crosshair",
                            highlightthickness=1,
-                           highlightbackground=pal["entry_bd"], takefocus=0)
-    hue_canvas.pack(anchor="w", pady=(6, 0), padx=(10, 0))
+                           highlightbackground=pal["entry_bd"],
+                           highlightcolor=pal["entry_bd"],
+                           bd=0, relief="flat",
+                           bg=pal["entry"], takefocus=0)
+    hue_canvas.pack(anchor="w")
     kit.reg(hue_canvas, "hl")
 
-    right = tk.Frame(host, bg=pal["card"])
-    kit.reg(right, "card")
-    right.grid(row=0, column=1, sticky="ne", padx=(18, 10))
+    def _refresh_screen_outlines():
+        # One identical outline treatment for reticle, square HSV selector,
+        # and hue strip, including after light/dark theme changes.
+        for canvas in (_ch_pv, sv_canvas, hue_canvas):
+            if _live(canvas):
+                canvas.configure(bd=0, relief="flat",
+                                 highlightthickness=1,
+                                 highlightbackground=pal["entry_bd"],
+                                 highlightcolor=pal["entry_bd"])
+        return True
+
+    kit.repaint(_refresh_screen_outlines)
+
+    def _match_reticle_preview_height(_event=None):
+        try:
+            # The picker's outer height includes both canvases and their gap.
+            desired = max(80, left.winfo_reqheight() - 2)
+            if int(_ch_pv.cget("height")) != desired:
+                _ch_pv.configure(height=desired)
+        except (tk.TclError, ValueError):
+            pass
+
+    left.bind("<Configure>", _match_reticle_preview_height, add="+")
+    left.after_idle(_match_reticle_preview_height)
+
+    def _fit_screen_picker(event=None):
+        width = event.width if event is not None else host.winfo_width()
+        # A three-piece row needs: right-side palette ~450, picker ~202,
+        # preview >= 210, and two 10px gaps. Reflow rather than clip.
+        layout = 3 if width >= 885 else (2 if width >= 450 else 1)
+        if layout != getattr(host, "_screen_columns", None):
+            host._screen_columns = layout
+            if layout == 3:
+                host.columnconfigure(0, weight=1)
+                host.columnconfigure(1, weight=0)
+                top_pair.grid_configure(row=0, column=0, sticky="ew",
+                                        padx=(0, 10))
+                top_pair.columnconfigure(0, weight=1)
+                preview_frame.grid_configure(row=0, column=0,
+                                             sticky="new", padx=(0, 10))
+                left.grid_configure(row=0, column=1, sticky="nw", pady=0)
+                right.grid_configure(row=0, column=1, sticky="ne",
+                                     padx=0, pady=0)
+            elif layout == 2:
+                host.columnconfigure(0, weight=1)
+                host.columnconfigure(1, weight=0)
+                top_pair.grid_configure(row=0, column=0, sticky="ew", padx=0)
+                top_pair.columnconfigure(0, weight=1)
+                preview_frame.grid_configure(row=0, column=0,
+                                             sticky="new", padx=(0, 10))
+                left.grid_configure(row=0, column=1, sticky="nw", pady=0)
+                right.grid_configure(row=1, column=0, sticky="w",
+                                     padx=0, pady=(8, 0))
+            else:
+                host.columnconfigure(0, weight=1)
+                host.columnconfigure(1, weight=0)
+                top_pair.grid_configure(row=0, column=0, sticky="ew", padx=0)
+                top_pair.columnconfigure(0, weight=1)
+                preview_frame.grid_configure(row=0, column=0,
+                                             sticky="ew", padx=0)
+                left.grid_configure(row=1, column=0, sticky="nw", pady=(8, 0))
+                right.grid_configure(row=1, column=0, sticky="w",
+                                     padx=0, pady=(8, 0))
+    host.bind("<Configure>", _fit_screen_picker, add="+")
+
+    rgb_vars = {channel: tk.StringVar(value=initial)
+                for channel, initial in (("r", "198"), ("g", "40"), ("b", "40"))}
+
+    # The HSV picker still maintains rgb_vars for the showcase, preset swatches,
+    # colour lists, and reticle colour button. RGB Feedback's redundant visual
+    # row has been removed; it never supplied configuration values.
+    color_rows = tk.Frame(cp, bg=pal["card"])
+    kit.reg(color_rows, "card")
+    color_rows.pack(fill="x", padx=7, pady=(0, 7))
+    color_rows.columnconfigure(0, weight=1)
+
+    # Preserve the original chip-list add/remove handlers and setting keys.
+    make_row(color_rows, "accent_color", 0)
+    make_row(color_rows, "exclude_color", 1)
+
+    # The reticle colour is a single swatch like the other colour controls.
+    # Clicking it copies the HSV picker's currently selected RGB value.
+    reticle_color_var = vars_.get("reticle_color", (None, None))[1]
+    if reticle_color_var is None:
+        reticle_color_var = tk.StringVar(value=str(cfg.get("reticle_color") or "0,255,0"))
+        vars_["reticle_color"] = ("str", reticle_color_var)
+        reticle_color_var.trace_add("write", mark_dirty)
+    reticle_color_cell = tk.Frame(color_rows, bg=pal["card"],
+                                  highlightbackground=pal["entry_bd"],
+                                  highlightthickness=1, padx=9, pady=6)
+    kit.reg(reticle_color_cell, "panel")
+    reticle_color_cell.grid(row=2, column=0, sticky="ew", padx=4, pady=3)
+    reticle_color_cell.columnconfigure(0, weight=1)
+    reticle_color_lbl = tk.Label(reticle_color_cell, text="Reticle color",
+                                 font=F_BOLD, bg=pal["card"], fg=pal["text"],
+                                 anchor="w")
+    kit.reg(reticle_color_lbl, "card_bold")
+    reticle_color_lbl.grid(row=0, column=0, sticky="w")
+    reticle_color_lbl.bind("<Enter>",
+                            lambda e: set_desc(lambda: tr_desc("reticle_color")))
+    reticle_color_lbl.bind("<Leave>", lambda e: set_desc(None))
+    reticle_color_chip_host = tk.Frame(reticle_color_cell, bg=pal["card"])
+    kit.reg(reticle_color_chip_host, "card")
+    reticle_color_chip_host.grid(row=0, column=1, sticky="e")
+    reticle_color_chip = tk.Canvas(reticle_color_chip_host, width=CHIP_SW,
+                                   height=CHIP_SW, takefocus=0,
+                                   highlightthickness=1,
+                                   highlightbackground=pal["entry_bd"])
+    reticle_color_chip.pack(side="left", padx=CHIP_PAD)
+
+    def paint_reticle_color(*_a):
+        try:
+            hx = reticle.to_hex(reticle.parse_color(reticle_color_var.get()))
+        except (TypeError, ValueError):
+            hx = "#00ff00"
+        if _live(reticle_color_chip):
+            reticle_color_chip.configure(bg=hx,
+                                         highlightbackground=pal["entry_bd"])
+        return True
+
+    def set_reticle_from_picker(_event=None):
+        rgb = read_rgb()
+        if rgb is not None:
+            reticle_color_var.set("%d,%d,%d" % rgb)
+        return "break"
+
+    reticle_color_var.trace_add("write", paint_reticle_color)
+    kit.repaint(paint_reticle_color)
+    paint_reticle_color()
 
     PRESET_SW, PRESET_PAD = 24, 2
     PRESET_SPAN = (len(COLOR_PRESETS) * (PRESET_SW + 2 + 2 * PRESET_PAD)
@@ -4475,20 +4824,60 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     SHOW_W = PRESET_SPAN - 2
     BTN_GAP = 6
     BTN_W = (PRESET_SPAN - BTN_GAP) // 2
-    LEFT_H = 6 + (SV + 2) + 6 + (22 + 2)
-    SHOW_H = (LEFT_H - 8
-              - (8 + PRESET_SW + 2 + 8)
-              - 2 * (kit.BTN_H + 6)
-              - (4 + PRESET_SW + 2))
-    prev = tk.Canvas(right, width=SHOW_W, height=SHOW_H, bg="#c62828",
+    # Budget the entire right-hand stack against the HSV picker height.
+    # Crucially the suggested colours have a PERMANENT 26px slot, even
+    # before any suggestions have been loaded. The top row must never grow
+    # when that slot is populated, or the preview/picker edges will shift.
+    PICKER_TOTAL_H = (SV + 2) + 6 + (22 + 2)
+    SWATCH_TOTAL_H = (PRESET_SW + 2) + 8 + 8
+    # Use the normal button height as the initial layout budget. Some Tk
+    # builds add a further 1-2px border on top of that, so the showcase is
+    # also fitted against the REAL swatch row geometry below.
+    ACTION_TOTAL_H = kit.BTN_H + 6
+    SUG_SLOT_H = PRESET_SW + 2
+    SUG_TOTAL_H = SUG_SLOT_H + 4
+    SHOW_INNER_H = max(60, PICKER_TOTAL_H - SWATCH_TOTAL_H
+                       - 2 * ACTION_TOTAL_H - SUG_TOTAL_H - 2)
+    prev = tk.Canvas(right, width=SHOW_W, height=SHOW_INNER_H, bg="#c62828",
                      highlightthickness=1,
                      highlightbackground=pal["entry_bd"])
-    prev.pack(anchor="e", padx=(0, PRESET_PAD), pady=(6, 0))
+    prev.pack(anchor="w", fill="x", padx=(0, PRESET_PAD), pady=0)
     kit.reg(prev, "hl")
+
+    # Keep the original picker action inside the colour showcase. Its button
+    # is now as tall as the other UI buttons and only as wide as its caption
+    # needs, with the same 7px rounded corners. A canvas window lets us
+    # centre it horizontally while preserving a bottom inset on resize.
+    _reticle_picker_text = "Set as reticle color"
+    _reticle_picker_font = tkfont.Font(font=F_BTN)
+    _reticle_picker_ideal_width = _reticle_picker_font.measure(
+        _reticle_picker_text) + 40  # 5px more breathing room on each side
+    _b_reticle_picker = tk.Button(
+        prev, text=_reticle_picker_text, command=set_reticle_from_picker,
+        font=F_BTN, relief="flat", bd=0, highlightthickness=0,
+        compound="center", padx=0, pady=0, takefocus=1,
+        cursor="hand2")
+    _reticle_picker_window = prev.create_window(
+        1, 1, window=_b_reticle_picker, anchor="s", tags="reticle_action")
+
+    def _picked_button_colors(rgb):
+        # WCAG relative luminance: invert the colour's brightness to obtain
+        # a neutral grayscale button, then choose readable black/white text.
+        def linear(channel):
+            x = channel / 255.0
+            return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+
+        r, g, b = rgb
+        luminance = (0.2126 * linear(r) +
+                     0.7152 * linear(g) + 0.0722 * linear(b))
+        shade = int(round(32 + (1.0 - luminance) * 205))
+        bg = "#%02x%02x%02x" % (shade, shade, shade)
+        fg = "#000000" if shade >= 118 else "#ffffff"
+        return bg, fg
 
     sw_row = tk.Frame(right, bg=pal["card"])
     kit.reg(sw_row, "card")
-    sw_row.pack(anchor="e", pady=(8, 8))
+    sw_row.pack(anchor="w", pady=(8, 8))
 
     picker = {"h": 0.02, "s": 0.8, "v": 0.8, "lock": False}
     sv_photo = [None]
@@ -4588,7 +4977,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                                                   width=2, tags="hmark")
 
     def paint_preview(*_a):
-        paint_rgb_chips()
         try:
             r = max(0, min(255, int(rgb_vars["r"].get())))
             g = max(0, min(255, int(rgb_vars["g"].get())))
@@ -4598,15 +4986,45 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         hx = "#%02x%02x%02x" % (r, g, b)
         try:
             prev.configure(bg=hx)
-            prev.delete("all")
+            # Never delete the embedded button when the picker changes colour.
+            prev.delete("hex_value")
             lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-
-            prev.create_text(int(prev.cget("width")) // 2,
-                             int(prev.cget("height")) // 2,
-                             text=hx, font=F_BTN,
-                             fill="#ffffff" if lum < 0.55 else "#1b1b1b")
+            w = max(1, prev.winfo_width())
+            h = max(1, prev.winfo_height())
+            # Natural-width, centered button with a little margin to the
+            # showcase edges and bottom. The height matches ThemeKit buttons.
+            bottom_gap = 7
+            action_h = kit.BTN_H
+            action_w = min(_reticle_picker_ideal_width, max(1, w - 20))
+            action_top = max(0, h - bottom_gap - action_h)
+            prev.create_text(w / 2, action_top / 2, text=hx,
+                             font=F_BTN,
+                             fill="#ffffff" if lum < 0.55 else "#1b1b1b",
+                             tags="hex_value")
+            prev.coords(_reticle_picker_window, w / 2, h - bottom_gap)
+            prev.itemconfigure(_reticle_picker_window,
+                               width=action_w, height=action_h)
+            bg, fg = _picked_button_colors((r, g, b))
+            _b_reticle_picker.configure(bg=hx, fg=fg,
+                                        activebackground=hx,
+                                        activeforeground=fg,
+                                        disabledforeground=fg)
+            if HAVE_PIL:
+                # Same rounded background as the application's other buttons.
+                # Retain the photo reference so Tk does not discard it.
+                image = kit.rounded(action_w, action_h, bg, 7)
+                _b_reticle_picker.configure(image=image)
+                _b_reticle_picker._img = image
+            else:
+                # Without Pillow, keep the text legible (Tk has no native
+                # rounded button corners) instead of hiding the control.
+                _b_reticle_picker.configure(bg=bg, activebackground=bg,
+                                            image="")
         except tk.TclError:
             pass
+
+    prev.bind("<Configure>", paint_preview, add="+")
+    kit.repaint(paint_preview)
 
     def push_to_entries():
         picker["lock"] = True
@@ -4682,7 +5100,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     add_row = tk.Frame(right, bg=pal["card"])
     kit.reg(add_row, "card")
-    add_row.pack(anchor="e", pady=(0, 6))
+    # Place action buttons closer to the bottom of the square HSV picker.
+    # Transfer 6px of the existing space below the buttons to above them.
+    # The suggestion strip's top/bottom position is unchanged.
+    add_row.pack(anchor="w", pady=(0, 12))
     _TARGET_KEY = {"accent": "accent_color", "exclude": "exclude_color"}
     _TARGET_NAME = {"accent": i18n.L("col.accent"),
                     "exclude": i18n.L("col.exclude")}
@@ -4736,7 +5157,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     auto_row = tk.Frame(right, bg=pal["card"])
     kit.reg(auto_row, "card")
-    auto_row.pack(anchor="e", pady=(0, 6))
+    auto_row.pack(anchor="w", pady=(0, 0))
 
     def pick_from_screen():
         status_msg(i18n.L("st.pick_wait"))
@@ -4765,9 +5186,47 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
       if _live(pick_btn) else False)
 
     SUG_N = 15
-    sug_row = tk.Frame(right, bg=pal["card"])
+    # Reserve the swatch strip's height in both its empty and populated
+    # states. Disabling geometry propagation stops asynchronously returned
+    # suggestions from expanding this right column and pushing Screen down.
+    sug_row = tk.Frame(right, bg=pal["card"], height=SUG_SLOT_H)
     kit.reg(sug_row, "card")
-    sug_row.pack(anchor="e", pady=(4, 0))
+    sug_row.pack(anchor="w", fill="x", pady=(4, 0))
+    sug_row.pack_propagate(False)
+
+    def _align_suggestion_row():
+        """Fit the colour showcase to the picker at the current Tk/DPI scale.
+
+        The suggestion strip has a permanent height, so the position stays
+        fixed whether it has zero or fifteen colours. Native Tk buttons can
+        request a slightly different height on Windows than on other systems;
+        grow the showcase by that difference instead of using a fixed guess.
+        """
+        try:
+            if not (_live(prev) and _live(left) and _live(right)):
+                return False
+            # Only these two columns share a top/bottom edge in the wide layout.
+            if getattr(host, "_screen_columns", 3) != 3:
+                return True
+            delta = left.winfo_reqheight() - right.winfo_reqheight()
+            if delta and abs(delta) <= 32:
+                height = max(60, int(prev.cget("height")) + delta)
+                if height != int(prev.cget("height")):
+                    prev.configure(height=height)
+        except (tk.TclError, ValueError):
+            return False
+        return True
+
+    # Run once after geometry settles, and also after native size / DPI
+    # changes. Matching requested sizes avoids disturbing the selected colour
+    # or recreating the suggestion swatches on each canvas redraw.
+    right.bind("<Configure>",
+               lambda _e: right.after_idle(_align_suggestion_row), add="+")
+    left.bind("<Configure>",
+              lambda _e: left.after_idle(_align_suggestion_row), add="+")
+    right.after_idle(_align_suggestion_row)
+    kit.repaint(lambda: (right.after_idle(_align_suggestion_row), True)[1]
+                if _live(right) else False)
 
     def _show_suggestions(sug):
         if not _live(sug_row):
@@ -4846,6 +5305,125 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     render_sv()
     entries_changed()
 
+    def _ch_val(key, default=None):
+        try:
+            kind, var = vars_[key]
+            val = var.get()
+            if kind == "map":
+                got = map_value(key, val)
+                return got if got is not None else default
+            if kind == "bool":
+                return bool(val)
+            return val
+        except (KeyError, tk.TclError):
+            pass
+        return cfg.get(key, default)
+
+    def ch_preview():
+        if not _live(_ch_pv):
+            return False
+        try:
+            _ch_pv.configure(bg=pal["entry"],
+                             highlightbackground=pal["entry_bd"])
+            _ch_pv.delete("all")
+            w = _ch_pv.winfo_width()
+            h = _ch_pv.winfo_height()
+            if w < 40 or h < 40:
+                return True
+            try:
+                size = max(1.0, float(_ch_val("reticle_size", 24) or 24))
+            except (TypeError, ValueError):
+                size = 24.0
+            try:
+                gap = max(0.0, float(_ch_val("reticle_gap", 6) or 0))
+            except (TypeError, ValueError):
+                gap = 0.0
+            sc = min(1.0, (min(w, h) - 16) / max(1.0, size + gap * 2 + 16))
+            _ch_pv.create_line(w / 2, 0, w / 2, h, fill=pal["entry_bd"], dash=(2, 3))
+            _ch_pv.create_line(0, h / 2, w, h / 2, fill=pal["entry_bd"], dash=(2, 3))
+            existing = set(_ch_pv.find_all())
+            reticle.render(
+                _ch_pv, w / 2, h / 2, _ch_val("reticle_shape", "cross"),
+                size * sc, gap * sc,
+                int(float(_ch_val("reticle_thickness", 2) or 2)),
+                float(_ch_val("reticle_rotation", 0) or 0),
+                reticle.to_hex(reticle.parse_color(
+                    _ch_val("reticle_color", "0,255,0"))))
+            drawn = [item for item in _ch_pv.find_all() if item not in existing]
+            if drawn:
+                bounds = _ch_pv.bbox(*drawn)
+                if bounds:
+                    dx = w / 2.0 - (bounds[0] + bounds[2]) / 2.0
+                    dy = h / 2.0 - (bounds[1] + bounds[3]) / 2.0
+                    for item in drawn:
+                        _ch_pv.move(item, dx, dy)
+
+        except Exception:
+            pass
+        return True
+    kit.repaint(ch_preview)
+    _ch_pv.bind("<Configure>", lambda _event: ch_preview(), add="+")
+
+
+    # Other Screen settings: switches left, numeric / named sliders right.
+    # The colour lists and reticle colour were already placed above.
+    _screen_reticle_keys = [k for k in TAB_RETICLE
+                            if k != "reticle_color"]
+    _screen_option_keys = list(dict.fromkeys(
+        _screen_reticle_keys
+        + [k for k in TAB_DETECT if k not in ("accent_color", "exclude_color")]
+        + list(TAB_COLOR)
+        + list(_exp_screen_keys)
+    ))
+    _screen_switch_keys = [k for k in _screen_option_keys
+                           if META[k][2] == "bool" or
+                           (META[k][2] == "map" and len(META[k][3]) == 2)]
+    _screen_slider_keys = [k for k in _screen_option_keys
+                           if k not in _screen_switch_keys]
+    screen_grid = tk.Frame(cp, bg=pal["card"])
+    kit.reg(screen_grid, "card")
+    screen_grid.pack(fill="x", padx=7, pady=(2, 8))
+    screen_grid.columnconfigure(0, weight=1, uniform="screen_columns")
+    screen_grid.columnconfigure(1, weight=1, uniform="screen_columns")
+    screen_switch_cells = [make_row(screen_grid, k, i, column=0,
+                                    card_layout=True)
+                           for i, k in enumerate(_screen_switch_keys)]
+    screen_slider_cells = [make_row(screen_grid, k, i, column=1,
+                                    card_layout=True)
+                           for i, k in enumerate(_screen_slider_keys)]
+
+    _screen_wide = {"value": None}
+    def _fit_screen_options(event=None):
+        width = event.width if event is not None else screen_grid.winfo_width()
+        wide = width >= 820
+        if wide == _screen_wide["value"]:
+            return
+        _screen_wide["value"] = wide
+        if wide:
+            screen_grid.columnconfigure(0, weight=1, uniform="screen_columns")
+            screen_grid.columnconfigure(1, weight=1, uniform="screen_columns")
+            for i, cell in enumerate(screen_switch_cells):
+                cell.grid_configure(row=i, column=0)
+            for i, cell in enumerate(screen_slider_cells):
+                cell.grid_configure(row=i, column=1)
+        else:
+            screen_grid.columnconfigure(0, weight=1, uniform="")
+            screen_grid.columnconfigure(1, weight=0, uniform="")
+            for i, cell in enumerate(screen_switch_cells):
+                cell.grid_configure(row=i, column=0)
+            for i, cell in enumerate(screen_slider_cells):
+                cell.grid_configure(row=len(screen_switch_cells) + i, column=0)
+
+    screen_grid.bind("<Configure>", _fit_screen_options, add="+")
+    screen_grid.after_idle(_fit_screen_options)
+    for _key in TAB_RETICLE:
+        try:
+            vars_[_key][1].trace_add("write", lambda *_a: ch_preview())
+        except (KeyError, tk.TclError):
+            pass
+    ch_preview()
+
+
     def mac_head(parent, key):
         h = tk.Label(parent, text=i18n.L(key), font=F_BOLD,
                      bg=pal["card"], fg=pal["text"], anchor="w")
@@ -4862,11 +5440,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             var.trace_add("write", mark_dirty)
         else:
             var = vars_[key][1]
-        host = parent
-        if kind in CAPTURE_KINDS:
-            host = tk.Frame(parent, bg=pal["card"])
-            kit.reg(host, "card")
-        en = tk.Entry(host, textvariable=var, width=width,
+        en = tk.Entry(parent, textvariable=var, width=width,
                       font=F_ENTRY, relief="solid", borderwidth=1,
                       bg=pal["entry"], fg=pal["text"],
                       insertbackground=pal["text"],
@@ -4876,149 +5450,162 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         en.bind("<Enter>", lambda e, k=desc_key: set_desc(
             lambda: tr_desc(k)))
         en.bind("<Leave>", lambda e: set_desc(None))
-        if kind not in CAPTURE_KINDS:
-            return en
-        en.pack(side="left")
-        capture_button(host, kit, root, app, key, var, kind,
-                       status_msg, R).pack(side="left", fill="y", padx=(4, 0))
-        return host
+        if kind in CAPTURE_KINDS:
+            capture = capture_button(parent, kit, root, app, key, var,
+                                     kind, status_msg, R, action_only=True)
+            _bind_capture_entry(en, capture)
+        return en
 
     def macro_word(parent, key, desc_key):
         w = tk.Label(parent, text=i18n.L(key), font=F_DESC,
                      bg=pal["card"], fg=pal["muted"])
         kit.reg(w, "card_muted")
-        w.pack(side="left", padx=(0, 6))
-        R(lambda: w.configure(text=i18n.L(key)) if _live(w) else False)
+        R(lambda w=w, k=key: w.configure(text=i18n.L(k))
+          if _live(w) else False)
         w.bind("<Enter>", lambda e, k=desc_key: set_desc(
             lambda: tr_desc(k)))
         w.bind("<Leave>", lambda e: set_desc(None))
         return w
 
-    kbp = pages["keyboard"]
-    kinner, kbind = _scrollable(kbp, kit, pal)
-    _FIT.append(kinner)
-    kgrid = tk.Frame(kinner, bg=pal["card"])
-    kit.reg(kgrid, "card")
-    kgrid.pack(fill="x", padx=6, pady=8)
-    kgrid.columnconfigure(0, weight=1)
-    for _ki, _kkey in enumerate(TAB_KEYBOARD):
-        make_row(kgrid, _kkey, _ki)
+    # Both device pages share a 13-row grid.  Each row has the same height in
+    # both columns, so the five-row recording library starts exactly at
+    # Classic mode (row 5), and the Play binding ends alongside Play #5.
+    # Nothing about the configuration variables, stores or callbacks changes.
+    _RECORD_FIELDS = ("key_record", "key_record_stop", "key_play")
+    _PAD_RECORD_FIELDS = ("pad_record", "pad_record_stop", "pad_play")
+    _KEY_LEFT_FIELDS = [k for k in TAB_KEYBOARD if k not in _RECORD_FIELDS]
+    _PAD_LEFT_FIELDS = [k for k in TAB_CONTROLLER if k not in _PAD_RECORD_FIELDS]
+    assert len(_KEY_LEFT_FIELDS) == 11
+    assert len(_PAD_LEFT_FIELDS) == 11
+    assert _KEY_LEFT_FIELDS[-1] == "key_play5"
+    assert _PAD_LEFT_FIELDS[-1] == "pad_play5"
 
+    def _binding_workspace(tab_id):
+        inner, bind_wheel = _scrollable(pages[tab_id], kit, pal)
+        _FIT.append(inner)
+        grid = tk.Frame(inner, bg=pal["card"])
+        kit.reg(grid, "card")
+        grid.pack(fill="x", padx=8, pady=8)
+        grid.columnconfigure(0, weight=1, uniform="binding_columns")
+        grid.columnconfigure(1, weight=1, uniform="binding_columns")
+        return inner, bind_wheel, grid
 
+    kinner, kbind, kgrid = _binding_workspace("keyboard")
+    keyboard_cells = [make_row(kgrid, key, row, column=0)
+                      for row, key in enumerate(_KEY_LEFT_FIELDS)]
 
-    ctrlp = pages["controller"]
-    cinner, cbind = _scrollable(ctrlp, kit, pal)
-    _FIT.append(cinner)
-    cgrid = tk.Frame(cinner, bg=pal["card"])
-    kit.reg(cgrid, "card")
-    cgrid.pack(fill="x", padx=6, pady=8)
-    cgrid.columnconfigure(0, weight=1)
-    for _pi, _pkey in enumerate(TAB_CONTROLLER):
-        make_row(cgrid, _pkey, _pi)
-    macp = pages["macros"]
-    macinner, macbind = _scrollable(macp, kit, pal)
-    _FIT.append(macinner)
-    mbody = tk.Frame(macinner, bg=pal["card"])
-    kit.reg(mbody, "card")
-    mbody.pack(fill="both", expand=True, padx=14, pady=8)
+    cinner, cbind, cgrid = _binding_workspace("controller")
+    controller_cells = [make_row(cgrid, key, row, column=0)
+                        for row, key in enumerate(_PAD_LEFT_FIELDS)]
 
-    mtop = tk.Frame(mbody, bg=pal["card"])
-    kit.reg(mtop, "card")
-    mtop.pack(fill="x")
-    mtop.columnconfigure(0, weight=1, uniform="macrow")
-    mtop.columnconfigure(1, weight=1, uniform="macrow")
-    mbot = tk.Frame(mbody, bg=pal["card"])
-    kit.reg(mbot, "card")
-    mbot.pack(fill="x", pady=(16, 0))
-    mbot.columnconfigure(0, weight=1, uniform="macrow")
-    mbot.columnconfigure(1, weight=1, uniform="macrow")
+    # The five macro cards occupy the first five rows of the right column.
+    def _macro_card(parent, index, is_pad):
+        row = tk.Frame(parent, bg=pal["card"],
+                       highlightbackground=pal["entry_bd"],
+                       highlightthickness=1, padx=8, pady=6)
+        kit.reg(row, "panel")
+        row.grid(row=index - 1, column=1, sticky="nsew", padx=4, pady=3)
+        row.columnconfigure(1, weight=1)
+        row.columnconfigure(3, weight=1)
+        prefix = "pad_macro" if is_pad else "macro"
+        key = "%s%d_key" % (prefix, index)
+        action = "%s%d_action" % (prefix, index)
+        title_key = "mac.pad_row" if is_pad else "mac.row"
+        caption = tk.Label(row, text=i18n.L(title_key, index), font=F_BOLD,
+                           bg=pal["card"], fg=pal["text"], anchor="w")
+        kit.reg(caption, "card_bold")
+        caption.grid(row=0, column=0, sticky="w", padx=(0, 7))
+        R(lambda w=caption, k=title_key, n=index:
+          w.configure(text=i18n.L(k, n)) if _live(w) else False)
+        caption.bind("<Enter>", lambda e, k=key: set_desc(lambda: tr_desc(k)))
+        caption.bind("<Leave>", lambda e: set_desc(None))
 
-    mleft = tk.Frame(mtop, bg=pal["card"])
-    kit.reg(mleft, "card")
-    mleft.grid(row=0, column=0, sticky="nw")
-    mac_head(mleft, "mac.keys_head")
-    for i in range(1, MACRO_SLOTS + 1):
-        row = tk.Frame(mleft, bg=pal["card"])
-        kit.reg(row, "card")
-        row.pack(fill="x", pady=6)
+        # Grid only affects presentation: same vars_, capture handlers and
+        # input/action configuration keys are used for both macro libraries.
+        binding_kind = "pad" if is_pad else "combo"
+        action_kind = "padkey" if is_pad else "combo"
+        macro_entry(row, key, 8, key, binding_kind).grid(
+            row=0, column=1, sticky="ew", padx=(0, 7))
+        macro_word(row, "mac.sends", action).grid(
+            row=0, column=2, sticky="w", padx=(0, 7))
+        macro_entry(row, action, 10, action, action_kind).grid(
+            row=0, column=3, sticky="ew")
+        return row
 
-        lb = tk.Label(row, text=i18n.L("mac.row", i), font=F_BOLD,
-                      width=8, bg=pal["card"], fg=pal["text"],
-                      anchor="w")
-        kit.reg(lb, "card_bold")
-        lb.pack(side="left")
-        R(lambda l=lb, n=i: l.configure(text=i18n.L("mac.row", n))
-          if _live(l) else False)
-        mkey = "macro%d_key" % i
-        mact = "macro%d_action" % i
-        lb.bind("<Enter>", lambda e, k=mkey: set_desc(
-            lambda: tr_desc(k)))
-        lb.bind("<Leave>", lambda e: set_desc(None))
+    keyboard_macro_cards = [_macro_card(kgrid, i, False)
+                            for i in range(1, MACRO_SLOTS + 1)]
+    controller_macro_cards = [_macro_card(cgrid, i, True)
+                              for i in range(1, MACRO_SLOTS + 1)]
 
-        macro_entry(row, mkey, 10, mkey, "combo").pack(side="left",
-                                                       padx=(0, 8))
-        macro_word(row, "mac.sends", mact)
-        macro_entry(row, mact, 13, mact, "combo").pack(side="left")
-
-    cleft = tk.Frame(mbot, bg=pal["card"])
-    kit.reg(cleft, "card")
-    cleft.grid(row=0, column=0, sticky="nw")
-    mac_head(cleft, "mac.pad_head")
-    for i in range(1, MACRO_SLOTS + 1):
-        prow = tk.Frame(cleft, bg=pal["card"])
-        kit.reg(prow, "card")
-        prow.pack(fill="x", pady=6)
-
-        plb = tk.Label(prow, text=i18n.L("mac.pad_row", i), font=F_BOLD,
-                       width=8, bg=pal["card"], fg=pal["text"], anchor="w")
-        kit.reg(plb, "card_bold")
-        plb.pack(side="left")
-        R(lambda l=plb, n=i: l.configure(text=i18n.L("mac.pad_row", n))
-          if _live(l) else False)
-        pkey = "pad_macro%d_key" % i
-        pact = "pad_macro%d_action" % i
-        plb.bind("<Enter>", lambda e, k=pkey: set_desc(lambda: tr_desc(k)))
-        plb.bind("<Leave>", lambda e: set_desc(None))
-
-        macro_entry(prow, pkey, 10, pkey, "pad").pack(side="left",
-                                                     padx=(0, 8))
-        macro_word(prow, "mac.sends", pact)
-        macro_entry(prow, pact, 13, pact, "padkey").pack(side="left")
-
-    mright = tk.Frame(mtop, bg=pal["card"])
-    kit.reg(mright, "card")
-    mright.grid(row=0, column=1, sticky="nsew", padx=(24, 0))
-    mac_head(mright, "mac.recordings")
-
-    pright = tk.Frame(mbot, bg=pal["card"])
-    kit.reg(pright, "card")
-    pright.grid(row=0, column=1, sticky="nsew", padx=(24, 0))
-
+    # Recordings occupy the next five shared grid rows; the three binding
+    # settings are deliberately placed *below* the recording library.
     REC_ROW_H = 26
-    rec_box = tk.Frame(mright, bg=pal["card"], highlightthickness=1,
+
+    def _record_selection_bg(selected):
+        if not selected:
+            return pal["card"]
+        # An accent-tinted surface (instead of light_bg) leaves the grey
+        # OFF switch track visible when a recording is selected.
+        return "#fae8eb" if pal["bg"] == THEMES["light"]["bg"] else "#46313b"
+
+    def _record_action_bar(host, actions):
+        """Five equal-width recording buttons, responsive to content width."""
+        buttons = []
+        gap = 4
+        # Previous right-packed order displayed Rename ... Delete from left
+        # to right. Keep that visible order and preserve every callback.
+        for i, (translation_key, callback, kind) in enumerate(reversed(actions)):
+            host.grid_columnconfigure(i, weight=1, uniform="record_actions")
+            b = kit.button(host, i18n.L(translation_key), callback,
+                           kind=kind, fixed_w=78)
+            b.grid(row=0, column=i, sticky="ew", padx=gap // 2)
+            R(lambda w=b, k=translation_key:
+              kit.set_text(w, i18n.L(k)) if _live(w) else False)
+            buttons.append(b)
+
+        width_cache = [0]
+
+        def _fit(event=None):
+            try:
+                available = host.winfo_width()
+                if available < 100:
+                    return
+                new_width = max(68, (available - gap * len(buttons))
+                                // len(buttons))
+                if new_width == width_cache[0]:
+                    return
+                width_cache[0] = new_width
+                for b in buttons:
+                    b._fixed_w = new_width
+                    kit.set_text(b, b.cget("text"))
+            except (tk.TclError, ValueError):
+                pass
+
+        host.bind("<Configure>", _fit, add="+")
+        host.after_idle(_fit)
+        return buttons
+
+    rec_box = tk.Frame(kgrid, bg=pal["card"], highlightthickness=1,
                        highlightbackground=pal["entry_bd"],
                        highlightcolor=pal["entry_bd"])
     kit.reg(rec_box, "panel")
-    rec_box.pack(fill="both", expand=True, pady=(6, 6))
+    rec_box.grid(row=5, column=1, rowspan=5, sticky="nsew", padx=4, pady=3)
 
     btn_row = tk.Frame(rec_box, bg=pal["card"])
     kit.reg(btn_row, "card")
     btn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
 
-    loop_head = tk.Label(rec_box, text=i18n.L("mac.loop"),
-                         font=F_DESC, bg=pal["card"], fg=pal["muted"],
-                         anchor="e")
-    kit.reg(loop_head, "card_muted")
-    R(lambda: loop_head.configure(text=i18n.L("mac.loop"))
-      if _live(loop_head) else False)
-    loop_head.bind("<Enter>", lambda e: set_desc(
-        lambda: i18n.L("st.loop_desc")))
-    loop_head.bind("<Leave>", lambda e: set_desc(None))
-
     rec_rows = tk.Frame(rec_box, bg=pal["card"])
     kit.reg(rec_rows, "card")
+    # Match the recording list's top and bottom breathing room.
+    # The action bar has a 4px top inset; give the list area 4px above.
     rec_rows.pack(side="top", fill="both", expand=True,
-                  padx=6, pady=(0, 2))
+                  padx=6, pady=(4, 0))
+    # Pack the actual five recording rows into a vertically centered child.
+    # This prevents unused height from accumulating only below Recording #5.
+    rec_list = tk.Frame(rec_rows, bg=pal["card"])
+    kit.reg(rec_list, "card")
+    rec_list.pack(fill="x", expand=True)
     rec_rows.configure(height=REC_ROW_H * REC_PLAY_SLOTS)
 
     rec_ids = []
@@ -5035,7 +5622,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         sel = selected_rid()
         for r_id, _fr, ws in rec_row_w:
             on = (r_id == sel)
-            bg = pal["light_bg"] if on else pal["card"]
+            bg = _record_selection_bg(on)
             for w in ws:
                 try:
                     w.configure(bg=bg)
@@ -5054,13 +5641,22 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def make_rec_row(n, rec):
         rid = rec["id"]
-        bg = pal["light_bg"] if rid == selected_rid() else pal["card"]
-        fr = tk.Frame(rec_rows, bg=bg, cursor="hand2")
+        bg = _record_selection_bg(rid == selected_rid())
+        fr = tk.Frame(rec_list, bg=bg, cursor="hand2")
         fr.pack(fill="x", pady=1)
 
         var = tk.BooleanVar(value=bool(rec["loop"]))
         sw = kit.bool_switch(fr, var, word=True)
-        sw.pack(side="right", padx=(6, 6))
+        sw.pack(side="right", padx=(2, 6))
+        repeat_lbl = tk.Label(fr, text=i18n.L("mac.loop") + ":",
+                              font=F_DESC, bg=bg, fg=pal["muted"])
+        kit.reg(repeat_lbl, "card_muted")
+        repeat_lbl.pack(side="right", padx=(4, 2))
+        R(lambda w=repeat_lbl: w.configure(text=i18n.L("mac.loop") + ":")
+          if _live(w) else False)
+        repeat_lbl.bind("<Enter>", lambda e: set_desc(
+            lambda: i18n.L("st.loop_desc")))
+        repeat_lbl.bind("<Leave>", lambda e: set_desc(None))
 
         def on_toggle(*_a):
             try:
@@ -5095,7 +5691,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             w.bind("<Enter>", lambda e: set_desc(
                 lambda: i18n.L("st.loop_desc")))
             w.bind("<Leave>", lambda e: set_desc(None))
-        rec_row_w.append((rid, fr, [fr, num, name, st_lbl] + sw_widgets))
+        rec_row_w.append((rid, fr, [fr, num, name, st_lbl, repeat_lbl] + sw_widgets))
 
     def _ph_fit(_event=None):
         ph = rec_ph[0]
@@ -5249,15 +5845,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         log("Opened the recording library for editing: %r" % (path,))
         _watch_rec_file(app.rec_store, rebuild_recs, rec_rows)
 
-    for _rk, _rf, _kd in (("mac.delete", do_delete_rec, "amber"),
-                          ("mac.import", do_import_rec, "plain"),
-                          ("mac.export", do_export_rec, "plain"),
-                          ("mac.edit", do_edit_rec, "plain"),
-                          ("mac.rename", do_rename_rec, "plain")):
-        _b = kit.button(btn_row, i18n.L(_rk), _rf, kind=_kd)
-        _b.pack(side="right", padx=(6, 0))
-        R(lambda b=_b, k=_rk: kit.set_text(b, i18n.L(k))
-          if _live(b) else False)
+    _record_action_bar(btn_row, (
+        ("mac.delete", do_delete_rec, "amber"),
+        ("mac.import", do_import_rec, "plain"),
+        ("mac.export", do_export_rec, "plain"),
+        ("mac.edit", do_edit_rec, "plain"),
+        ("mac.rename", do_rename_rec, "plain"),
+    ))
 
     def rebuild_recs():
         if not _live(rec_rows):
@@ -5289,13 +5883,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         n0 = len(kit.repaints)
         if rec_ids:
 
-            loop_head.pack(side="top", fill="x", padx=8, pady=(6, 2),
-                           before=rec_rows)
             for n, r in enumerate(app.rec_store.recordings, 1):
                 make_rec_row(n, r)
         else:
-            loop_head.pack_forget()
-            ph = tk.Label(rec_rows, text=i18n.L("mac.empty"),
+            ph = tk.Label(rec_list, text=i18n.L("mac.empty"),
                           font=F_DESC, bg=pal["card"], fg=pal["muted"],
                           anchor="w", justify="left", wraplength=360)
             kit.reg(ph, "card_muted")
@@ -5309,33 +5900,30 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: rebuild_recs() if _live(rec_rows) else False)
     kit.repaint(rebuild_recs)
     rebuild_recs()
+    kit.repaint(paint_rows)
 
-    mac_head(pright, "mac.pad_recordings")
 
-    prec_box = tk.Frame(pright, bg=pal["card"], highlightthickness=1,
+    prec_box = tk.Frame(cgrid, bg=pal["card"], highlightthickness=1,
                         highlightbackground=pal["entry_bd"],
                         highlightcolor=pal["entry_bd"])
     kit.reg(prec_box, "panel")
-    prec_box.pack(fill="both", expand=True, pady=(6, 6))
+    prec_box.grid(row=5, column=1, rowspan=5, sticky="nsew", padx=4, pady=3)
 
     pbtn_row = tk.Frame(prec_box, bg=pal["card"])
     kit.reg(pbtn_row, "card")
     pbtn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
 
-    ploop_head = tk.Label(prec_box, text=i18n.L("mac.loop"),
-                          font=F_DESC, bg=pal["card"], fg=pal["muted"],
-                          anchor="e")
-    kit.reg(ploop_head, "card_muted")
-    R(lambda: ploop_head.configure(text=i18n.L("mac.loop"))
-      if _live(ploop_head) else False)
-    ploop_head.bind("<Enter>", lambda e: set_desc(
-        lambda: i18n.L("st.loop_desc")))
-    ploop_head.bind("<Leave>", lambda e: set_desc(None))
-
     prec_rows = tk.Frame(prec_box, bg=pal["card"])
     kit.reg(prec_rows, "card")
+    # Match the recording list's top and bottom breathing room.
+    # The action bar has a 4px top inset; give the list area 4px above.
     prec_rows.pack(side="top", fill="both", expand=True,
-                   padx=6, pady=(0, 2))
+                  padx=6, pady=(4, 0))
+    # Pack the actual five recording rows into a vertically centered child.
+    # This prevents unused height from accumulating only below Recording #5.
+    prec_list = tk.Frame(prec_rows, bg=pal["card"])
+    kit.reg(prec_list, "card")
+    prec_list.pack(fill="x", expand=True)
     prec_rows.configure(height=REC_ROW_H * REC_PLAY_SLOTS)
 
     prec_ids = []
@@ -5352,7 +5940,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         sel = pselected_rid()
         for r_id, _fr, ws in prec_row_w:
             on = (r_id == sel)
-            bg = pal["light_bg"] if on else pal["card"]
+            bg = _record_selection_bg(on)
             for w in ws:
                 try:
                     w.configure(bg=bg)
@@ -5371,13 +5959,22 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def pmake_rec_row(n, rec):
         rid = rec["id"]
-        bg = pal["light_bg"] if rid == pselected_rid() else pal["card"]
-        fr = tk.Frame(prec_rows, bg=bg, cursor="hand2")
+        bg = _record_selection_bg(rid == pselected_rid())
+        fr = tk.Frame(prec_list, bg=bg, cursor="hand2")
         fr.pack(fill="x", pady=1)
 
         var = tk.BooleanVar(value=bool(rec["loop"]))
         sw = kit.bool_switch(fr, var, word=True)
-        sw.pack(side="right", padx=(6, 6))
+        sw.pack(side="right", padx=(2, 6))
+        repeat_lbl = tk.Label(fr, text=i18n.L("mac.loop") + ":",
+                              font=F_DESC, bg=bg, fg=pal["muted"])
+        kit.reg(repeat_lbl, "card_muted")
+        repeat_lbl.pack(side="right", padx=(4, 2))
+        R(lambda w=repeat_lbl: w.configure(text=i18n.L("mac.loop") + ":")
+          if _live(w) else False)
+        repeat_lbl.bind("<Enter>", lambda e: set_desc(
+            lambda: i18n.L("st.loop_desc")))
+        repeat_lbl.bind("<Leave>", lambda e: set_desc(None))
 
         def on_toggle(*_a):
             try:
@@ -5412,7 +6009,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             w.bind("<Enter>", lambda e: set_desc(
                 lambda: i18n.L("st.loop_desc")))
             w.bind("<Leave>", lambda e: set_desc(None))
-        prec_row_w.append((rid, fr, [fr, num, name, st_lbl] + sw_widgets))
+        prec_row_w.append((rid, fr, [fr, num, name, st_lbl, repeat_lbl] + sw_widgets))
 
     def _pph_fit(_event=None):
         ph = prec_ph[0]
@@ -5516,15 +6113,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             % (path,))
         _watch_rec_file(app.rec_store_pad, rebuild_precs, prec_rows)
 
-    for _rk, _rf, _kd in (("mac.delete", pdo_delete_rec, "amber"),
-                          ("mac.import", pdo_import_rec, "plain"),
-                          ("mac.export", pdo_export_rec, "plain"),
-                          ("mac.edit", pdo_edit_rec, "plain"),
-                          ("mac.rename", pdo_rename_rec, "plain")):
-        _b = kit.button(pbtn_row, i18n.L(_rk), _rf, kind=_kd)
-        _b.pack(side="right", padx=(6, 0))
-        R(lambda b=_b, k=_rk: kit.set_text(b, i18n.L(k))
-          if _live(b) else False)
+    _record_action_bar(pbtn_row, (
+        ("mac.delete", pdo_delete_rec, "amber"),
+        ("mac.import", pdo_import_rec, "plain"),
+        ("mac.export", pdo_export_rec, "plain"),
+        ("mac.edit", pdo_edit_rec, "plain"),
+        ("mac.rename", pdo_rename_rec, "plain"),
+    ))
 
     def rebuild_precs():
         if not _live(prec_rows):
@@ -5555,13 +6150,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
         n0 = len(kit.repaints)
         if prec_ids:
-            ploop_head.pack(side="top", fill="x", padx=8, pady=(6, 2),
-                            before=prec_rows)
             for n, r in enumerate(app.rec_store_pad.recordings, 1):
                 pmake_rec_row(n, r)
         else:
-            ploop_head.pack_forget()
-            ph = tk.Label(prec_rows, text=i18n.L("mac.empty"),
+            ph = tk.Label(prec_list, text=i18n.L("mac.empty"),
                           font=F_DESC, bg=pal["card"], fg=pal["muted"],
                           anchor="w", justify="left", wraplength=360)
             kit.reg(ph, "card_muted")
@@ -5575,18 +6167,68 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: rebuild_precs() if _live(prec_rows) else False)
     kit.repaint(rebuild_precs)
     rebuild_precs()
+    kit.repaint(ppaint_rows)
 
+    keyboard_record_cells = [make_row(kgrid, key, 10 + pos, column=1)
+                             for pos, key in enumerate(_RECORD_FIELDS)]
+    controller_record_cells = [make_row(cgrid, key, 10 + pos, column=1)
+                               for pos, key in enumerate(_PAD_RECORD_FIELDS)]
 
-    adv = pages["advanced"]
-    fill_list(adv, TAB_ADV)
+    def _fit_binding_columns(grid, left_cells, macro_cards, record_box,
+                             record_cells):
+        """Keep 1:1 row alignment on desktop; stack gracefully if cramped."""
+        state = {"two": None}
+        def fit(event=None):
+            if not _live(grid):
+                return
+            width = event.width if event is not None else grid.winfo_width()
+            two = width >= 950
+            if state["two"] is two:
+                return
+            state["two"] = two
+            # Move spanned widget out first, avoiding overlapping grid slaves.
+            record_box.grid_remove()
+            if two:
+                grid.columnconfigure(0, weight=1, uniform="binding_columns")
+                grid.columnconfigure(1, weight=1, uniform="binding_columns")
+                for i, cell in enumerate(left_cells):
+                    cell.grid_configure(row=i, column=0)
+                for i, cell in enumerate(macro_cards):
+                    cell.grid_configure(row=i, column=1)
+                for i, cell in enumerate(record_cells):
+                    cell.grid_configure(row=10 + i, column=1)
+                record_box.grid(row=5, column=1, rowspan=5,
+                                sticky="nsew", padx=4, pady=3)
+            else:
+                grid.columnconfigure(0, weight=1, uniform="")
+                grid.columnconfigure(1, weight=0, uniform="")
+                for i, cell in enumerate(left_cells):
+                    cell.grid_configure(row=i, column=0)
+                for i, cell in enumerate(macro_cards):
+                    cell.grid_configure(row=13 + i, column=0)
+                for i, cell in enumerate(record_cells):
+                    cell.grid_configure(row=23 + i, column=0)
+                record_box.grid(row=18, column=0, rowspan=5,
+                                sticky="nsew", padx=4, pady=3)
+        grid.bind("<Configure>", fit, add="+")
+        grid.after_idle(fit)
 
-    fill_list(chinner, TAB_COLOR, scroll=False)
+    _fit_binding_columns(kgrid, keyboard_cells, keyboard_macro_cards,
+                         rec_box, keyboard_record_cells)
+    _fit_binding_columns(cgrid, controller_cells, controller_macro_cards,
+                         prec_box, controller_record_cells)
 
-    exp = pages["experimental"]
-    fill_list(exp, TAB_EXPERIMENTAL)
+    latency_pages = dict(pages)
+    for _lat_name in LATENCY_TABS:
+        _lat_panel = tk.Frame(pages[_lat_name], bg=pal["card"],
+                              highlightbackground=pal["entry_bd"],
+                              highlightthickness=1)
+        kit.reg(_lat_panel, "panel")
+        _lat_panel.pack(fill="both", expand=True, padx=6, pady=8)
+        latency_pages[_lat_name] = _lat_panel
 
     lat_handle = mount(
-        root, pages, kit, pal,
+        root, latency_pages, kit, pal,
         {"base": F_BASE, "bold": F_BOLD, "h1": F_H1, "entry": F_ENTRY},
         out_root=None,
         backend="auto",
@@ -5873,40 +6515,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def _fit_window():
         try:
-            sw = root.winfo_screenwidth()
-            sh = root.winfo_screenheight()
             root.update_idletasks()
-            need_w = 0
-            need_h = 0
-            for frame in _FIT_DOC:
-                if _live(frame):
-                    need_w = max(need_w, frame.winfo_reqwidth())
-            scrolled = set()
-            for frame in _FIT:
-                if not _live(frame):
-                    continue
-                need_w = max(need_w, frame.winfo_reqwidth())
-                need_h = max(need_h, frame.winfo_reqheight())
-                parent = frame.master
-                while parent is not None and parent is not root:
-                    scrolled.add(parent)
-                    parent = getattr(parent, "master", None)
-            for pg in pages.values():
-                if not _live(pg) or pg in scrolled:
-                    continue
-                need_w = max(need_w, pg.winfo_reqwidth())
-                need_h = max(need_h, pg.winfo_reqheight())
-            chrome = 0
-            for child in root.winfo_children():
-                if child is content_host or not _live(child):
-                    continue
-                chrome += child.winfo_reqheight()
-            want_w = min(sw - 24, max(need_w + 48, 900))
-            want_h = min(sh - 48, max(need_h + chrome + 32, 600))
-            root.minsize(min(880, want_w), min(560, want_h))
-            root.geometry("%dx%d+%d+%d" % (want_w, want_h,
-                                           max(0, (sw - want_w) // 2),
-                                           max(0, (sh - want_h) // 3)))
+            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+            w, h = root.winfo_width(), root.winfo_height()
+            root.geometry("+%d+%d" % (max(0, (sw - w) // 2),
+                                      max(0, (sh - h) // 2)))
         except tk.TclError:
             pass
 
@@ -6270,14 +6883,13 @@ from scanner import (
     GuiController,
     PlainFinding,
     apply_confirm_text,
-    chain_confirm_text,
     classify_scan,
     issues_message,
     manual_instructions,
     run_confirm_text,
     undo_confirm_text,
 )
-from input import DEFAULT_THEME, ButtonFactory, Theme
+from input import DEFAULT_THEME, Theme
 
 APP_TITLE = "latency"
 APP_SUBTITLE = "finds what is actually slowing your game, and fixes what it can"
@@ -6307,7 +6919,9 @@ class _PalTheme:
     """Attribute-style view over gui.py's pal dict, so lattool_gui.py's
     existing `t.raised` / `t.accent` etc. keep working unchanged."""
     def __init__(self, pal, fonts):
-        self.bg       = pal["bg"]
+        # Embedded latency pages share the main setting-card surface,
+        # rather than painting an unrelated full-page dark/light background.
+        self.bg       = pal["card"]
         self.raised   = pal["card"]
         self.inset    = pal["entry"]
         self.fg       = pal["text"]
@@ -6414,6 +7028,16 @@ class SnappyAIApp:
             self.tab_home = frames["home"]
             self.tab_monitor = frames["monitor"]
             self.tab_tools = frames["tools"]
+            self._embedded_scroll_binders = []
+            if self._kit is not None:
+                self.tab_monitor, monitor_bind = _scrollable(
+                    self.tab_monitor, self._kit, self._kit.pal)
+                self.tab_tools, tools_bind = _scrollable(
+                    self.tab_tools, self._kit, self._kit.pal)
+                self._embedded_scroll_binders = [
+                    (self.tab_monitor, monitor_bind),
+                    (self.tab_tools, tools_bind),
+                ]
             status = embed.get("status")
             if status is None:
                 status = ttk.Label(self.tab_home, style="CardDim.TLabel",
@@ -6423,6 +7047,8 @@ class SnappyAIApp:
             self._build_home()
             self._build_monitor()
             self._build_tools()
+            for frame, binder in self._embedded_scroll_binders:
+                binder(frame)
             self._configure_style(safe=True)
             self.header_state = ttk.Label(self.tab_home)
             self.progress = ttk.Progressbar(self.tab_home, mode="indeterminate")
@@ -6749,7 +7375,13 @@ class SnappyAIApp:
         wrap.rowconfigure(0, weight=1)
         t = self.theme
         self.results_canvas = tk.Canvas(wrap, bg=t.bg, highlightthickness=0, bd=0)
-        vsb = ttk.Scrollbar(wrap, orient="vertical", command=self.results_canvas.yview)
+        if self._kit is not None:
+            vsb = _SlimScrollbar(wrap, self._kit, self.results_canvas,
+                                 wheel=lambda step: self.results_canvas.yview_scroll(
+                                     step, "units"))
+        else:
+            vsb = ttk.Scrollbar(wrap, orient="vertical",
+                                command=self.results_canvas.yview)
         self.results_body = ttk.Frame(self.results_canvas)
         self.results_body.bind(
             "<Configure>",
@@ -6757,10 +7389,17 @@ class SnappyAIApp:
                 scrollregion=self.results_canvas.bbox("all")
             ),
         )
-        self.results_canvas.create_window((0, 0), window=self.results_body, anchor="nw")
+        self._results_window = self.results_canvas.create_window(
+            (0, 0), window=self.results_body, anchor="nw")
+        self.results_canvas.bind(
+            "<Configure>",
+            lambda e: self.results_canvas.itemconfigure(
+                self._results_window, width=max(1, e.width - 2)),
+            add="+",
+        )
         self.results_canvas.configure(yscrollcommand=vsb.set)
         self.results_canvas.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
+        vsb.grid(row=0, column=1, sticky="ns", pady=(7, 7))
         self.results_canvas.bind(
             "<MouseWheel>",
             lambda e: self.results_canvas.yview_scroll(
@@ -6940,7 +7579,6 @@ class SnappyAIApp:
         ).pack(side="left", padx=14)
 
     def _build_tools(self) -> None:
-        t = self.theme
         tab = self.tab_tools
         tab.columnconfigure(0, weight=1)
         mem = ttk.LabelFrame(tab, text="MEMORY", style="Card.TLabelframe", padding=14)
@@ -7070,10 +7708,14 @@ class SnappyAIApp:
             borderwidth=0, highlightthickness=1, highlightbackground=t.border,
             highlightcolor=t.accent, spacing3=4,
         )
-        vsb = ttk.Scrollbar(wrap, orient="vertical", command=txt.yview)
+        if self._kit is not None:
+            vsb = _SlimScrollbar(wrap, self._kit, txt,
+                                 wheel=lambda step: txt.yview_scroll(step, "units"))
+        else:
+            vsb = ttk.Scrollbar(wrap, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=vsb.set)
         txt.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
+        vsb.grid(row=0, column=1, sticky="ns", pady=(7, 7))
         wrap.rowconfigure(0, weight=1)
         wrap.columnconfigure(0, weight=1)
         for tag, colour in (
@@ -7815,7 +8457,6 @@ registered with a palette role, buttons come from ``kit.button`` and the page
 body is wrapped in the same slim scroll area as the other tabs.
 """
 
-import asyncio
 import json
 import queue
 import threading
@@ -7823,7 +8464,7 @@ import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from spoofer import (
     AuditEventType, CleanerEngine, audit_log, get_audit_logger,
@@ -7867,7 +8508,6 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
       scrollable - gui._scrollable
       fonts      - dict with h1/bold/desc/entry font tuples
     """
-    F_H1 = fonts["h1"]
     F_BOLD = fonts["bold"]
     F_DESC = fonts["desc"]
     F_ENTRY = fonts["entry"]
@@ -7902,7 +8542,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
             highlightbackground=pal["entry_bd"],
         )
         kit.reg(wrap, "panel")
-        wrap.pack(fill="x", padx=14, pady=(0, 10))
+        wrap.pack(fill="x", padx=20, pady=(0, 14))
         head = card(wrap)
         head.pack(fill="x", padx=12, pady=(10, 0))
         head_title = label(head, title, F_BOLD)
@@ -7925,13 +8565,39 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
         return body
 
     def row(parent, text, hint=""):
+        # Each original form stays intact, but is now a responsive label /
+        # input / action grid rather than an uneven horizontal pack row.
         line = card(parent)
-        line.pack(fill="x", pady=3)
-        widget = label(line, text, F_DESC, width=24)
-        widget.pack(side="left")
+        line.pack(anchor="center", pady=5, padx=8)
+        line._spoofer_form = True
+        line._caption = label(line, text, F_BOLD)
+        line._caption.grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        line._field = None
+        line._action = None
         if hint:
-            hint_label = label(line, hint, F_DESC, muted=True)
-            hint_label.pack(side="left", padx=(8, 0))
+            line._hint = label(line, hint, F_DESC, muted=True)
+            line._hint.grid(row=2, column=0, columnspan=3, sticky="w")
+
+        def fit(event=None):
+            if line._field is None or line._action is None:
+                return
+            narrow = parent.winfo_width() < 615
+            if narrow == getattr(line, "_narrow", None):
+                return
+            line._narrow = narrow
+            line._caption.grid_configure(
+                row=0, column=0, columnspan=2 if narrow else 1)
+            line._field.grid_configure(
+                row=1 if narrow else 0, column=0 if narrow else 1,
+                sticky="w", padx=(0, 10), pady=5)
+            line._action.grid_configure(
+                row=1 if narrow else 0, column=1 if narrow else 2,
+                sticky="e", padx=(0, 2), pady=5)
+            line.columnconfigure(0, weight=1 if narrow else 0)
+            line.columnconfigure(1, weight=1)
+            line.columnconfigure(2, weight=0)
+        line.bind("<Configure>", fit, add="+")
+        line._fit_form = fit
         return line
 
     def entry(parent, initial="", width=18):
@@ -7943,13 +8609,57 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
             highlightbackground=pal["entry_bd"], highlightthickness=1,
         )
         kit.reg(widget, "entry")
-        widget.pack(side="left", padx=(0, 8))
+        if getattr(parent, "_spoofer_form", False):
+            parent._field = widget
+            widget.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=5)
+        else:
+            widget.pack(side="left", padx=(0, 8))
         return var, widget
 
     def button(parent, text, command, kind="plain"):
         widget = kit.button(parent, text, command, kind=kind)
-        widget.pack(side="left", padx=(0, 6))
+        if getattr(parent, "_spoofer_form", False):
+            parent._action = widget
+            widget.grid(row=0, column=2, sticky="e", padx=(0, 2), pady=5)
+            parent.after_idle(parent._fit_form)
+        else:
+            widget.pack(side="left", padx=(0, 6), pady=3)
         return widget
+
+    def tile_buttons(parent, columns=3):
+        # Resizes every real kit.button background image together with the
+        # column, so the drawn button and its hit area never disagree.
+        items = [w for w in parent.winfo_children() if isinstance(w, tk.Button)]
+        for w in items:
+            w.pack_forget()
+        state = {"layout": None, "pending": False}
+
+        def _apply():
+            state["pending"] = False
+            if not _live(parent):
+                return
+            avail = max(200, parent.winfo_width())
+            cols = max(1, min(columns, int(avail / 176)))
+            cell = max(126, int(avail / cols) - 12)
+            layout = (cols, cell)
+            if layout == state["layout"]:
+                return
+            state["layout"] = layout
+            for col in range(columns):
+                parent.columnconfigure(col, weight=1 if col < cols else 0,
+                                       uniform="spoofer_actions" if col < cols else "")
+            for idx, w in enumerate(items):
+                w.grid(row=idx // cols, column=idx % cols,
+                       padx=5, pady=5, sticky="ew")
+                w._fixed_w = cell
+                kit.set_text(w, str(w.cget("text")))
+
+        def schedule(_event=None):
+            if not state["pending"]:
+                state["pending"] = True
+                parent.after_idle(_apply)
+        parent.bind("<Configure>", schedule, add="+")
+        schedule()
 
     def append_log(text, kind="info"):
         if log_box is None:
@@ -7988,9 +8698,10 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
             if info.get("driver_active"):
                 driver_text = "Kernel driver: active"
             elif info.get("driver_file"):
-                driver_text = "Kernel driver: found but not active"
+                state = info.get("service_state") or "not active"
+                driver_text = "Kernel driver: bundled; service " + str(state)
             else:
-                driver_text = "Kernel driver: not loaded (registry fallback)"
+                driver_text = "Kernel driver: bundled file missing"
             status_widgets["driver"].configure(text=driver_text)
             stats = get_audit_logger().get_stats()
             status_widgets["audit"].configure(
@@ -8085,58 +8796,65 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     # ---------------------------------------------------------------- header
     header = card(inner)
     header.pack(fill="x", padx=14, pady=(12, 8))
-    title = label(header, "HWID Spoofer", F_H1)
-    title.pack(fill="x")
     subtitle = label(
         header,
         "Change disk, network, SMBIOS and hardware identifiers. A registry "
-        "snapshot is created before the first write, and every operation is "
-        "recorded in the audit log.",
+        "snapshot is created before each registry write, and every operation "
+        "is recorded in the audit log. Unsupported changes fail explicitly.",
         F_DESC, muted=True,
     )
     subtitle.pack(fill="x", pady=(2, 0))
 
     status_bar = card(inner)
-    status_bar.pack(fill="x", padx=14, pady=(0, 10))
+    status_bar.pack(fill="x", padx=20, pady=(0, 14))
     status_widgets = {}
-    for key, text in (
+    for col, (key, text) in enumerate((
         ("admin", "Access: checking..."),
         ("driver", "Kernel driver: checking..."),
         ("audit", "Audit events: 0"),
-    ):
+    )):
         widget = tk.Label(
             status_bar, text=text, font=F_DESC, anchor="w",
             bg=pal["card"], fg=pal["muted"],
         )
         kit.reg(widget, "card_muted")
-        widget.pack(side="left", padx=(0, 18))
+        widget.grid(row=col // 2, column=col % 2, sticky="w",
+                    padx=(0, 16), pady=4)
         status_widgets[key] = widget
-    refresh_button = button(status_bar, "Refresh", refresh_status)
+    refresh_button = kit.button(status_bar, "Refresh", refresh_status)
+    refresh_button.grid(row=1, column=1, sticky="e", pady=4)
+    status_bar.columnconfigure(0, weight=1)
+    status_bar.columnconfigure(1, weight=1)
 
     # ----------------------------------------------------------- quick action
     quick = section(
         "Quick actions",
-        "Safe spoof runs the three identifiers that have registry fallbacks: "
-        "disk serial, NIC MAC and SMBIOS type 1. Kernel-only identifiers are "
-        "left for the sections below.",
+        "Safe spoof runs disk, NIC, and SMBIOS using only their available real "
+        "methods. It reports a failure instead of claiming a simulated change.",
     )
     quick_row = card(quick)
     quick_row.pack(fill="x")
 
     def run_safe_spoof():
+        disk_value = disk_var.get() or "C"
+        nic_value = nic_var.get().strip() or None
+        try:
+            smbios_type = int(smbios_var.get() or "1")
+        except ValueError:
+            smbios_type = 1
+
         def work():
+            if not get_loading_status().get("driver_active"):
+                return {
+                    "success": False,
+                    "error": (
+                        "quick spoof requires the kernel driver to be active; "
+                        "no partial disk/NIC fallback changes were made"),
+                }
             output = {}
-            output["disk"] = asyncio.run(get_disk_spoofer().spoof(disk_var.get() or "C"))
-            output["nic"] = asyncio.run(
-                get_nic_spoofer().spoof(nic_var.get().strip() or None)
-            )
-            try:
-                smbios_type = int(smbios_var.get() or "1")
-            except ValueError:
-                smbios_type = 1
-            output["smbios"] = asyncio.run(
-                get_smbios_spoofer().spoof(smbios_type)
-            )
+            output["disk"] = get_disk_spoofer().spoof(disk_value)
+            output["nic"] = get_nic_spoofer().spoof(nic_value)
+            output["smbios"] = get_smbios_spoofer().spoof(smbios_type)
             output["success"] = all(
                 bool(item.get("success")) for item in output.values()
                 if isinstance(item, dict)
@@ -8164,20 +8882,21 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
         quick_row, "Create restore point", run_restore_point, kind="amber")
     if not restore_point_supported():
         restore_button.configure(state="disabled")
+    tile_buttons(quick_row, columns=3)
 
     # ------------------------------------------------------------------ disk
     disk = section(
         "Disk serial",
-        "The kernel driver changes the serial at sector level. Without it the "
-        "registry fallback returns a new identifier and marks the result as "
-        "simulated.",
+        "An active kernel driver applies its supported disk changes at load. "
+        "Without it, the bundled Microsoft VolumeId tool changes the selected "
+        "volume ID and requires administrator rights and a reboot.",
     )
     disk_row = row(disk, "Volume letter")
     disk_var, _disk_entry = entry(disk_row, "C", width=6)
-    button(disk_row, "Spoof disk serial", lambda: run_operation(
-        "Disk serial",
-        lambda: asyncio.run(get_disk_spoofer().spoof(disk_var.get() or "C")),
-    ), kind="accent")
+    def run_disk_spoof():
+        value = disk_var.get() or "C"
+        run_operation("Disk serial", lambda: get_disk_spoofer().spoof(value))
+    button(disk_row, "Spoof disk serial", run_disk_spoof, kind="accent")
 
     # --------------------------------------------------------------- network
     nic = section(
@@ -8188,12 +8907,10 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     )
     nic_row = row(nic, "Adapter filter")
     nic_var, _nic_entry = entry(nic_row, "", width=22)
-    button(nic_row, "Spoof MAC", lambda: run_operation(
-        "NIC MAC",
-        lambda: asyncio.run(
-            get_nic_spoofer().spoof(nic_var.get().strip() or None)
-        ),
-    ), kind="accent")
+    def run_nic_spoof():
+        value = nic_var.get().strip() or None
+        run_operation("NIC MAC", lambda: get_nic_spoofer().spoof(value))
+    button(nic_row, "Spoof MAC", run_nic_spoof, kind="accent")
 
     # ---------------------------------------------------------------- smbios
     smbios = section(
@@ -8204,12 +8921,10 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     )
     smbios_row = row(smbios, "Table type")
     smbios_var, _smbios_entry = entry(smbios_row, "1", width=6)
-    button(smbios_row, "Spoof SMBIOS", lambda: run_operation(
-        "SMBIOS",
-        lambda: asyncio.run(
-            get_smbios_spoofer().spoof(int(smbios_var.get() or "1"))
-        ),
-    ), kind="accent")
+    def run_smbios_spoof():
+        value = smbios_var.get() or "1"
+        run_operation("SMBIOS", lambda: get_smbios_spoofer().spoof(value))
+    button(smbios_row, "Spoof SMBIOS", run_smbios_spoof, kind="accent")
 
     # ---------------------------------------------------------- kernel-only
     kernel = section(
@@ -8220,10 +8935,10 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     kernel_row = card(kernel)
     kernel_row.pack(fill="x")
 
-    def kernel_action(title, coro_factory):
+    def kernel_action(title, operation):
         run_operation(
             title,
-            lambda: asyncio.run(coro_factory()),
+            operation,
             success_check=lambda value: bool(value.get("success")),
         )
 
@@ -8238,16 +8953,17 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
         kind="plain")
     button(kernel_row, "Reload driver", lambda: run_operation(
         "Driver reload",
-        lambda: {"success": bool(reload_driver().driver),
+        lambda: {"success": bool(reload_driver().loaded),
                  "status": get_loading_status()},
     ), kind="plain")
+    tile_buttons(kernel_row, columns=3)
 
     # --------------------------------------------------------------- cleanup
     clean = section(
         "Cleanup",
-        "A registry snapshot is created before any cleaning. File cleaning "
-        "removes caches and temporary files; review the targets before "
-        "running a full clean.",
+        "Registry keys and values are snapshotted before the app-owned tree is removed. "
+        "File cleaning is limited to old app logs, app cache, and Snappy-owned "
+        "temporary entries; it never sweeps the whole system temp folder.",
     )
     clean_row = card(clean)
     clean_row.pack(fill="x")
@@ -8262,22 +8978,17 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
             return
 
         def work():
-            engine = get_registry_engine()
-            engine.create_snapshot(
-                "pre_clean_%s_%s" % (
-                    target, datetime.now().strftime("%Y%m%d_%H%M%S"))
-            )
             cleaner = CleanerEngine()
             if target == "registry":
-                return asyncio.run(cleaner._clean_registry())
+                return cleaner._clean_registry()
             if target == "files":
-                return asyncio.run(cleaner._clean_files())
+                return {"success": True, "cleaned": cleaner._clean_files()}
             if target == "temp":
                 return {"success": True,
-                        "cleaned": asyncio.run(cleaner._clean_temp_files())}
+                        "cleaned": cleaner._clean_temp_files()}
             if target == "cache":
-                return asyncio.run(cleaner._clean_cache())
-            return asyncio.run(cleaner.full_clean())
+                return {"success": True, "cleaned": cleaner._clean_cache()}
+            return cleaner.full_clean()
         run_operation(title, work)
 
     for text, target, kind in (
@@ -8289,6 +9000,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     ):
         button(clean_row, text,
                lambda t=target, n=text: clean_operation(n, t), kind=kind)
+    tile_buttons(clean_row, columns=3)
 
     # -------------------------------------------------------- backup/restore
     backup = section(
@@ -8348,6 +9060,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     button(backup_buttons, "Restore selected", restore_snapshot, kind="accent")
     button(backup_buttons, "Delete selected", delete_snapshot, kind="plain")
     button(backup_buttons, "Refresh list", refresh_snapshots, kind="plain")
+    tile_buttons(backup_buttons, columns=2)
 
     snapshot_frame = card(backup)
     snapshot_frame.pack(fill="x")
@@ -8400,6 +9113,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
     button(audit_row, "Export summary", export_audit, kind="plain")
     button(audit_row, "Run verification", lambda: run_operation(
         "System verification", run_verification), kind="accent")
+    tile_buttons(audit_row, columns=3)
 
     # ------------------------------------------------------- external tools
     tools = section(
@@ -8459,6 +9173,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
             pass
 
     button(log_buttons, "Clear log", clear_log, kind="plain")
+    tile_buttons(log_buttons, columns=1)
 
     # ------------------------------------------------------------------ init
     refresh_status()
@@ -8467,7 +9182,7 @@ def build_spoofer_page(page, kit, pal, status_msg, scrollable, fonts):
         "Spoofer ready. %s | %s" % (
             "Administrator" if is_admin() else "Not elevated",
             "kernel driver active" if get_loading_status().get("driver_active")
-            else "kernel driver not loaded (registry fallbacks available)",
+            else "kernel driver not active; only supported real fallbacks are available",
         ),
         "info",
     )

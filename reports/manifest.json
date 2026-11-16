@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-11-07T23:33:25+00:00",
+  "generated_at": "2026-11-13T09:39:06+00:00",
   "applied_utc": null,
   "apply_script": "apply.ps1",
   "undo_script": "..\\undo\\undo.ps1",
@@ -43,7 +43,46 @@
           "reversible": true,
           "safety": "",
           "manual": true,
-          "undo_steps": 0
+          "undo_steps": 0,
+          "undo_id": null
+        }
+      ]
+    },
+    {
+      "id": "nic.interrupt_moderation.disable",
+      "title": "Network card delays interrupts to save CPU",
+      "component": "network_path",
+      "confidence": "medium",
+      "risk": "low",
+      "requires_reboot": false,
+      "finding": "interrupt moderation is enabled on 1 adapter(s), batching packets and delaying each delivery to save CPU",
+      "expected_effect": "Packets reach the game thread sooner at slightly higher CPU cost.",
+      "measure": {
+        "metric": "p95",
+        "min_effect_ms": 1.0,
+        "needs_load": false,
+        "samples": 200
+      },
+      "caveats": "",
+      "evidence": [],
+      "policy_notes": [],
+      "steps": [
+        {
+          "kind": "powershell",
+          "description": "Disable interrupt moderation on all physical network adapters",
+          "command": "Get-NetAdapter -Physical | Set-NetAdapterAdvancedProperty -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -NoRestart",
+          "hive": null,
+          "path": null,
+          "value_name": null,
+          "value": null,
+          "requires_reboot": false,
+          "text": "",
+          "notes": "If the driver has no such property the step reports the failure openly.",
+          "reversible": true,
+          "safety": "",
+          "manual": false,
+          "undo_steps": 1,
+          "undo_id": "cbc0b13a84af92b98e01202a"
         }
       ]
     },
@@ -54,7 +93,7 @@
       "confidence": "medium",
       "risk": "low",
       "requires_reboot": false,
-      "finding": "resolver ['1.1.1.1', '8.8.8.8', '1.1.1.1', '8.8.8.8'] took 82.2373000009975 ms",
+      "finding": "resolver ['1.1.1.1', '8.8.8.8'] took 91.04780000052415 ms",
       "expected_effect": "Faster connection setup for new sessions and services.",
       "measure": {
         "metric": "p95",
@@ -80,7 +119,8 @@
           "reversible": true,
           "safety": "",
           "manual": false,
-          "undo_steps": 1
+          "undo_steps": 1,
+          "undo_id": "0223fa85ff1b55f18565376f"
         }
       ]
     },
@@ -117,44 +157,8 @@
           "reversible": true,
           "safety": "",
           "manual": true,
-          "undo_steps": 0
-        }
-      ]
-    },
-    {
-      "id": "sched.background.lower_priority",
-      "title": "Background programs fight the game for CPU",
-      "component": "host_processing",
-      "confidence": "medium",
-      "risk": "low",
-      "requires_reboot": false,
-      "finding": "background load competes with the game: python (15.0%)",
-      "expected_effect": "Fewer preemptions while the heaviest competitor idles lower.",
-      "measure": {
-        "metric": "p95",
-        "min_effect_ms": 1.0,
-        "needs_load": false,
-        "samples": 200
-      },
-      "caveats": "",
-      "evidence": [],
-      "policy_notes": [],
-      "steps": [
-        {
-          "kind": "powershell",
-          "description": "Lower python to BelowNormal priority while gaming",
-          "command": "Get-Process -Name 'python' -ErrorAction SilentlyContinue | ForEach-Object { $_.PriorityClass = 'BelowNormal' }",
-          "hive": null,
-          "path": null,
-          "value_name": null,
-          "value": null,
-          "requires_reboot": false,
-          "text": "",
-          "notes": "Transient only; priorities reset when the process restarts.",
-          "reversible": true,
-          "safety": "",
-          "manual": false,
-          "undo_steps": 1
+          "undo_steps": 0,
+          "undo_id": null
         }
       ]
     }

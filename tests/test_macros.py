@@ -70,18 +70,3 @@ def test_parse_macro_action():
     assert act is None or (isinstance(act, tuple) and act[0] == "pad")
     assert iu.parse_macro_action("") is None
     assert iu.parse_macro_action(None) is None
-
-
-def test_build_hotkey_table_assist_off():
-    cfg = {"key_assist_off": "ctrl+alt+o, end"}
-    always, local = iu.build_hotkey_table(cfg)
-    ids = {hid for hid, _, _ in always} | {hid for hid, _ in local}
-    assert 40 in ids  # ASSIST_OFF_KEY_IDS[0]
-
-
-def test_build_action_bindings_pad_assist_off():
-    cfg = {"pad_assist_off": "back, lb+rb"}
-    bindings = iu.build_action_bindings(cfg)
-    specs = {b.spec for b in bindings}
-    assert "back" in specs
-    assert "lb+rb" in specs

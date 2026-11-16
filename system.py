@@ -168,6 +168,9 @@ def _mul(s, pt):
 def _point_equal(a, b):
     return _encode_point(a) == _encode_point(b)
 
+def _is_identity(point):
+    return _point_equal(point, (0, 1, 1, 0))
+
 def sign(secret, message):
     if len(secret) != 32:
         raise ValueError("secret must be 32 bytes")
@@ -192,6 +195,16 @@ def verify(pub, message, sig):
             return False
         R = _decode_point(sig[:32])
         if R is None:
+            return False
+        # Strict Ed25519 verification: canonical encodings and prime-order,
+        # non-identity points. Without these checks an identity public key and
+        # R point validate a forged S=0 signature for every message.
+        if _encode_point(A) != pub or _encode_point(R) != sig[:32]:
+            return False
+        if _is_identity(_mul(8, A)) or _is_identity(_mul(8, R)):
+            return False
+        if not _is_identity(_mul(_L, A)) \
+                or not _is_identity(_mul(_L, R)):
             return False
         S = int.from_bytes(sig[32:], "little")
         if S >= _L:
@@ -361,9 +374,16 @@ def parse_accents(spec):
     return out
 
 def hsv_to_rgb(h, s, v):
-    h = max(0.0, min(359.999, float(h) * 2.0))
-    s = max(0.0, min(1.0, float(s) / 255.0))
-    v = max(0.0, min(1.0, float(v) / 255.0))
+    try:
+        h, s, v = float(h), float(s), float(v)
+        if not all(x == x and x not in (float("inf"), float("-inf"))
+                   for x in (h, s, v)):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        return (0, 0, 0)
+    h = max(0.0, min(359.999, h * 2.0))
+    s = max(0.0, min(1.0, s / 255.0))
+    v = max(0.0, min(1.0, v / 255.0))
     c = v * s
     x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
     m = v - c
@@ -818,20 +838,33 @@ def query_timer_resolution() -> TimerResolution:
         def us(v: int) -> float | None:
             return v / 10.0 if v else None
 
+        bounds = [v for v in (us(lo.value), us(hi.value)) if v is not None]
         return TimerResolution(
-            min_us=us(lo.value), max_us=us(hi.value), current_us=us(cur.value))
+            # NtQueryTimerResolution's native "MinimumResolution" value is
+            # commonly the numerically largest/coarsest interval. Expose
+            # semantic bounds to callers: min_us is finest, max_us coarsest.
+            min_us=min(bounds) if bounds else None,
+            max_us=max(bounds) if bounds else None,
+            current_us=us(cur.value))
     except Exception as exc:
         log(f"timer resolution query failed: {exc}")
         return TimerResolution()
 
 def clamp_timer_target(want_us: float, res: TimerResolution) -> int:
-    want = int(round(float(want_us) * 10.0))
+    try:
+        value = float(want_us)
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError
+        want = int(round(value * 10.0))
+    except (TypeError, ValueError, OverflowError):
+        want = int(round(TIMER_TARGET_US * 10.0))
     if want <= 0:
         want = int(round(TIMER_TARGET_US * 10.0))
-    if res.min_us:
-        want = max(want, int(round(res.min_us * 10.0)))
-    if res.max_us:
-        want = min(want, int(round(res.max_us * 10.0)))
+    bounds = [float(v) for v in (res.min_us, res.max_us)
+              if v is not None and float(v) > 0]
+    if bounds:
+        want = max(want, int(round(min(bounds) * 10.0)))
+        want = min(want, int(round(max(bounds) * 10.0)))
     return max(1, want)
 
 def request_timer_resolution(
@@ -852,11 +885,19 @@ def request_timer_resolution(
             else {"attempted": False, "ok": False, "error": "skipped"}
         )
         units = clamp_timer_target(target_us, res)
+        try:
+            target_value = float(target_us)
+            if target_value != target_value or target_value in (
+                    float("inf"), float("-inf")) or target_value <= 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            target_value = TIMER_TARGET_US
         import ctypes
 
         out: dict[str, Any] = {
             "ok": False, "supported": True, "requested_us": units / 10.0,
-            "target_us": float(target_us), "clamped": units / 10.0 != float(target_us),
+            "target_us": target_value,
+            "clamped": units / 10.0 != target_value,
             "throttling": throttling, "error": "",
         }
         try:
@@ -871,6 +912,7 @@ def request_timer_resolution(
             out["actual_us"] = cur.value / 10.0 if cur.value else None
             out["min_us"] = res.min_us
             out["max_us"] = res.max_us
+            out["request_units"] = units
         except Exception as exc:
             out["error"] = f"{type(exc).__name__}: {exc}"
             _TIMER_STATE = out
@@ -897,49 +939,42 @@ def request_timer_resolution(
 
 def stop_timer_request() -> dict[str, Any]:
     global _TIMER_STOP, _TIMER_THREAD, _TIMER_STATE
+    released = False
     with _TIMER_LOCK:
         stop, thread = _TIMER_STOP, _TIMER_THREAD
+        state = dict(_TIMER_STATE)
+        if stop is None:
+            return {"ok": False, "was_active": False}
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=2.0)
+        if IS_WINDOWS:
+            try:
+                import ctypes
+                ntdll = _ntdll()
+                units = int(state.get("request_units") or 0)
+                if units <= 0:
+                    units = clamp_timer_target(
+                        state.get("requested_us", TIMER_TARGET_US),
+                        query_timer_resolution())
+                cur = ctypes.c_ulong(0)
+                status = ntdll.NtSetTimerResolution(
+                    units, 0, ctypes.byref(cur))
+                released = status == 0
+            except Exception as exc:
+                log("timer release call failed: %r" % (exc,))
         _TIMER_STOP = None
         _TIMER_THREAD = None
         _TIMER_STATE = {}
-    if stop is not None:
-        stop.set()
-    if thread is not None:
-        thread.join(timeout=2.0)
-    if stop is None:
-        return {"ok": False, "was_active": False}
-    released = False
-    superseded = False
-    if IS_WINDOWS:
-        try:
-            import ctypes
-            ntdll = _ntdll()
-            with _TIMER_LOCK:
-                if _TIMER_THREAD is not None and _TIMER_THREAD.is_alive():
-                    superseded = True
-                else:
-                    res = query_timer_resolution()
-                    want = clamp_timer_target(res.max_us or 15625.0, res)
-                    cur = ctypes.c_ulong(0)
-                    status = ntdll.NtSetTimerResolution(
-                        want, 1, ctypes.byref(cur))
-                    released = status == 0
-        except Exception as exc:
-            log("timer release call failed: %r" % (exc,))
     after = query_timer_resolution()
-    if superseded:
-        log("timer release skipped: a newer request is active; tick is %s"
-            % ("%.4f ms" % (after.current_us / 1000.0)
-               if after.current_us else "unknown"))
-    else:
-        log("timer resolution request released%s; tick is now %s"
-            % ("" if released else
-               " (coarse re-request failed - the fine tick may persist"
-               " until this process exits)",
-               "%.4f ms" % (after.current_us / 1000.0)
-               if after.current_us else "unknown"))
+    log("timer resolution request released%s; tick is now %s"
+        % ("" if released else
+           " (release call failed - the fine tick may persist"
+           " until this process exits)",
+           "%.4f ms" % (after.current_us / 1000.0)
+           if after.current_us else "unknown"))
     return {"ok": True, "was_active": True, "released": released,
-            "superseded": superseded, "current_us": after.current_us}
+            "superseded": False, "current_us": after.current_us}
 
 def timer_request_active() -> bool:
     return _TIMER_THREAD is not None and _TIMER_THREAD.is_alive()

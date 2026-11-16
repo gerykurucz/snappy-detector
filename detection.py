@@ -2,6 +2,11 @@
 
 Merged from yolo.py, hpose.py, vision.py:
 YOLO26n capture+inference, human pose estimation, and vision scanning/targeting.
+
+The centre-screen path keeps ``yolo26n.onnx`` synchronous while
+``yolo26n-pose.onnx`` validates and follows on a slower asynchronous path.  A
+small, model-seeded HSV/contrast memory bridges short recognition gaps without
+invoking the much heavier legacy colour scanner.
 """
 
 from __future__ import annotations
@@ -14,21 +19,37 @@ from __future__ import annotations
 YOLO26n Detection Backend for Real-time Human Figure Detection
 
 High-performance capture + detection pipeline targeting <10ms per frame.
-- Uses YOLO26n ONNX model (FP16) for person detection (COCO class 0)
-- 40-50px radius centered on screen center
-- Threaded capture + inference pipeline using win32rt CaptureBackend (WGC/dxcam/mss)
-- Zero-copy frame passing where possible
+- Uses the hardcoded YOLO26n ONNX models (COCO person class 0)
+- 54px search radius centred on the screen
+- A wider context margin prevents people at the edge being clipped; model
+  centres are still required to be inside the 54px search circle
+- Threaded MSS capture, detector inference, and asynchronous pose inference
+- Latest-frame queues prevent stale frames from adding input lag
 """
 
 import threading
 import time
 import queue
+import math
 import cv2
 import numpy as np
 from dataclasses import dataclass
 import dataclasses
 from typing import Optional, Tuple, List
 from pathlib import Path
+
+import targeting
+
+# The YOLO path resizes only 176-224 px crops (640 px for asynchronous pose).
+# OpenCV 5 otherwise starts one worker per logical CPU for these tiny kernels,
+# while ONNX Runtime is already using the six physical cores.  That nested
+# 12-thread pool adds dispatch overhead and, under a long run, enough sustained
+# contention/heat to push detector p95 over 10 ms.  One OpenCV thread produces
+# byte-identical preprocessing and leaves model parallelism to ONNX.
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    pass
 
 # Import win32rt capture backend
 try:
@@ -48,23 +69,349 @@ class Detection:
     aspect_ratio: float = 0.0  # h/w ratio (target ~2.0 for upright human)
     seq: int = 0               # Monotonic inference-frame number
     t: float = 0.0             # time.perf_counter() when inferred
+    captured_at: float = 0.0   # when the pixels used for this point were read
+    source: str = "detect"     # detect, pose, color, fused, or predicted
+    track_id: int = 0
+    predicted: bool = False
+    quality: float = 0.0       # score normalised by the model's floor
+    pose_conf: float = 0.0
+
+
+YOLO26_SEARCH_RADIUS = 54
+YOLO26_CAPTURE_SIDE = 224
+YOLO26_DETECTOR_SIDE = 176
+YOLO26_DETECT_INPUT = 256
+YOLO26_DETECT_MODEL = "yolo26n.onnx"
+YOLO26_POSE_MODEL = "yolo26n-pose.onnx"
+YOLO26_POSE_CONFIRM_INTERVAL_S = 1.0
+
+
+@dataclass
+class _FramePacket:
+    """A captured frame plus the coordinates needed to map model boxes."""
+
+    seq: int
+    captured_at: float
+    frame: np.ndarray
+    origin: Tuple[int, int]
+
+
+class _CenterTrack:
+    """Small constant-velocity tracker for the single centre target.
+
+    It consumes model and model-seeded colour measurements. Prediction bridges
+    very short residual gaps and is intentionally capped at 100 ms.
+    """
+
+    def __init__(self, max_age_s: float = 0.10):
+        self.max_age_s = float(max_age_s)
+        self.detection: Optional[Detection] = None
+        self.vx = 0.0
+        self.vy = 0.0
+        self.last_measurement_t = 0.0
+        self._next_id = 1
+
+    @staticmethod
+    def _rank(det: Detection) -> Tuple[float, float]:
+        return float(det.quality), float(det.conf)
+
+    def reset(self) -> None:
+        self.detection = None
+        self.vx = self.vy = 0.0
+        self.last_measurement_t = 0.0
+
+    def update(self, measurements: List[Detection], now: float,
+               seq: int) -> Optional[Detection]:
+        previous = self.detection
+        chosen = None
+        same_track = False
+        if measurements:
+            if previous is None:
+                chosen = max(measurements, key=self._rank)
+            else:
+                dt = max(0.0, now - previous.t)
+                px = previous.x + self.vx * dt
+                py = previous.y + self.vy * dt
+
+                def association(det):
+                    distance = math.hypot(det.x - px, det.y - py)
+                    gate = max(12.0, 0.75 * max(det.h, previous.h))
+                    return distance, gate, -det.quality, -det.conf
+
+                ranked = [(association(det), det) for det in measurements]
+                accepted = [(rank, det) for rank, det in ranked
+                            if rank[0] <= rank[1]]
+                if accepted:
+                    _rank, chosen = min(
+                        accepted,
+                        key=lambda item: (item[0][0], item[0][2],
+                                          item[0][3]),
+                    )
+                    same_track = True
+                else:
+                    # A centre-window false positive must not inject a huge
+                    # velocity into the existing track. Start a new identity.
+                    chosen = max(measurements, key=self._rank)
+
+        if chosen is not None:
+            if previous is None or previous.track_id <= 0 or not same_track:
+                chosen.track_id = self._next_id
+                self._next_id += 1
+                self.vx = self.vy = 0.0
+            else:
+                chosen.track_id = previous.track_id
+                dt = now - self.last_measurement_t
+                if dt > 1e-4 and not chosen.predicted:
+                    measured_vx = (chosen.x - previous.x) / dt
+                    measured_vy = (chosen.y - previous.y) / dt
+                    self.vx = 0.65 * self.vx + 0.35 * measured_vx
+                    self.vy = 0.65 * self.vy + 0.35 * measured_vy
+            chosen.seq = int(seq)
+            chosen.t = float(now)
+            # Colour is a current-frame appearance confirmation at the last
+            # model box, not a newly localised centre.  Keep that uncertainty
+            # visible to downstream motion code so it is not extrapolated a
+            # second time.
+            chosen.predicted = bool(
+                chosen.predicted or chosen.source == "color")
+            self.last_measurement_t = float(now)
+            self.detection = dataclasses.replace(chosen)
+            return dataclasses.replace(chosen)
+
+        if previous is None:
+            return None
+        age = now - self.last_measurement_t
+        if age > self.max_age_s:
+            self.reset()
+            return None
+        dt = max(0.0, now - previous.t)
+        predicted = dataclasses.replace(
+            previous,
+            x=int(round(previous.x + self.vx * dt)),
+            y=int(round(previous.y + self.vy * dt)),
+            conf=max(0.0, previous.conf * 0.92),
+            quality=max(0.0, previous.quality * 0.92),
+            seq=int(seq),
+            t=float(now),
+            captured_at=float(now),
+            source="predicted",
+            predicted=True,
+        )
+        self.detection = dataclasses.replace(predicted)
+        return predicted
+
+
+class _ColorContrastFallback:
+    """Short-lived appearance memory seeded only by YOLO detections.
+
+    The fallback does not search the whole frame.  It compares a compact HSV
+    histogram at the last model-confirmed person box, with pixels similar to
+    the surrounding background and the fixed reticle removed.  Descriptor
+    refreshes are throttled; on model misses the comparison normally costs a
+    small fraction of a millisecond.
+    """
+
+    def __init__(self, search_radius: int = YOLO26_SEARCH_RADIUS,
+                 seed_conf: float = 0.03, max_age_s: float = 0.20,
+                 update_interval_s: float = 0.025,
+                 min_correlation: float = 0.40,
+                 max_bhattacharyya: float = 0.50,
+                 min_seed_width: int = 4):
+        self.search_radius = int(search_radius)
+        self.seed_conf = float(seed_conf)
+        self.max_age_s = float(max_age_s)
+        self.update_interval_s = float(update_interval_s)
+        self.min_correlation = float(min_correlation)
+        self.max_bhattacharyya = float(max_bhattacharyya)
+        self.min_seed_width = int(min_seed_width)
+        self.hist = None
+        self.detection: Optional[Detection] = None
+        self.last_model_t = 0.0
+        self.last_descriptor_t = 0.0
+        self.last_model_seq = 0
+
+    def reset(self) -> None:
+        self.hist = None
+        self.detection = None
+        self.last_model_t = 0.0
+        self.last_descriptor_t = 0.0
+        self.last_model_seq = 0
+
+    @staticmethod
+    def _local_box(frame: np.ndarray, origin: Tuple[int, int],
+                   det: Detection):
+        frame_h, frame_w = frame.shape[:2]
+        cx = float(det.x - int(origin[0]))
+        cy = float(det.y - int(origin[1]))
+        box_w = max(4, int(round(det.w * 0.95)))
+        box_h = max(6, int(round(det.h * 0.95)))
+        x1 = max(0, int(round(cx - box_w * 0.5)))
+        y1 = max(0, int(round(cy - box_h * 0.5)))
+        x2 = min(frame_w, x1 + box_w)
+        y2 = min(frame_h, y1 + box_h)
+        x1 = max(0, x2 - box_w)
+        y1 = max(0, y2 - box_h)
+        if x2 - x1 < 4 or y2 - y1 < 6:
+            return None
+        return x1, y1, x2, y2, cx, cy
+
+    @classmethod
+    def _descriptor(cls, frame: np.ndarray, origin: Tuple[int, int],
+                    det: Detection):
+        local = cls._local_box(frame, origin, det)
+        if local is None:
+            return None
+        x1, y1, x2, y2, _cx, _cy = local
+        roi = frame[y1:y2, x1:x2]
+        box_h, box_w = roi.shape[:2]
+        pad = max(3, min(10, int(min(box_w, box_h) * 0.25)))
+        rx1 = max(0, x1 - pad)
+        ry1 = max(0, y1 - pad)
+        rx2 = min(frame.shape[1], x2 + pad)
+        ry2 = min(frame.shape[0], y2 + pad)
+        surround = frame[ry1:ry2, rx1:rx2]
+        ring = np.full(surround.shape[:2], 255, dtype=np.uint8)
+        ring[y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1] = 0
+        if cv2.countNonZero(ring) == 0:
+            return None
+
+        background = cv2.mean(surround, mask=ring)[:3]
+        background_scalar = tuple(int(round(v)) for v in background) + (0,)
+        delta = cv2.absdiff(roi, background_scalar)
+        # max-channel distance >= 18 approximates the validated Euclidean
+        # distance of 25 without a square root.
+        contrast = cv2.max(cv2.max(delta[:, :, 0], delta[:, :, 1]),
+                           delta[:, :, 2])
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        _unused, contrast_mask = cv2.threshold(
+            contrast, 17, 255, cv2.THRESH_BINARY)
+        colour_mask = cv2.inRange(hsv, (0, 30, 20), (179, 255, 255))
+        mask_u8 = cv2.bitwise_and(contrast_mask, colour_mask)
+
+        # White crosshair pixels are screen-fixed, not target appearance.
+        frame_cx = frame.shape[1] * 0.5
+        frame_cy = frame.shape[0] * 0.5
+        cv2.circle(mask_u8,
+                   (int(round(frame_cx - x1)), int(round(frame_cy - y1))),
+                   9, 0, -1)
+        count = int(cv2.countNonZero(mask_u8))
+        if count < max(8, int(mask_u8.size * 0.025)):
+            return None
+
+        hist = cv2.calcHist(
+            [hsv], [0, 1], mask_u8, [18, 8], [0, 180, 0, 256])
+        hist = cv2.normalize(hist, None, alpha=1.0,
+                             norm_type=cv2.NORM_L1)
+        foreground_fraction = count / float(mask_u8.size)
+        foreground_contrast = float(cv2.mean(
+            contrast, mask=mask_u8)[0])
+        return hist, foreground_fraction, foreground_contrast
+
+    def process(self, frame: np.ndarray, origin: Tuple[int, int],
+                model_detections: List[Detection], now: float,
+                seq: int) -> List[Detection]:
+        """Observe model boxes or return one conservative colour fallback."""
+        reliable = [d for d in model_detections
+                    if d.source == "detect"
+                    and d.conf >= self.seed_conf
+                    and d.w >= self.min_seed_width]
+        if reliable:
+            chosen = max(reliable, key=lambda d: (d.conf, d.quality))
+            force_refresh = self.detection is None
+            if self.detection is not None:
+                distance = math.hypot(chosen.x - self.detection.x,
+                                      chosen.y - self.detection.y)
+                force_refresh = distance > max(
+                    18.0, 0.75 * max(chosen.h, self.detection.h))
+            self.detection = dataclasses.replace(chosen)
+            self.last_model_t = float(now)
+            self.last_model_seq = int(seq)
+            if force_refresh or now - self.last_descriptor_t \
+                    >= self.update_interval_s:
+                descriptor = self._descriptor(frame, origin, chosen)
+                if descriptor is not None:
+                    self.hist = descriptor[0]
+                    self.last_descriptor_t = float(now)
+            return []
+
+        # A low-confidence but accepted detector box is still preferable to a
+        # colour extrapolation; use colour only on an actual detector miss.
+        if model_detections or self.hist is None or self.detection is None:
+            return []
+        age = float(now) - self.last_model_t
+        descriptor_age = float(now) - self.last_descriptor_t
+        if age < 0.0 or age > self.max_age_s \
+                or descriptor_age > self.max_age_s:
+            return []
+
+        previous = self.detection
+        local_x = previous.x - int(origin[0])
+        local_y = previous.y - int(origin[1])
+        rel_x = local_x - frame.shape[1] * 0.5
+        rel_y = local_y - frame.shape[0] * 0.5
+        if rel_x * rel_x + rel_y * rel_y > self.search_radius ** 2:
+            return []
+        current = self._descriptor(frame, origin, previous)
+        if current is None:
+            return []
+        hist, fraction, contrast = current
+        correlation = float(cv2.compareHist(
+            self.hist, hist, cv2.HISTCMP_CORREL))
+        distance = float(cv2.compareHist(
+            self.hist, hist, cv2.HISTCMP_BHATTACHARYYA))
+        if not (math.isfinite(correlation) and math.isfinite(distance)):
+            return []
+        if correlation < self.min_correlation \
+                or distance > self.max_bhattacharyya \
+                or fraction < 0.04 or contrast < 20.0:
+            return []
+
+        similarity = 0.5 * (correlation + max(0.0, 1.0 - distance))
+        return [dataclasses.replace(
+            previous,
+            conf=float(similarity),
+            quality=float(similarity / max(self.min_correlation, 1e-6)),
+            source="color",
+            predicted=True,
+            seq=int(seq),
+            t=float(now),
+        )]
 
 
 @dataclass
 class YOLOConfig:
     """Configuration for YOLO26n backend."""
     model_path: str = "models/yolo26n.onnx"
-    capture_radius: int = 45           # 40-50px radius from center
-    conf_threshold: float = 0.35       # Detection confidence
+    pose_model_path: str = "models/yolo26n-pose.onnx"
+    # Kept for API compatibility.  The validated live search radius is fixed
+    # at YOLO26_SEARCH_RADIUS so callers cannot accidentally widen the FOV.
+    capture_radius: int = YOLO26_SEARCH_RADIUS
+    capture_side: int = YOLO26_CAPTURE_SIDE
+    detector_side: int = YOLO26_DETECTOR_SIDE
+    conf_threshold: float = 0.003      # Validated detector candidate floor
+    pose_conf_threshold: float = 0.004
     iou_threshold: float = 0.45        # NMS IoU
     target_fps: int = 120              # Capture FPS cap
-    input_size: int = 224              # Model input (224x224 for speed)
-    use_half: bool = True              # FP16 inference
-    providers: Tuple[str, ...] = ("CPUExecutionProvider",)  # ONNX Runtime providers
+    input_size: int = YOLO26_DETECT_INPUT
+    use_half: bool = False             # Bundled ONNX inputs are float32
+    providers: Tuple[str, ...] = ()    # Empty means best available EP + CPU
     person_class_id: int = 0           # COCO class ID for person
-    min_aspect_ratio: float = 1.1      # Min h/w for upright human
-    max_aspect_ratio: float = 3.6      # Max h/w (close-ups clip the sides)
-    capture_backend: str = "auto"      # win32rt capture engine
+    min_aspect_ratio: float = 0.25
+    max_aspect_ratio: float = 5.0
+    min_box_width: float = 2.0
+    max_box_width: float = 100.0
+    pose_min_aspect_ratio: float = 0.25
+    pose_max_aspect_ratio: float = 5.0
+    pose_min_box_width: float = 1.5
+    pose_max_box_width: float = 160.0
+    pose_interval_s: float = 0.20
+    track_max_age_s: float = 0.10
+    capture_backend: str = "mss"
+    # Six detector workers fit the benchmark machine's six physical cores.
+    # Pose gets one worker so its asynchronous pass cannot starve the <10 ms
+    # synchronous detector path.
+    detector_threads: int = 6
+    pose_threads: int = 1
 
 
 class YOLO26nBackend:
@@ -72,104 +419,200 @@ class YOLO26nBackend:
     Real-time YOLO26n human detection backend.
     
     Pipeline:
-    1. Capture thread: mss grabs screen region (centered, 2*radius square)
-    2. Inference thread: YOLO26n detects persons, filters by aspect ratio
-    3. Main thread: get_latest_detection() returns best match
+    1. MSS captures a 224px context square around screen centre.
+    2. ``yolo26n.onnx`` detects every fresh frame on a 256px tensor.
+    3. ``yolo26n-pose.onnx`` validates/follows on an asynchronous thread.
+    4. A short constant-velocity track bridges momentary model misses.
     
     Target: <10ms total latency per frame
     """
     
     def __init__(self, cfg: Optional[YOLOConfig] = None):
         self.cfg = cfg or YOLOConfig()
+        # These values are tied to the reviewed recording benchmark.  Keep the
+        # search FOV fixed even when an older caller still passes radius=45.
+        self.search_radius = YOLO26_SEARCH_RADIUS
+        self.capture_side = YOLO26_CAPTURE_SIDE
+        self.detector_side = YOLO26_DETECTOR_SIDE
+        self.cfg.input_size = YOLO26_DETECT_INPUT
+        self.cfg.conf_threshold = 0.003
+        self.cfg.pose_conf_threshold = 0.002
         self._stop = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._infer_thread: Optional[threading.Thread] = None
-        self._frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
-        self._result_queue: queue.Queue[List[Detection]] = queue.Queue(maxsize=2)
+        self._pose_thread: Optional[threading.Thread] = None
+        self._frame_queue: queue.Queue[_FramePacket] = queue.Queue(maxsize=1)
+        self._pose_queue: queue.Queue[_FramePacket] = queue.Queue(maxsize=1)
+        self._result_queue: queue.Queue[List[Detection]] = queue.Queue(maxsize=1)
         self._latest_detection: Optional[Detection] = None
+        self._last_measurements: List[Detection] = []
         self._frame_seq = 0
+        self._capture_seq = 0
         self._lock = threading.Lock()
+        self._pose_lock = threading.Lock()
+        self._pose_result = None
+        self._pose_result_seq = 0
+        self._pose_consumed_seq = 0
+        self._pose_submitted_at = 0.0
+        self._track = _CenterTrack(self.cfg.track_max_age_s)
+        self._appearance = _ColorContrastFallback(self.search_radius)
+        self._view_change_lock = threading.Lock()
+        self._view_changed_at = 0.0
+        self._view_reset_at = 0.0
+        # Detector and pose run on different threads.  Each keeps reusable
+        # preprocessing tensors keyed by input size, avoiding allocation and
+        # RGB/transpose dispatch on every 120 Hz frame without sharing mutable
+        # buffers across sessions.
+        self._preprocess_local = threading.local()
         self._session = None
+        self._pose_session = None
         self._input_name = None
         self._output_names = None
-        self._monitor = None
-        self._sct = None
+        self._pose_input_name = None
+        self._pose_output_name = None
+        self._capture = None
+        self._capture_region = (0, 0, self.capture_side, self.capture_side)
         self._stats = {
             "frames_captured": 0,
             "frames_inferred": 0,
+            "frames_pose": 0,
             "detections_found": 0,
             "avg_capture_ms": 0.0,
             "avg_infer_ms": 0.0,
+            "avg_pose_ms": 0.0,
+            "dropped_capture_frames": 0,
+            "color_fallbacks": 0,
         }
         self._warmup_done = False
-        
+
     def start(self) -> bool:
         """Initialize model, capture, and start threads."""
-        if not self._init_model():
+        if not self.initialize_models():
             return False
         if not self._init_capture():
             return False
-        self._start_threads()
         self._warmup()
+        self._start_threads()
         return True
-    
-    def _init_model(self) -> bool:
-        """Load ONNX model with ONNX Runtime."""
+
+    @staticmethod
+    def _bundled_model(expected_name: str) -> Path:
+        """Return one of the two allowed, local, hardcoded model paths."""
+        return Path(__file__).resolve().parent / "models" / expected_name
+
+    def _providers(self, ort) -> List[str]:
+        available = set(ort.get_available_providers())
+        requested = [p for p in self.cfg.providers if p in available]
+        if not requested:
+            for provider in ("TensorrtExecutionProvider",
+                             "CUDAExecutionProvider",
+                             "DmlExecutionProvider"):
+                if provider in available:
+                    requested.append(provider)
+                    break
+        if "CPUExecutionProvider" in available \
+                and "CPUExecutionProvider" not in requested:
+            requested.append("CPUExecutionProvider")
+        return requested or list(available)
+
+    @staticmethod
+    def _session_options(ort, threads: int):
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = max(1, int(threads))
+        options.inter_op_num_threads = 1
+        # ORT workers normally spin hard between calls.  During a sustained
+        # 120 Hz stream that needlessly heats mobile CPUs and eventually
+        # throttles the synchronous detector above its 10 ms p95 budget.
+        # ORT 1.31 documents this bounded/backed-off spin mode as the most
+        # consistently performant setting.  Gate it by version so older
+        # deployments never fail session creation on an unknown config key.
+        try:
+            version = tuple(int(part) for part in str(ort.__version__).split(".")[:2])
+        except (AttributeError, TypeError, ValueError):
+            version = (0, 0)
+        if version >= (1, 31):
+            options.add_session_config_entry(
+                "session.intra_op.spin_duration_us", "1000")
+            options.add_session_config_entry(
+                "session.intra_op.spin_backoff_max", "8")
+        return options
+
+    def initialize_models(self) -> bool:
+        """Load exactly yolo26n.onnx and yolo26n-pose.onnx from models/."""
+        if self._session is not None:
+            return True
         try:
             import onnxruntime as ort
         except ImportError:
             print("ERROR: onnxruntime not installed. pip install onnxruntime")
             return False
-            
-        model_path = Path(self.cfg.model_path)
-        if not model_path.exists():
-            print(f"ERROR: Model not found: {model_path}")
+
+        model_path = self._bundled_model(YOLO26_DETECT_MODEL)
+        pose_path = self._bundled_model(YOLO26_POSE_MODEL)
+        if not model_path.is_file() or not pose_path.is_file():
+            print("ERROR: hardcoded YOLO26 models are missing: "
+                  f"{model_path}, {pose_path}")
             return False
-            
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.intra_op_num_threads = 2
-        sess_options.inter_op_num_threads = 2
-        
-        self._session = ort.InferenceSession(
-            str(model_path),
-            sess_options=sess_options,
-            providers=self.cfg.providers
-        )
-        
+
+        try:
+            providers = self._providers(ort)
+            self._session = ort.InferenceSession(
+                str(model_path),
+                sess_options=self._session_options(
+                    ort, self.cfg.detector_threads),
+                providers=providers,
+            )
+            self._pose_session = ort.InferenceSession(
+                str(pose_path),
+                sess_options=self._session_options(ort, self.cfg.pose_threads),
+                providers=providers,
+            )
+        except Exception as exc:
+            print(f"ERROR: could not load hardcoded YOLO26 models: {exc}")
+            self._session = None
+            self._pose_session = None
+            return False
+
         self._input_name = self._session.get_inputs()[0].name
         self._output_names = [o.name for o in self._session.get_outputs()]
-        
-        print(f"YOLO26n loaded: {model_path} | providers: {self.cfg.providers}")
-        print(f"  Input: {self._session.get_inputs()[0].shape}")
-        print(f"  Output: {[o.shape for o in self._session.get_outputs()]}")
+        self._pose_input_name = self._pose_session.get_inputs()[0].name
+        self._pose_output_name = self._pose_session.get_outputs()[0].name
+        print("YOLO26 models loaded: "
+              f"{model_path.name} + {pose_path.name} | "
+              f"detector={self._session.get_providers()[0]}, "
+              f"pose={self._pose_session.get_providers()[0]}")
         return True
-    
+
+    # Backward-compatible private name used by older local scripts.
+    def _init_model(self) -> bool:
+        return self.initialize_models()
+
     def _init_capture(self) -> bool:
-        """Initialize win32rt CaptureBackend (WGC/dxcam/mss auto-select)."""
+        """Initialize the configured capture backend (MSS by default)."""
         if CaptureBackend is None:
             print("ERROR: win32rt.CaptureBackend not available")
             return False
-            
+
         try:
-            # Honor the app's capture choice.  "auto" picks mss, which is
-            # the reliable engine on machines where dxcam's COM init fails.
             self._capture = CaptureBackend(prefer=self.cfg.capture_backend)
-            # Get screen center
             import input as win32rt
             vx, vy, vw, vh = win32rt.virtual_screen()
             cx = vx + vw // 2
             cy = vy + vh // 2
-            r = self.cfg.capture_radius
-            self._capture_region = (cx - r, cy - r, cx + r, cy + r)
-            print(f"Capture region: {2*r}x{2*r} @ ({cx-r},{cy-r}) using win32rt CaptureBackend (prefer={self.cfg.capture_backend})")
+            half = self.capture_side // 2
+            self._capture_region = (cx - half, cy - half,
+                                    cx + half, cy + half)
+            print(f"Capture context: {self.capture_side}x{self.capture_side} "
+                  f"@ ({cx-half},{cy-half}); search radius="
+                  f"{self.search_radius}px; backend={self.cfg.capture_backend}")
             return True
         except Exception as e:
             print(f"Capture init failed: {e}")
             return False
-    
+
     def _start_threads(self):
-        """Start capture and inference threads."""
+        """Start latest-frame capture, detector, and pose threads."""
         self._stop.clear()
         self._capture_thread = threading.Thread(
             target=self._capture_loop, name="yolo26n-capture", daemon=True
@@ -177,22 +620,62 @@ class YOLO26nBackend:
         self._infer_thread = threading.Thread(
             target=self._inference_loop, name="yolo26n-infer", daemon=True
         )
+        self._pose_thread = threading.Thread(
+            target=self._pose_loop, name="yolo26n-pose", daemon=True
+        )
         self._capture_thread.start()
         self._infer_thread.start()
-        print("YOLO26n threads started")
-    
-    def _warmup(self, runs: int = 5):
-        """Warm up the model with dummy input."""
-        dummy = np.random.randint(0, 255, (self.cfg.input_size, self.cfg.input_size, 3), dtype=np.uint8)
-        blob = self._preprocess(dummy)
-        for _ in range(runs):
-            self._session.run(self._output_names, {self._input_name: blob})
+        self._pose_thread.start()
+        print("YOLO26 detector and pose-follow threads started")
+
+    def _warmup(self, runs: int = 3):
+        """Warm both sessions before live threads start."""
+        if self._warmup_done or self._session is None:
+            return
+        detector_blob = np.zeros(
+            (1, 3, self.cfg.input_size, self.cfg.input_size),
+            dtype=np.float32)
+        pose_blob = np.zeros((1, 3, 640, 640), dtype=np.float32)
+        for _ in range(max(1, runs)):
+            self._session.run(
+                self._output_names,
+                {self._input_name: detector_blob},
+            )
+        if self._pose_session is not None:
+            for _ in range(2):
+                self._pose_session.run(
+                    [self._pose_output_name],
+                    {self._pose_input_name: pose_blob})
         self._warmup_done = True
         print("Warmup complete")
-    
+
+    @staticmethod
+    def _put_latest(q, item) -> bool:
+        """Replace a queued stale item instead of dropping the new frame."""
+        dropped = False
+        while True:
+            try:
+                q.put_nowait(item)
+                return dropped
+            except queue.Full:
+                try:
+                    q.get_nowait()
+                    dropped = True
+                except queue.Empty:
+                    return dropped
+
+    @staticmethod
+    def _update_average(stats: dict, average_key: str,
+                        count: int, value_ms: float) -> None:
+        if count <= 1:
+            stats[average_key] = float(value_ms)
+        else:
+            old = float(stats.get(average_key, 0.0))
+            stats[average_key] = old + (float(value_ms) - old) / count
+
     def _capture_loop(self):
-        """Continuous screen capture thread using win32rt CaptureBackend."""
-        frame_delay = 1.0 / self.cfg.target_fps
+        """Continuously capture the centre context, always keeping newest."""
+        frame_delay = 1.0 / max(1, self.cfg.target_fps)
         last_geom = 0.0
         while not self._stop.is_set():
             t0 = time.perf_counter()
@@ -206,179 +689,476 @@ class YOLO26nBackend:
                         vx, vy, vw, vh = win32rt.virtual_screen()
                         cx = vx + vw // 2
                         cy = vy + vh // 2
-                        r = self.cfg.capture_radius
-                        region = (cx - r, cy - r, cx + r, cy + r)
+                        half = self.capture_side // 2
+                        region = (cx - half, cy - half,
+                                  cx + half, cy + half)
                         if region != self._capture_region:
                             with self._lock:
                                 self._capture_region = region
-                            print(f"Capture region updated: {2*r}x{2*r} "
-                                  f"@ ({cx-r},{cy-r})")
+                            print(f"Capture region updated: "
+                                  f"{self.capture_side}x{self.capture_side} "
+                                  f"@ ({cx-half},{cy-half})")
                     except Exception:
                         pass
-                l, t, r, b = self._capture_region
+                with self._lock:
+                    l, t, r, b = self._capture_region
                 frame = self._capture.grab(l, t, r, b)
                 if frame is None:
                     time.sleep(0.001)
                     continue
-                    
-                # Frame is already BGR from win32rt
-                try:
-                    self._frame_queue.put_nowait(frame)
-                    self._stats["frames_captured"] += 1
-                except queue.Full:
-                    pass
-                    
+
+                self._capture_seq += 1
+                packet = _FramePacket(self._capture_seq,
+                                      time.perf_counter(), frame, (l, t))
+                if self._put_latest(self._frame_queue, packet):
+                    self._stats["dropped_capture_frames"] += 1
+                self._stats["frames_captured"] += 1
             except Exception as e:
                 print(f"Capture error: {e}")
                 time.sleep(0.01)
-            
+
             elapsed = time.perf_counter() - t0
-            self._stats["avg_capture_ms"] = self._stats["avg_capture_ms"] * 0.99 + elapsed * 1000 * 0.01
+            self._update_average(
+                self._stats, "avg_capture_ms",
+                self._stats["frames_captured"], elapsed * 1000.0)
             sleep_time = frame_delay - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
-    
+
     def _inference_loop(self):
-        """Continuous inference thread."""
+        """Run the fast detector and merge fresh asynchronous pose results."""
         while not self._stop.is_set():
             try:
-                frame = self._frame_queue.get(timeout=0.1)
+                packet = self._frame_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-                
+
+            with self._view_change_lock:
+                view_changed_at = self._view_changed_at
+            if packet.captured_at <= view_changed_at:
+                self._track.reset()
+                self._appearance.reset()
+                continue
+            if view_changed_at > self._view_reset_at:
+                self._track.reset()
+                self._appearance.reset()
+                self._view_reset_at = view_changed_at
+
             t0 = time.perf_counter()
             try:
-                detections = self._detect(frame)
-                self._stats["frames_inferred"] += 1
-                self._stats["detections_found"] += len(detections)
-
-                # Stamp every result with a monotonically increasing frame
-                # number so consumers can tell fresh sightings from repeats.
-                with self._lock:
-                    self._frame_seq += 1
-                    seq = self._frame_seq
-                stamp = time.perf_counter()
+                detections = self._detect_chain(
+                    packet.frame, packet.origin,
+                    now=packet.captured_at, seq=packet.seq)
                 for det in detections:
-                    det.seq = seq
-                    det.t = stamp
+                    det.captured_at = packet.captured_at
+                # A nudge may have happened while ONNX was processing this
+                # frame. Never publish geometry captured before that camera
+                # move as if it described the new view.
+                with self._view_change_lock:
+                    view_changed_at = self._view_changed_at
+                if packet.captured_at <= view_changed_at:
+                    self._track.reset()
+                    self._appearance.reset()
+                    continue
+                self._stats["frames_inferred"] += 1
+                now = time.perf_counter()
+                pose_interval = self._pose_submission_interval(detections)
+                if now - self._pose_submitted_at >= pose_interval:
+                    self._pose_submitted_at = now
+                    self._put_latest(self._pose_queue, packet)
 
-                try:
-                    self._result_queue.put_nowait(detections)
-                except queue.Full:
-                    pass
+                pose_detections = []
+                with self._pose_lock:
+                    pose_result = self._pose_result
+                if pose_result is not None:
+                    pose_seq, pose_captured_at, pose_detections0 = pose_result
+                    if pose_seq > self._pose_consumed_seq \
+                            and now - pose_captured_at <= 0.30 \
+                            and pose_captured_at > view_changed_at:
+                        self._pose_consumed_seq = pose_seq
+                        pose_detections = self._align_pose_detections(
+                            pose_detections0,
+                            pose_captured_at,
+                            packet.captured_at,
+                            packet.frame,
+                            packet.origin,
+                        )
 
-                # Update latest detection (thread-safe)
-                with self._lock:
-                    if detections:
-                        self._latest_detection = max(detections, key=lambda d: d.conf)
+                measurements = detections + pose_detections
+                self._stats["color_fallbacks"] += sum(
+                    d.source == "color" for d in detections)
+                self._stats["detections_found"] += len(measurements)
+                tracked = self._track.update(
+                    measurements, packet.captured_at, packet.seq)
+                for det in measurements:
+                    det.seq = packet.seq
+                    det.t = now
+                if tracked is not None:
+                    tracked.t = now
+                    if tracked.captured_at <= 0.0:
+                        tracked.captured_at = packet.captured_at
+                stale_after_nudge = False
+                with self._view_change_lock:
+                    if packet.captured_at <= self._view_changed_at:
+                        stale_after_nudge = True
                     else:
-                        self._latest_detection = None
-                        
+                        # Publish under the view-generation lock. A concurrent
+                        # notify_view_moved() either happens first (and rejects
+                        # this packet) or waits and clears this result after;
+                        # stale geometry can never win the race.
+                        with self._lock:
+                            self._frame_seq = max(
+                                self._frame_seq, packet.seq)
+                            self._last_measurements = [
+                                dataclasses.replace(d) for d in measurements]
+                            self._latest_detection = (
+                                dataclasses.replace(tracked)
+                                if tracked is not None else None)
+                if stale_after_nudge:
+                    self._track.reset()
+                    self._appearance.reset()
+                    continue
+                self._put_latest(self._result_queue, measurements)
             except Exception as e:
                 print(f"Inference error: {e}")
-            
+
             elapsed = time.perf_counter() - t0
-            self._stats["avg_infer_ms"] = self._stats["avg_infer_ms"] * 0.99 + elapsed * 1000 * 0.01
-    
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Preprocess frame for YOLO input: resize, normalize, CHW, batch.
-        
-        Optimized for square capture region (90x90) -> direct resize to input_size.
-        No letterbox padding needed since capture is square.
+            self._update_average(
+                self._stats, "avg_infer_ms",
+                self._stats["frames_inferred"], elapsed * 1000.0)
+
+    def _pose_submission_interval(self, detections) -> float:
+        """Adaptive asynchronous-pose cadence for the current detector frame.
+
+        Pose is most valuable as an independent recovery path.  Running the
+        640 px model at 5 Hz while the fast model already confirms a person
+        consumes one core roughly 75% of the time and can starve the <10 ms
+        synchronous chain.  Keep 5 Hz for misses and appearance-only fallback,
+        but use a 1 Hz validation heartbeat during fresh model confirmation.
+        The next miss immediately restores the faster cadence.
         """
-        # Direct resize - capture region is square (90x90)
-        resized = cv2.resize(frame, (self.cfg.input_size, self.cfg.input_size), 
-                            interpolation=cv2.INTER_LINEAR)
-        
-        # HWC -> CHW, normalize, batch
-        blob = resized.astype(np.float32) / 255.0
-        blob = np.transpose(blob, (2, 0, 1))[None]  # (1, 3, H, W)
+        try:
+            base = max(0.01, float(self.cfg.pose_interval_s))
+        except (TypeError, ValueError):
+            base = 0.20
+        model_confirmed = any(
+            getattr(det, "source", "") == "detect"
+            and not bool(getattr(det, "predicted", False))
+            for det in (detections or ()))
+        if model_confirmed:
+            return max(base, YOLO26_POSE_CONFIRM_INTERVAL_S)
+        return base
+
+    def _align_pose_detections(self, detections, pose_captured_at,
+                               current_captured_at, frame, origin):
+        """Project an asynchronous pose result to the current capture time.
+
+        Pose inference is intentionally off the synchronous path and normally
+        finishes about one tenth of a second after its pixels were captured.
+        Applying that old box directly in a moving 3D view pulls aim backwards.
+        Use the centre track's measured screen velocity for a bounded temporal
+        alignment; with no track, reject a materially stale pose rather than
+        pretending it is current.
+        """
+        try:
+            age = float(current_captured_at) - float(pose_captured_at)
+        except (TypeError, ValueError):
+            return []
+        if not math.isfinite(age) or age < 0.0 or age > 0.30:
+            return []
+        if age > 0.05 and self._track.detection is None:
+            return []
+
+        shift_x = self._track.vx * age
+        shift_y = self._track.vy * age
+        shift_mag = math.hypot(shift_x, shift_y)
+        if shift_mag > self.search_radius:
+            scale = self.search_radius / shift_mag
+            shift_x *= scale
+            shift_y *= scale
+
+        center_x = int(origin[0]) + frame.shape[1] * 0.5
+        center_y = int(origin[1]) + frame.shape[0] * 0.5
+        aligned = []
+        for source in detections:
+            det = dataclasses.replace(
+                source,
+                x=int(round(source.x + shift_x)),
+                y=int(round(source.y + shift_y)),
+                captured_at=float(current_captured_at),
+                predicted=bool(source.predicted or age > 0.02),
+            )
+            dx = det.x - center_x
+            dy = det.y - center_y
+            if dx * dx + dy * dy <= self.search_radius ** 2:
+                aligned.append(det)
+        return aligned
+
+    def _pose_loop(self):
+        """Run pose inference independently of detector response latency."""
+        while not self._stop.is_set():
+            try:
+                packet = self._pose_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            started = time.perf_counter()
+            try:
+                detections = self._detect_pose(packet.frame, packet.origin)
+                for det in detections:
+                    det.captured_at = packet.captured_at
+                stale_after_nudge = False
+                with self._view_change_lock:
+                    if packet.captured_at <= self._view_changed_at:
+                        stale_after_nudge = True
+                    else:
+                        with self._pose_lock:
+                            self._pose_result = (
+                                packet.seq, packet.captured_at, detections)
+                            self._pose_result_seq = packet.seq
+                if stale_after_nudge:
+                    continue
+                self._stats["frames_pose"] += 1
+            except Exception as exc:
+                print(f"Pose inference error: {exc}")
+                continue
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._update_average(
+                self._stats, "avg_pose_ms", self._stats["frames_pose"],
+                elapsed_ms)
+
+    @staticmethod
+    def _center_crop(frame: np.ndarray, side: int):
+        h, w = frame.shape[:2]
+        side = int(min(side, h, w))
+        side -= side % 2
+        x0 = max(0, (w - side) // 2)
+        y0 = max(0, (h - side) // 2)
+        return frame[y0:y0 + side, x0:x0 + side], x0, y0
+
+    def _preprocess(self, frame: np.ndarray,
+                    size: Optional[int] = None) -> np.ndarray:
+        """Resize BGR capture data and supply YOLO's expected RGB tensor."""
+        size = int(size or self.cfg.input_size)
+
+        # OpenCV 5 can write the complete resized, RGB-swapped, normalized
+        # NCHW blob into caller-owned storage.  Besides removing two temporary
+        # arrays, this is byte-identical to the compatibility path below.
+        # Keep the fallback for older OpenCV builds that do not expose the
+        # Image2BlobParams overload.
+        try:
+            cache = getattr(self._preprocess_local, "blobs", None)
+            if cache is None:
+                cache = {}
+                self._preprocess_local.blobs = cache
+            entry = cache.get(size)
+            if entry is None:
+                params = cv2.dnn.Image2BlobParams()
+                scale = 1.0 / 255.0
+                params.scalefactor = (scale, scale, scale, scale)
+                params.size = (size, size)
+                params.swapRB = True
+                params.ddepth = cv2.CV_32F
+                blob = np.empty((1, 3, size, size), dtype=np.float32)
+                entry = (params, blob)
+                cache[size] = entry
+            params, blob = entry
+            return cv2.dnn.blobFromImageWithParams(frame, blob, params)
+        except (AttributeError, TypeError, cv2.error):
+            pass
+
+        resized = cv2.resize(frame, (size, size),
+                             interpolation=cv2.INTER_LINEAR)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        blob = np.ascontiguousarray(
+            rgb.transpose(2, 0, 1)[None], dtype=np.float32)
+        blob *= (1.0 / 255.0)
         return blob
-    
-    def _detect(self, frame: np.ndarray) -> List[Detection]:
-        """Run YOLO inference and return filtered human detections."""
-        # Preprocess
-        blob = self._preprocess(frame)
-        
-        # Inference
-        outputs = self._session.run(self._output_names, {self._input_name: blob})
-        
-        # Parse YOLOv8/YOLO11 output: (1, 84, 8400) -> (8400, 84)
-        # 84 = 4 box + 80 classes
-        # IMPORTANT: Ultralytics ONNX export outputs boxes as [x1, y1, x2, y2] in input_size pixels
-        preds = outputs[0][0].T  # (8400, 84)
-        
-        # Filter by person class confidence
-        person_scores = preds[:, 4 + self.cfg.person_class_id]
-        mask = person_scores > self.cfg.conf_threshold
+
+    def _detect(self, frame: np.ndarray,
+                origin: Tuple[int, int] = (0, 0)) -> List[Detection]:
+        """Run yolo26n on centre context and return geometry-only people."""
+        if self._session is None or frame is None or frame.size == 0:
+            return []
+        crop, crop_x, crop_y = self._center_crop(frame, self.detector_side)
+        if crop.size == 0:
+            return []
+        input_size = self.cfg.input_size
+        blob = self._preprocess(crop, input_size)
+        raw = self._session.run(
+            self._output_names, {self._input_name: blob})[0]
+        out = np.asarray(raw, dtype=np.float32)
+        if out.ndim != 3 or out.shape[0] < 1:
+            return []
+        preds = out[0].T if out.shape[1] <= out.shape[2] else out[0]
+        class_col = 4 + int(self.cfg.person_class_id)
+        if preds.ndim != 2 or preds.shape[1] <= class_col:
+            return []
+
+        scores = preds[:, class_col]
+        boxes = preds[:, :4]
+        scale = crop.shape[1] / float(input_size)
+        bcx = boxes[:, 0] * scale
+        bcy = boxes[:, 1] * scale
+        bw = boxes[:, 2] * scale
+        bh = boxes[:, 3] * scale
+        aspect = bh / np.maximum(bw, 1e-6)
+
+        frame_cx = frame.shape[1] * 0.5
+        frame_cy = frame.shape[0] * 0.5
+        rel_x = crop_x + bcx - frame_cx
+        rel_y = crop_y + bcy - frame_cy
+        mask = (scores >= self.cfg.conf_threshold) \
+            & (rel_x * rel_x + rel_y * rel_y
+               <= float(self.search_radius ** 2)) \
+            & (bw >= self.cfg.min_box_width) \
+            & (bw <= self.cfg.max_box_width) \
+            & (aspect >= self.cfg.min_aspect_ratio) \
+            & (aspect <= self.cfg.max_aspect_ratio)
         if not np.any(mask):
             return []
-            
-        preds = preds[mask]
-        scores = person_scores[mask]
-        
-        # Ultralytics ONNX export (YOLO26n) outputs boxes as
-        # [cx, cy, w, h] in input_size pixels - NOT corners, and NOT
-        # normalised.  Validate with the raw scores before changing:
-        # a person at the crop edge reads e.g. [37, 71, 69, 139].
-        boxes = preds[:, :4]
-        bcx = boxes[:, 0]
-        bcy = boxes[:, 1]
-        bw = boxes[:, 2]
-        bh = boxes[:, 3]
 
-        # NMSBoxes wants [left, top, width, height].
-        nms_boxes = np.stack([bcx - bw / 2.0, bcy - bh / 2.0, bw, bh],
-                             axis=1)
-
-        # NMS
+        bcx, bcy, bw, bh = bcx[mask], bcy[mask], bw[mask], bh[mask]
+        scores, aspect = scores[mask], aspect[mask]
+        nms_boxes = np.stack([bcx - bw * 0.5, bcy - bh * 0.5,
+                              bw, bh], axis=1)
         indices = cv2.dnn.NMSBoxes(
             nms_boxes.tolist(), scores.tolist(),
-            self.cfg.conf_threshold, self.cfg.iou_threshold
-        )
-
+            float(self.cfg.conf_threshold), float(self.cfg.iou_threshold))
         if len(indices) == 0:
             return []
+        indices = np.asarray(indices).reshape(-1)
 
-        indices = indices.flatten() if isinstance(indices, np.ndarray) else indices
-        nms_boxes = nms_boxes[indices]
-        bcx = bcx[indices]
-        bcy = bcy[indices]
-        bw = bw[indices]
-        bh = bh[indices]
-        scores = scores[indices]
+        ox = int(origin[0]) + crop_x
+        oy = int(origin[1]) + crop_y
+        detections = []
+        for i in indices[:16]:
+            conf = float(scores[i])
+            detections.append(Detection(
+                x=int(round(ox + bcx[i])),
+                y=int(round(oy + bcy[i])),
+                w=max(1, int(round(bw[i]))),
+                h=max(1, int(round(bh[i]))),
+                conf=conf,
+                aspect_ratio=float(aspect[i]),
+                source="detect",
+                quality=conf / max(1e-9, self.cfg.conf_threshold),
+            ))
+        return detections
 
-        # Map back to screen coordinates
-        r = self.cfg.capture_radius
-        l, t, _r2, _b2 = self._capture_region
-        scale_x = (2 * r) / self.cfg.input_size
-        scale_y = (2 * r) / self.cfg.input_size
+    def _detect_chain(self, frame: np.ndarray,
+                      origin: Tuple[int, int] = (0, 0),
+                      now: Optional[float] = None,
+                      seq: Optional[int] = None) -> List[Detection]:
+        """Run detector plus the model-seeded colour/contrast fallback."""
+        stamp = float(now if now is not None else time.perf_counter())
+        frame_seq = int(seq if seq is not None else self._frame_seq + 1)
+        detections = self._detect(frame, origin)
+        colour = self._appearance.process(
+            frame, origin, detections, stamp, frame_seq)
+        return detections + colour
+
+    def _detect_pose(self, frame: np.ndarray,
+                     origin: Tuple[int, int] = (0, 0)) -> List[Detection]:
+        """Decode yolo26n-pose's post-NMS [xyxy, score, class, kps] rows."""
+        if self._pose_session is None or frame is None or frame.size == 0:
+            return []
+        crop, crop_x, crop_y = self._center_crop(frame, self.capture_side)
+        if crop.size == 0:
+            return []
+        blob = self._preprocess(crop, 640)
+        raw = self._pose_session.run(
+            [self._pose_output_name], {self._pose_input_name: blob})[0]
+        out = np.asarray(raw, dtype=np.float32)
+        if out.ndim == 3:
+            out = out[0]
+        if out.ndim != 2 or out.shape[1] != 57:
+            return []
+
+        scale = crop.shape[1] / 640.0
+        x1 = out[:, 0] * scale
+        y1 = out[:, 1] * scale
+        x2 = out[:, 2] * scale
+        y2 = out[:, 3] * scale
+        scores = out[:, 4]
+        classes = out[:, 5]
+        bcx = (x1 + x2) * 0.5
+        bcy = (y1 + y2) * 0.5
+        bw = x2 - x1
+        bh = y2 - y1
+        aspect = bh / np.maximum(bw, 1e-6)
+
+        frame_cx = frame.shape[1] * 0.5
+        frame_cy = frame.shape[0] * 0.5
+        rel_x = crop_x + bcx - frame_cx
+        rel_y = crop_y + bcy - frame_cy
+        mask = (classes == float(self.cfg.person_class_id)) \
+            & (scores >= self.cfg.pose_conf_threshold) \
+            & (rel_x * rel_x + rel_y * rel_y
+               <= float(self.search_radius ** 2)) \
+            & (bw >= self.cfg.pose_min_box_width) \
+            & (bw <= self.cfg.pose_max_box_width) \
+            & (aspect >= self.cfg.pose_min_aspect_ratio) \
+            & (aspect <= self.cfg.pose_max_aspect_ratio)
+        candidate_ids = np.flatnonzero(mask)
+        if candidate_ids.size == 0:
+            return []
 
         detections = []
-        for _box, center_x, center_y, box_w, box_h, conf in zip(
-                nms_boxes, bcx, bcy, bw, bh, scores):
-            aspect = box_h / box_w if box_w > 0 else 0
-
-            # Filter by aspect ratio (upright human ~ 2:1)
-            if aspect < self.cfg.min_aspect_ratio or aspect > self.cfg.max_aspect_ratio:
+        ox = int(origin[0]) + crop_x
+        oy = int(origin[1]) + crop_y
+        for i in candidate_ids:
+            kps = out[i, 6:].reshape(17, 3)
+            kx = kps[:, 0] * scale
+            ky = kps[:, 1] * scale
+            inside = ((kx >= x1[i] - 2.0) & (kx <= x2[i] + 2.0)
+                      & (ky >= y1[i] - 2.0) & (ky <= y2[i] + 2.0))
+            if float(np.mean(inside)) < 0.40:
                 continue
+            conf = float(scores[i])
+            detections.append(Detection(
+                x=int(round(ox + bcx[i])),
+                y=int(round(oy + bcy[i])),
+                w=max(1, int(round(bw[i]))),
+                h=max(1, int(round(bh[i]))),
+                conf=conf,
+                aspect_ratio=float(aspect[i]),
+                source="pose",
+                quality=conf / max(1e-9, self.cfg.pose_conf_threshold),
+                pose_conf=conf,
+            ))
+        detections.sort(key=lambda d: (d.quality, d.conf), reverse=True)
+        return detections[:16]
 
-            # Centre in screen coordinates.  The crop is 2*r wide and is
-            # resized to input_size, so one input pixel is 2*r/input_size
-            # screen pixels.  Map the centre directly from the crop's
-            # top-left origin - do NOT subtract the radius here: that
-            # would subtract r *input* pixels (r * scale screen px)
-            # instead of r screen px and bias every detection.
-            x = int(l + center_x * scale_x)
-            y = int(t + center_y * scale_y)
-            sw = int(box_w * scale_x)
-            sh = int(box_h * scale_y)
+    def detect_frame(self, frame: np.ndarray, origin=(0, 0),
+                     run_pose: bool = False,
+                     t: Optional[float] = None) -> List[Detection]:
+        """Synchronous file/test entry point; it never starts screen capture."""
+        if self._session is None and not self.initialize_models():
+            return []
+        if not self._warmup_done:
+            self._warmup()
+        now = float(t if t is not None else time.perf_counter())
+        self._frame_seq += 1
+        objects = self._detect_chain(
+            frame, origin, now=now, seq=self._frame_seq)
+        poses = self._detect_pose(frame, origin) if run_pose else []
+        measurements = objects + poses
+        for det in measurements:
+            det.seq = self._frame_seq
+            det.t = now
+            det.captured_at = now
+        tracked = self._track.update(measurements, now, self._frame_seq)
+        with self._lock:
+            self._last_measurements = [dataclasses.replace(d)
+                                       for d in measurements]
+            self._latest_detection = (dataclasses.replace(tracked)
+                                      if tracked is not None else None)
+        return [tracked] if tracked is not None else []
 
-            detections.append(Detection(x=x, y=y, w=sw, h=sh,
-                                        conf=float(conf),
-                                        aspect_ratio=float(aspect)))
-
-        return detections
+    def get_last_measurements(self) -> List[Detection]:
+        """Return raw detector/pose measurements from the last processed frame."""
+        with self._lock:
+            return [dataclasses.replace(d) for d in self._last_measurements]
 
     def get_latest_detection(self, after_seq: Optional[int] = None,
                              max_age: Optional[float] = None) -> Optional[Detection]:
@@ -389,7 +1169,6 @@ class YOLO26nBackend:
         corrections).  max_age: reject results older than this many
         seconds, so a stalled capture thread cannot keep steering.
         """
-        import dataclasses
         with self._lock:
             det = self._latest_detection
         if det is None:
@@ -410,8 +1189,31 @@ class YOLO26nBackend:
     
     def get_stats(self) -> dict:
         """Get performance statistics."""
-        return self._stats.copy()
-    
+        with self._lock:
+            return self._stats.copy()
+
+    def notify_view_moved(self, when: Optional[float] = None) -> None:
+        """Invalidate detections captured before an app-driven camera move.
+
+        The recording benchmark has a fixed camera, but live 3D gameplay does
+        not. Without this boundary, a frame already in inference can arrive
+        after a nudge and be applied to the new view, producing a second,
+        stale correction.
+        """
+        stamp = float(when if when is not None else time.perf_counter())
+        with self._view_change_lock:
+            self._view_changed_at = max(self._view_changed_at, stamp)
+        with self._lock:
+            self._latest_detection = None
+            self._last_measurements = []
+        with self._pose_lock:
+            self._pose_result = None
+        while True:
+            try:
+                self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def stop(self):
         """Stop all threads and cleanup."""
         self._stop.set()
@@ -419,11 +1221,14 @@ class YOLO26nBackend:
             self._capture_thread.join(timeout=1.0)
         if self._infer_thread:
             self._infer_thread.join(timeout=1.0)
-        if self._capture:
-            # win32rt CaptureBackend doesn't have explicit close, but we can dereference
+        if self._pose_thread:
+            self._pose_thread.join(timeout=1.0)
+        if self._capture is not None:
             self._capture = None
-        print("YOLO26n backend stopped")
-    
+        self._track.reset()
+        self._appearance.reset()
+        print("YOLO26 backend stopped")
+
     def __enter__(self):
         self.start()
         return self
@@ -432,91 +1237,251 @@ class YOLO26nBackend:
         self.stop()
 
 
-def test_on_video(video_path: str, cfg: Optional[YOLOConfig] = None):
-    """Test YOLO26n on a recorded video file."""
-    cap = cv2.VideoCapture(video_path)
+DEFAULT_BENCHMARK_VIDEO = (
+    Path(__file__).resolve().parent
+    / "testdata" / "recording" / "recording.mkv"
+)
+DEFAULT_BENCHMARK_LABELS = (
+    Path(__file__).resolve().parent
+    / "testdata" / "recording" / "reviewed_labels.json"
+)
+
+
+def _load_reviewed_labels(path) -> Tuple[dict, dict]:
+    """Load compact frame-presence labels used by the recording benchmark."""
+    import json
+
+    label_path = Path(path)
+    with label_path.open("r", encoding="utf-8") as fh:
+        meta = json.load(fh)
+    stride = int(meta["frame_stride"])
+    count = int(meta["sample_count"])
+    if stride <= 0 or count <= 0:
+        raise ValueError("frame_stride and sample_count must be positive")
+    ignored = {int(v) for v in meta.get("ignored_indices", ())}
+    negatives = {int(v) for v in meta.get("negative_indices", ())}
+    if ignored & negatives:
+        raise ValueError("ignored_indices and negative_indices overlap")
+    invalid = [i for i in ignored | negatives if i < 0 or i >= count]
+    if invalid:
+        raise ValueError(f"review index outside [0, {count}): {invalid[0]}")
+
+    if "positive_indices" in meta:
+        positives = {int(v) for v in meta["positive_indices"]}
+        if positives & (ignored | negatives):
+            raise ValueError("positive review indices overlap ignored/negative")
+    else:
+        positives = set(range(count)) - ignored - negatives
+    labels = {i * stride: i in positives
+              for i in range(count) if i not in ignored}
+    return labels, meta
+
+
+def _center_context(frame: np.ndarray, side: int = YOLO26_CAPTURE_SIDE):
+    """Return a square centre view and its full-frame top-left coordinate."""
+    h, w = frame.shape[:2]
+    side = max(2, min(int(side), h, w))
+    side -= side % 2
+    left = max(0, (w - side) // 2)
+    top = max(0, (h - side) // 2)
+    return frame[top:top + side, left:left + side], (left, top)
+
+
+def _latency_summary(values) -> dict:
+    if not values:
+        return {"count": 0, "mean_ms": None, "p50_ms": None,
+                "p95_ms": None, "p99_ms": None, "max_ms": None}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "count": int(arr.size),
+        "mean_ms": float(np.mean(arr)),
+        "p50_ms": float(np.percentile(arr, 50)),
+        "p95_ms": float(np.percentile(arr, 95)),
+        "p99_ms": float(np.percentile(arr, 99)),
+        "max_ms": float(np.max(arr)),
+    }
+
+
+def benchmark_video(video_path=DEFAULT_BENCHMARK_VIDEO,
+                    labels_path=DEFAULT_BENCHMARK_LABELS,
+                    max_seconds: float = 540.0,
+                    max_frames: Optional[int] = None,
+                    reviewed_only: bool = False,
+                    progress_seconds: float = 30.0) -> dict:
+    """Run a bounded, headless benchmark on the centre of a video.
+
+    The detector plus colour/contrast fallback is the synchronous chain and is
+    timed on every processed frame. Pose is timed separately and runs only for
+    manually reviewed frames; in the live backend it runs asynchronously.
+    """
+    video_path = Path(video_path)
+    labels = {}
+    label_meta = {}
+    if labels_path is not None:
+        labels, label_meta = _load_reviewed_labels(labels_path)
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        print(f"Cannot open video: {video_path}")
-        return
-        
-    backend = YOLO26nBackend(cfg)
-    if not backend.start():
-        return
-        
-    frame_count = 0
-    total_time = 0.0
-    
+        raise FileNotFoundError(f"cannot open benchmark video: {video_path}")
+    reported_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_fps = float(cap.get(cv2.CAP_PROP_FPS) or 60.0)
+    review_windows = set()
+    if reviewed_only:
+        # Temporal appearance memory needs preceding model frames. Twenty-four
+        # frames covers its 0.20 s lifetime even for 120 FPS recordings.
+        for reviewed_frame in labels:
+            review_windows.update(range(max(0, reviewed_frame - 24),
+                                        reviewed_frame + 1))
+
+    # Leave a safety margin below ten minutes even if a caller supplies a
+    # larger value. Model setup and final JSON serialization are also bounded.
+    budget_s = max(1.0, min(float(max_seconds), 570.0))
+    started = time.perf_counter()
+    deadline = started + budget_s
+    backend = YOLO26nBackend()
+    detector_ms = []
+    pose_ms = []
+    frame_index = 0
+    decoded_frames = 0
+    inferred_frames = 0
+    detector_hits = 0
+    color_hits = 0
+    pose_hits = 0
+    evaluated = 0
+    tp = tn = fp = fn = 0
+    ended_by = "eof"
+    next_progress = started + max(1.0, float(progress_seconds))
+
     try:
+        if not backend.initialize_models():
+            raise RuntimeError("could not initialize hardcoded YOLO26 models")
+        backend._warmup()
         while True:
-            ret, frame = cap.read()
-            if not ret:
+            now = time.perf_counter()
+            if now >= deadline:
+                ended_by = "time_budget"
                 break
-                
-            frame_count += 1
+            if max_frames is not None and decoded_frames >= int(max_frames):
+                ended_by = "frame_limit"
+                break
+            ok, frame = cap.read()
+            if not ok:
+                ended_by = "eof"
+                break
+            decoded_frames += 1
+            reviewed = frame_index in labels
+            if reviewed_only and frame_index not in review_windows:
+                frame_index += 1
+                continue
+
+            context, origin = _center_context(frame)
             t0 = time.perf_counter()
-            
-            # Run detection directly (bypass capture thread for video test)
-            detections = backend._detect(frame)
-            
-            elapsed = time.perf_counter() - t0
-            total_time += elapsed
-            
-            # Draw detections
-            for det in detections:
-                x1, y1 = det.x - det.w//2, det.y - det.h//2
-                x2, y2 = det.x + det.w//2, det.y + det.h//2
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"{det.conf:.2f} ar={det.aspect_ratio:.1f}", 
-                           (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            
-            cv2.putText(frame, f"Frame: {frame_count} | {elapsed*1000:.1f}ms | Dets: {len(detections)}",
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            cv2.imshow("YOLO26n Video Test", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            objects = backend._detect_chain(
+                context, origin, now=frame_index / video_fps,
+                seq=frame_index)
+            detector_ms.append((time.perf_counter() - t0) * 1000.0)
+            inferred_frames += 1
+            detector_hits += int(bool(objects))
+            color_hits += sum(d.source == "color" for d in objects)
+
+            if reviewed:
+                t0 = time.perf_counter()
+                poses = backend._detect_pose(context, origin)
+                pose_ms.append((time.perf_counter() - t0) * 1000.0)
+                pose_hits += int(bool(poses))
+                predicted = bool(objects or poses)
+                truth = bool(labels[frame_index])
+                tp += int(truth and predicted)
+                tn += int(not truth and not predicted)
+                fp += int(not truth and predicted)
+                fn += int(truth and not predicted)
+                evaluated += 1
+
+            frame_index += 1
+            now = time.perf_counter()
+            if progress_seconds > 0 and now >= next_progress:
+                sync = _latency_summary(detector_ms)
+                print("benchmark: decoded=%d inferred=%d reviewed=%d "
+                      "chain_mean=%.2fms p95=%.2fms elapsed=%.1fs"
+                      % (decoded_frames, inferred_frames, evaluated,
+                         sync["mean_ms"], sync["p95_ms"], now - started))
+                next_progress = now + float(progress_seconds)
+
+            if reviewed_only and labels and evaluated == len(labels):
+                ended_by = "reviewed_complete"
                 break
-                
     finally:
         cap.release()
-        backend.stop()
-        cv2.destroyAllWindows()
-        
-    if frame_count > 0:
-        avg_ms = (total_time / frame_count) * 1000
-        print(f"\nVideo test complete: {frame_count} frames, avg {avg_ms:.1f}ms/frame ({1000/avg_ms:.1f} FPS)")
+
+    elapsed_s = time.perf_counter() - started
+    sync = _latency_summary(detector_ms)
+    async_pose = _latency_summary(pose_ms)
+    reviewed_total = tp + tn + fp + fn
+    accuracy = ((tp + tn) / reviewed_total * 100.0
+                if reviewed_total else None)
+    precision = (tp / (tp + fp) * 100.0 if tp + fp else None)
+    recall = (tp / (tp + fn) * 100.0 if tp + fn else None)
+    f1 = (2.0 * tp / (2 * tp + fp + fn) * 100.0
+          if 2 * tp + fp + fn else None)
+    labels_complete = bool(labels) and evaluated == len(labels)
+    full_recording_complete = ended_by == "eof"
+    latency_met = (sync["p95_ms"] is not None
+                   and sync["p95_ms"] < 10.0)
+    accuracy_met = accuracy is not None and accuracy >= 95.0
+    validation_complete = labels_complete and (
+        reviewed_only or full_recording_complete)
+
+    return {
+        "video": str(video_path.resolve()),
+        "labels": (str(Path(labels_path).resolve())
+                   if labels_path is not None else None),
+        "models": [YOLO26_DETECT_MODEL, YOLO26_POSE_MODEL],
+        "mode": "reviewed_only" if reviewed_only else "full_recording",
+        "ended_by": ended_by,
+        "budget_s": budget_s,
+        "elapsed_s": elapsed_s,
+        "reported_video_frames": reported_video_frames,
+        "decoded_frames": decoded_frames,
+        "inferred_frames": inferred_frames,
+        "throughput_fps": (inferred_frames / elapsed_s
+                           if elapsed_s > 0 else 0.0),
+        "synchronous_hit_frames": detector_hits,
+        "color_fallback_hit_frames": color_hits,
+        "pose_hit_reviewed_frames": pose_hits,
+        "synchronous_chain": sync,
+        # Compatibility key retained for existing benchmark consumers.
+        "synchronous_detector": sync,
+        "asynchronous_pose": async_pose,
+        "review": {
+            "expected": len(labels),
+            "evaluated": evaluated,
+            "sample_count": label_meta.get("sample_count"),
+            "frame_stride": label_meta.get("frame_stride"),
+            "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+            "accuracy_pct": accuracy,
+            "precision_pct": precision,
+            "recall_pct": recall,
+            "f1_pct": f1,
+        },
+        "labels_complete": labels_complete,
+        "full_recording_complete": full_recording_complete,
+        "targets": {
+            "accuracy_at_least_95_pct": accuracy_met,
+            "synchronous_chain_p95_below_10_ms": latency_met,
+            "met": bool(validation_complete and accuracy_met and latency_met),
+        },
+    }
 
 
-if __name__ == "__main__":
-    import sys
-    
-    video_path = r"C:\Users\root\Documents\GitHub\snappy-detector\testdata\recording\recording.mkv"
-    
-    cfg = YOLOConfig(
-        model_path="models/yolo26n.onnx",
-        capture_radius=45,
-        conf_threshold=0.35,
-        input_size=640,
-        target_fps=120,
-    )
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--live":
-        # Live screen detection mode
-        backend = YOLO26nBackend(cfg)
-        if backend.start():
-            print("Live detection running. Press Ctrl+C to stop.")
-            try:
-                while True:
-                    det = backend.get_latest_detection()
-                    if det:
-                        print(f"Detected: x={det.x}, y={det.y}, w={det.w}, h={det.h}, conf={det.conf:.2f}, ar={det.aspect_ratio:.2f}")
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                backend.stop()
-    else:
-        # Video file test mode
-        test_on_video(video_path, cfg)
+def test_on_video(video_path: str, cfg: Optional[YOLOConfig] = None,
+                  **kwargs):
+    """Backward-compatible name for the headless benchmark.
+
+    ``cfg`` is accepted for older callers, but model names and validated model
+    geometry remain hardcoded by :class:`YOLO26nBackend`.
+    """
+    del cfg
+    return benchmark_video(video_path=video_path, **kwargs)
 
 # ======================================================================
 # merged from hpose.py
@@ -2220,7 +3185,7 @@ MODEL_URLS = {
         "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
 }
 
-DEFAULT_POSE_MODEL = "yolo11n-pose.onnx"
+DEFAULT_POSE_MODEL = YOLO26_POSE_MODEL
 DEFAULT_FACE_MODEL = "face_detection_yunet_2023mar.onnx"
 
 def _writable(path: str) -> bool:
@@ -2335,12 +3300,19 @@ class PoseDetector(object):
     def __init__(self, model: str = None, imgsz: int = 640,
                  conf: float = 0.25, iou: float = 0.45,
                  device: str = "auto", download: bool = True):
-        self.model_name = model or DEFAULT_POSE_MODEL
-        model = self.model_name
+        # Keep the legacy arguments for call-site compatibility, but never
+        # select or download another pose model. The application has one pose
+        # model, bundled next to the detector under models/.
+        del model, download
+        self.model_name = YOLO26_POSE_MODEL
         self.imgsz = int(imgsz)
         self.conf = float(conf)
         self.iou = float(iou)
-        self.path = model_path(model, download=download)
+        self.path = str(Path(__file__).resolve().parent
+                        / "models" / YOLO26_POSE_MODEL)
+        if not Path(self.path).is_file():
+            raise FileNotFoundError(
+                f"hardcoded pose model is missing: {self.path}")
         try:
             import onnxruntime as ort
         except ImportError as exc:
@@ -2513,37 +3485,48 @@ class PoseDetector(object):
         if out.ndim != 2:
             return []
         expected = 5 + N_KP * 3
-        # Accept either layout: (N, expected) or (expected, N).
-        # Also handle 57-column outputs (with objectness column at index 4).
-        if out.shape[1] == expected:
-            pass
-        elif out.shape[0] == expected:
+        transposed = False
+        # Raw Ultralytics pose exports use 56 rows, while YOLO26's exported
+        # end-to-end graph returns 300 post-NMS rows with 57 columns:
+        # [x1, y1, x2, y2, score, class, 17 * (x, y, confidence)].
+        if out.shape[1] not in (expected, expected + 1):
+            if out.shape[0] not in (expected, expected + 1):
+                return []
             out = out.T
-        elif out.shape[1] == expected + 1:  # objectness variant
-            out = np.delete(out, 4, axis=1)  # drop objectness
-        elif out.shape[0] == expected + 1:
-            out = np.delete(out, 4, axis=0).T
-        else:
-            return []
-        if out.shape[1] != expected:
-            return []
-        boxes_c = out[:, :4]
-        scores = out[:, 4]
-        kps_raw = out[:, 5:5 + N_KP * 3].reshape(-1, N_KP, 3)
+            transposed = True
 
-        keep_mask = scores >= self.conf
+        post_nms = out.shape[1] == expected + 1 and not transposed
+        if post_nms:
+            boxes = out[:, :4]
+            scores = out[:, 4]
+            classes = out[:, 5]
+            kps_raw = out[:, 6:6 + N_KP * 3].reshape(-1, N_KP, 3)
+            keep_mask = (scores >= self.conf) & np.isfinite(scores) \
+                & (np.abs(classes) < 0.5)
+        else:
+            # Legacy raw exports: [cx, cy, w, h, person_score, keypoints].
+            # A transposed 57-row variant has an objectness value at index 4;
+            # retain the historical person-class score at index 5.
+            if out.shape[1] == expected + 1:
+                out = np.delete(out, 4, axis=1)
+            if out.shape[1] != expected:
+                return []
+            boxes_c = out[:, :4]
+            scores = out[:, 4]
+            kps_raw = out[:, 5:5 + N_KP * 3].reshape(-1, N_KP, 3)
+            cx = boxes_c[:, 0]
+            cy = boxes_c[:, 1]
+            bw = boxes_c[:, 2]
+            bh = boxes_c[:, 3]
+            boxes = np.stack([cx - bw / 2, cy - bh / 2,
+                              cx + bw / 2, cy + bh / 2], axis=1)
+            keep_mask = (scores >= self.conf) & np.isfinite(scores)
+
         if not np.any(keep_mask):
             return []
-        boxes_c = boxes_c[keep_mask]
+        boxes = boxes[keep_mask]
         scores = scores[keep_mask]
         kps_raw = kps_raw[keep_mask]
-
-        cx = boxes_c[:, 0]
-        cy = boxes_c[:, 1]
-        bw = boxes_c[:, 2]
-        bh = boxes_c[:, 3]
-        boxes = np.stack([cx - bw / 2, cy - bh / 2,
-                          cx + bw / 2, cy + bh / 2], axis=1)
         idx = _nms(boxes, scores, self.iou)[:max_people]
         if not idx:
             return []
@@ -2746,7 +3729,7 @@ class Analyzer(object):
 
     def __init__(self, bundle_path: str = None, pose_model: str = None,
                  face_model: str = None, conf: float = 0.25,
-                 iou: float = 0.45, use_face: bool = True,
+                  iou: float = 0.45, use_face: bool = False,
                  download: bool = True, face_region: float = 0.26,
                  min_face_person_px: float = 100.0):
         self.bundle = load_bundle(bundle_path)
@@ -3216,7 +4199,7 @@ except Exception:
     def log(_text):
         pass
 
-DEFAULT_MODEL = "yolo11n-pose.onnx"
+DEFAULT_MODEL = YOLO26_POSE_MODEL
 
 DETECTOR_FLOOR = 0.10
 
@@ -3368,18 +4351,17 @@ class Engine(object):
         cfgv = cfgv or {}
         self.cfgv = dict(cfgv)
         bundle = cfgv.get("hpose_bundle") or None
-        model = str(cfgv.get("hpose_model") or DEFAULT_MODEL)
+        model = "yolo26n-pose.onnx"
         self.analyzer = Analyzer(bundle_path=bundle, pose_model=model,
                                  conf=DETECTOR_FLOOR,
-                                 use_face=bool(cfgv.get("hpose_use_face", True)),
+                                 use_face=False,
                                  min_face_person_px=float(cfgv.get(
-                                     "hpose_min_face_person_px", 100.0)))
+                                      "hpose_min_face_person_px", 100.0)))
         self.tracker = Tracker()
         self.last_error = ""
         self._box_stats_cache = {}
         self._small_detector = None
-        self._small_model = str(cfgv.get("hpose_small_model")
-                                or "yolo11n-pose-320.onnx")
+        self._small_model = YOLO26_POSE_MODEL
         self._stats = {"frames": 0, "hits": 0, "misses": 0,
                        "ms_total": 0.0, "ms_hit": 0.0, "ms_miss": 0.0}
         self._stop_small_thread = False
@@ -3406,10 +4388,8 @@ class Engine(object):
                     self.cfgv["hpose_stance"] = "any"
             except Exception:
                 pass
-        # Kick off the small-model export/build in the background so the
-        # first scan does not stall on a 30-60 s Ultralytics export.
-        threading.Thread(target=self._prepare_small_detector,
-                          name="hpose-small-model", daemon=True).start()
+        # The old ROI path exported a third YOLO11 model. Keep one hardcoded
+        # pose session instead; it remains on the asynchronous path.
 
     def _tta_flag(self, img, n_poses, max_score):
         cfgv = getattr(self, "cfgv", None) or {}
@@ -3452,27 +4432,8 @@ class Engine(object):
         return self._small_detector
 
     def _prepare_small_detector(self):
-        try:
-            import os
-            path = os.path.join(cache_dir(), self._small_model)
-            if not (os.path.isfile(path) and os.path.getsize(path) > 1024):
-                if self._stop_small_thread:
-                    return
-                if not _export_small_pose(path):
-                    log("hpose: 320 ROI model unavailable; ROI runs at "
-                        "the 640 model speed (~50 ms). Install "
-                        "'ultralytics' or drop %s into %s."
-                        % (self._small_model, cache_dir()))
-                    return
-            if self._stop_small_thread:
-                return
-            self._small_detector = PoseDetector(
-                model=self._small_model, imgsz=320, conf=0.05,
-                download=False)
-            log("hpose: 320 ROI model ready")
-        except Exception as exc:
-            log("hpose: 320 ROI model failed (%r); ROI runs at 640 speed"
-                % (exc,))
+        """Compatibility no-op: loading a third ROI model is not allowed."""
+        self._small_detector = None
 
     def _pick_roi_detector(self, expected_h: float, roi_side: float):
         """Small model is fine if the target ends up >= 32 px in the
@@ -3932,7 +4893,10 @@ def stats() -> dict:
 
 def mode_of(cfgv) -> str:
     try:
-        mode = str(cfgv.get("hpose_mode", "off") or "off").strip().lower()
+        mode = cfgv.get("hpose_mode", False)
+        if isinstance(mode, bool):
+            return "on" if mode else "off"
+        mode = str(mode or "off").strip().lower()
     except Exception:
         mode = "off"
     return "on" if mode in ("on", "true", "1", "yes", "enabled") else "off"
@@ -4083,7 +5047,8 @@ CONTRAST_METRIC_SCALE = 0.83
 class SnapTarget(object):
     __slots__ = ("dx", "dy", "dist", "area", "contrast", "bw", "bh", "sig",
                  "hscore", "view", "stance", "motion", "lead_x", "lead_y",
-                 "speed", "track_id")
+                 "speed", "track_id", "source", "seq", "observed_at",
+                 "predicted")
 
     def __init__(self, dx, dy, dist, area, contrast, bw, bh, sig=None,
                  hscore=0.0):
@@ -4106,6 +5071,13 @@ class SnapTarget(object):
         self.lead_y = 0.0
         self.speed = 0.0
         self.track_id = 0
+        # Geometry is always in real screen pixels.  ``source`` lets the
+        # assist layer distinguish a model/pose measurement from a
+        # classical/colour fallback; the latter must pass the humanoid gate.
+        self.source = "classical"
+        self.seq = 0
+        self.observed_at = 0.0
+        self.predicted = False
 
 class ScanResult(object):
     __slots__ = ("kind", "target", "ms")
@@ -5721,6 +6693,7 @@ def _accent_stats(img, cl_px, X0, Y0, accents, tol, soft=0.0,
 MOTION_MIN_SPEED = 20.0
 MOTION_MAX_DEVIATION = 12.0
 MOTION_MIN_SPAN = 0.03
+MOTION_LEAD_MS = 60.0
 
 def predict_motion(obs, lead_ms, max_offset):
     if lead_ms <= 0 or len(obs) < 2 or max_offset <= 0:
@@ -5776,7 +6749,9 @@ class MotionTracker(object):
         self._prev_obs = None
         self.reset()
 
-    def reset(self):
+    def reset(self, clear_history=False):
+        if clear_history:
+            self._prev_obs = None
         self.x = None
         self.P = None
         self.last_t = None
@@ -6365,11 +7340,16 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     screen_cx = ox + cx
     screen_cy = oy + cy
     if collect is not None:
+        # Debug overlay must only ever show detections inside the configured
+        # search radius.  Pose subjects outside the gate are still evaluated
+        # for picking, but they are never drawn as candidates.
         for _sb in subjects:
             try:
                 _scx, _scy = _sb.center
                 _ddx = _scx - screen_cx
                 _ddy = _scy - screen_cy
+                if radius and math.hypot(_ddx, _ddy) > float(radius):
+                    continue
                 _bw = _sb.width
                 _bh = _sb.height
                 collect.append((_sb.score, _ddx, _ddy,
@@ -6392,11 +7372,10 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
             ty = subject.box[1] + subject.height * 0.15
     else:
         tx, ty = subject.center
-    lead_s = 0.0
-    try:
-        lead_s = float(cfgv.get("hpose_lead_ms", 0) or 0) / 1000.0
-    except (TypeError, ValueError):
-        lead_s = 0.0
+    # Smart motion lead: use a hardcoded reaction-time horizon so leading
+    # works automatically based on measured target velocity rather than
+    # requiring user setup.
+    lead_s = MOTION_LEAD_MS / 1000.0
     lx = ly = 0.0
     if lead_s > 0.0:
         try:
@@ -6439,6 +7418,8 @@ def _hpose_target(img, cx, cy, radius, cfgv, origin, deadline,
     target.lead_y = float(ly)
     target.speed = float(subject.speed)
     target.track_id = int(subject.track_id)
+    target.source = "pose"
+    target.observed_at = time.perf_counter()
     return target
 
 """Last-resort person watcher: high-contrast, roughly 1:2 ink blobs.
@@ -6459,15 +7440,19 @@ ever runs as the last stage, only when human detection is switched on,
 and only inside the configured search radius.
 """
 
-BLOB_MIN_H = 14.0
-BLOB_MAX_H = 180.0
-BLOB_ASPECT_LO = 0.30
-BLOB_ASPECT_HI = 0.85
-BLOB_STICK_LO = 0.15
-BLOB_STICK_HI = 0.30
-BLOB_FILL_MIN = 0.30
-BLOB_STICK_FILL_MIN = 0.20
-BLOB_CONTRAST_MIN = 26.0
+# A 7-10 px person is the hard lower bound requested for the fallback
+# watcher.  Width/height is constrained to the same 1:2-1:5 human envelope as
+# every other non-model candidate; wider/squarer blobs (crosshairs, bullets,
+# HUD icons) are rejected before they can become a steering target.
+BLOB_MIN_H = 6.0
+BLOB_MAX_H = 240.0
+BLOB_ASPECT_LO = 0.18
+BLOB_ASPECT_HI = 0.55
+BLOB_STICK_LO = 0.18
+BLOB_STICK_HI = 0.40
+BLOB_FILL_MIN = 0.15
+BLOB_STICK_FILL_MIN = 0.12
+BLOB_CONTRAST_MIN = 15.0
 
 def _blob_components_cells(cells):
     gh, gw = cells.shape
@@ -6599,9 +7584,12 @@ def _blob_watch(img, cx, cy, radius, deadline=None):
     if best is None:
         return None
     bxc, byc, bw, bh, mean_c, area = best
-    return SnapTarget(int(round(bxc - cx)), int(round(byc - cy)),
-                      math.hypot(bxc - cx, byc - cy), float(area),
-                      mean_c, int(round(bw)), int(round(bh)))
+    target = SnapTarget(int(round(bxc - cx)), int(round(byc - cy)),
+                        math.hypot(bxc - cx, byc - cy), float(area),
+                        mean_c, int(round(bw)), int(round(bh)))
+    target.source = "blob"
+    target.observed_at = time.perf_counter()
+    return target
 
 def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 deadline_ms=None, collect=None, anchor_blind_area=0,
@@ -6674,10 +7662,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
         lum = (bg * _CH_WEIGHTS).sum(axis=2)
         diff = diff * np.clip(NORM_K / (lum + NORM_C), NORM_MIN, NORM_MAX)
 
-    try:
-        thr = float(cfgv.get("contrast_threshold", 38))
-    except (TypeError, ValueError):
-        thr = 38.0
+    thr = 5.0
     adapt_scale = 1.0
 
     if bool(cfgv.get("adaptive_threshold", True)):
@@ -6737,29 +7722,11 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     full = np.ones((gh, gw), dtype=bool)
     obj_cells = ~_flood_bg(solids, full)
 
-    try:
-        min_area = int(cfgv.get("min_area", 220))
-    except (TypeError, ValueError):
-        min_area = 220
-    try:
-        max_area = int(cfgv.get("max_area", 45000))
-    except (TypeError, ValueError):
-        max_area = 45000
-    try:
-        max_dim = int(cfgv.get("max_dim", 300))
-    except (TypeError, ValueError):
-        max_dim = 300
+    min_area = 25
+    max_area = 1280
+    max_dim = int(cfgv.get("radius", 150)) * 2
 
-    try:
-        user_min_contrast = float(cfgv.get("min_contrast", 48))
-    except (TypeError, ValueError):
-        user_min_contrast = 48.0
-    if user_min_contrast > MIN_CONTRAST_BASE:
-        min_contrast = user_min_contrast * adapt_scale * CONTRAST_METRIC_SCALE
-    else:
-        min_contrast = max(MIN_CONTRAST_FLOOR,
-                           user_min_contrast * adapt_scale) \
-            * CONTRAST_METRIC_SCALE
+    min_contrast = 15.0
     max_aspect = 10.0
 
     frag_floor_split = 64
@@ -7272,67 +8239,87 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
                 _ddx, _ddy = _pt[0] - cx, _pt[1] - cy
             collect.append((_s, _ddx, _ddy, _d, _a, _ct, _bw, _bh))
 
+    # High-contrast detection: pick the highest-contrast humanoid-ratio
+    # target inside the search radius, breaking ties by closeness to screen
+    # centre.  Bullets, crosshair feedback, HUD dots and random blobs never
+    # qualify - they fail targeting.humanoid_ok.
+    #
+    # Size-based gating: contrast detection is for small targets (5-20px tall)
+    # that YOLO struggles with.  Large targets (>=20px) are reliably caught by
+    # YOLO and should not be returned by contrast fallback - that would just
+    # add false positives.  Anything under 5px is too small to track.
+    best = None
+    best_key = None
     for _s, Y0, X0, cl_px, dist, area, contrast, bw, bh in candidates:
         if time.perf_counter() > deadline:
             detection_dropped += 1
             break
         try:
-            _hs = _figure_score(bw, bh, area, cl_px)
+            if not targeting.humanoid_ok(bw, bh):
+                continue
+            bh_float = float(bh)
+            if bh_float < 5.0 or bh_float > 20.0:
+                continue
         except Exception:
-            _hs = 0.0
-        ys, xs = np.nonzero(cl_px)
-        if xs.size > 4000:
-            step = xs.size // 4000 + 1
-            xs, ys = xs[::step], ys[::step]
-        xs = xs.astype(np.float32) + X0
-        ys = ys.astype(np.float32) + Y0
-
-        pt = _meanshift(xs, ys, cx, cy)
-
-        if pt is None:
-
-            tcx, tcy = X0 + bw / 2.0, Y0 + bh / 2.0
-        else:
-            tcx, tcy = pt
-        try:
-            _tier_now = 2 if _hs >= FIGURE_TIER2_THRESH else _shape_tier(bw, bh, area, cl_px)
-        except Exception:
-            _tier_now = 0
-        if focus_bias > 0.0 and _tier_now == 2:
-
-            tcy -= max(0.0, tcy - Y0) * min(1.0, focus_bias)
-        ddx = tcx - cx
-        ddy = tcy - cy
-        move = math.hypot(ddx, ddy)
-
-        if move > radius + 10:
             continue
+        # Higher contrast wins; on tie, smaller distance to centre wins.
+        key = (-float(contrast), float(dist))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = (Y0, X0, cl_px, dist, area, contrast, bw, bh)
 
-        ms = (time.perf_counter() - t0) * 1000.0
+    if best is None:
+        return ScanResult("none", None, (time.perf_counter() - t0) * 1000.0)
 
+    Y0, X0, cl_px, dist, area, contrast, bw, bh = best
+    try:
+        _hs = _figure_score(bw, bh, area, cl_px)
+    except Exception:
+        _hs = 0.0
+    ys, xs = np.nonzero(cl_px)
+    if xs.size > 4000:
+        step = xs.size // 4000 + 1
+        xs, ys = xs[::step], ys[::step]
+    xs = xs.astype(np.float32) + X0
+    ys = ys.astype(np.float32) + Y0
+
+    pt = _meanshift(xs, ys, cx, cy)
+
+    if pt is None:
+
+        tcx, tcy = X0 + bw / 2.0, Y0 + bh / 2.0
+    else:
+        tcx, tcy = pt
+    ddx = tcx - cx
+    ddy = tcy - cy
+    move = math.hypot(ddx, ddy)
+
+    ms = (time.perf_counter() - t0) * 1000.0
+
+    sig = None
+    try:
+        body = img[Y0:Y0 + cl_px.shape[0], X0:X0 + cl_px.shape[1]][cl_px]
+        if body.shape[0] > 0:
+            med = np.median(body.astype(np.float32), axis=0)
+            sig = _parse_accent("%d,%d,%d"
+                                % (int(med[2]), int(med[1]), int(med[0])))
+    except Exception:
         sig = None
-        try:
-            body = img[Y0:Y0 + cl_px.shape[0], X0:X0 + cl_px.shape[1]][cl_px]
-            if body.shape[0] > 0:
-                med = np.median(body.astype(np.float32), axis=0)
-                sig = _parse_accent("%d,%d,%d"
-                                    % (int(med[2]), int(med[1]), int(med[0])))
-        except Exception:
-            sig = None
 
-        target = SnapTarget(
-            int(round(ddx)),
-            int(round(ddy)),
-            move,
-            area,
-            contrast,
-            bw,
-            bh,
-            sig,
-            _hs,
-        )
-
-        return ScanResult("target", target, ms)
+    target = SnapTarget(
+        int(round(ddx)),
+        int(round(ddy)),
+        move,
+        area,
+        contrast,
+        bw,
+        bh,
+        sig,
+        _hs,
+    )
+    target.source = "classical"
+    target.observed_at = time.perf_counter()
+    return ScanResult("target", target, ms)
 
     ms = (time.perf_counter() - t0) * 1000.0
     _report_drops()
@@ -7344,8 +8331,12 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
             _log("blob watch failed: %r" % (exc,))
             _bt = None
         if _bt is not None:
-            return ScanResult("target", _bt,
-                              (time.perf_counter() - t0) * 1000.0)
+            # Human-only gating everywhere: even the last-resort blob watcher
+            # may not turn a bullet hole, muzzle flash or HUD dot into a
+            # steering target.
+            if targeting.humanoid_ok(_bt.bw, _bt.bh):
+                return ScanResult("target", _bt,
+                                  (time.perf_counter() - t0) * 1000.0)
 
     return ScanResult("none", None, ms)
 
@@ -7391,3 +8382,81 @@ def draw_debug_overlay(img, cx, cy, radius, candidates, chosen_idx=None):
         vis[max(0, int(cy)-ch):int(cy)+ch, max(0, int(cx)-1):int(cx)+2] = [255, 0, 255]
 
     return vis
+
+
+def _run_live_yolo26() -> int:
+    backend = YOLO26nBackend()
+    if not backend.start():
+        return 2
+    print("Live YOLO26 centre detection running. Press Ctrl+C to stop.")
+    last_seq = 0
+    try:
+        while True:
+            det = backend.get_latest_detection(after_seq=last_seq,
+                                                max_age=0.25)
+            if det is not None:
+                last_seq = det.seq
+                print("x=%d y=%d w=%d h=%d score=%.4f source=%s%s"
+                      % (det.x, det.y, det.w, det.h, det.conf, det.source,
+                         " predicted" if det.predicted else ""))
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.stop()
+
+
+def _main(argv=None) -> int:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Headless benchmark for the hardcoded YOLO26 models")
+    parser.add_argument("--video", default=str(DEFAULT_BENCHMARK_VIDEO),
+                        help="recording to benchmark")
+    parser.add_argument("--labels", default=str(DEFAULT_BENCHMARK_LABELS),
+                        help="manual-review label JSON")
+    parser.add_argument("--max-seconds", type=float, default=540.0,
+                        help="wall-clock budget (clamped to 570 seconds)")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="optional decoded-frame limit")
+    parser.add_argument("--reviewed-only", action="store_true",
+                        help="infer only manually reviewed frames")
+    parser.add_argument("--progress-seconds", type=float, default=30.0,
+                        help="progress log interval; 0 disables it")
+    parser.add_argument("--json-output", default=None,
+                        help="optional path for the result JSON")
+    parser.add_argument("--strict", action="store_true",
+                        help="exit nonzero unless both targets are met")
+    parser.add_argument("--live", action="store_true",
+                        help="run explicit centre-screen capture instead")
+    args = parser.parse_args(argv)
+
+    if args.live:
+        return _run_live_yolo26()
+    try:
+        result = benchmark_video(
+            video_path=args.video,
+            labels_path=args.labels,
+            max_seconds=args.max_seconds,
+            max_frames=args.max_frames,
+            reviewed_only=args.reviewed_only,
+            progress_seconds=args.progress_seconds,
+        )
+    except Exception as exc:
+        print(f"benchmark failed: {exc}")
+        return 2
+
+    text = json.dumps(result, indent=2, sort_keys=True)
+    print(text)
+    if args.json_output:
+        output = Path(args.json_output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text + "\n", encoding="utf-8")
+    if args.strict and not result["targets"]["met"]:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

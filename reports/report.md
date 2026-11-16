@@ -1,6 +1,6 @@
 # SnappyAI report
 
-Generated: 2026-11-07T23:33:25+00:00
+Generated: 2026-11-13T09:39:06+00:00
 Host: Windows 11 (build 26200)
 CPU: Intel64 Family 6 Model 158 Stepping 10, GenuineIntel
 GPU: NVIDIA GeForce GTX 1050
@@ -13,8 +13,8 @@ Four independent terms. A tool that reports only one of them misattributes probl
 | Component | What this run found |
 |---|---|
 | `local_queue` | not determined (2 check(s) returned UNKNOWN) |
-| `network_path` | **net.wifi.prefer_wired; net.dns.fastest_resolver** |
-| `host_processing` | **sched.background.lower_priority** |
+| `network_path` | **net.wifi.prefer_wired; nic.interrupt_moderation.disable; net.dns.fastest_resolver** |
+| `host_processing` | not determined (2 check(s) returned UNKNOWN) |
 | `render_input` | **gpu.vendor.low_latency_mode** |
 
 ## Changes recommended
@@ -28,10 +28,19 @@ Four independent terms. A tool that reports only one of them misattributes probl
 - automated steps: 0
 - verify with: `p95` over 200 samples; meaningful if >= 1.0 ms
 
+### `nic.interrupt_moderation.disable` — Network card delays interrupts to save CPU
+
+- component: `network_path` · confidence: **medium** · risk: low · reboot: no
+- finding: interrupt moderation is enabled on 1 adapter(s), batching packets and delaying each delivery to save CPU
+- expected effect: Packets reach the game thread sooner at slightly higher CPU cost.
+- mechanism: Interrupt coalescing holds completed packets in the NIC ring until a timer expires or a batch fills, trading per-packet delivery latency for fewer CPU interrupts, which directly delays the game network thread wakeup.
+- automated steps: 1
+- verify with: `p95` over 200 samples; meaningful if >= 1.0 ms
+
 ### `net.dns.fastest_resolver` — Slow domain name resolver
 
 - component: `network_path` · confidence: **medium** · risk: low · reboot: no
-- finding: resolver ['1.1.1.1', '8.8.8.8', '1.1.1.1', '8.8.8.8'] took 82.2373000009975 ms
+- finding: resolver ['1.1.1.1', '8.8.8.8'] took 91.04780000052415 ms
 - expected effect: Faster connection setup for new sessions and services.
 - mechanism: Every new game session, matchmaking call, and content fetch starts with a DNS lookup, and a slow or distant resolver adds its full round trip to connection setup before any game traffic flows.
 - automated steps: 1
@@ -46,22 +55,14 @@ Four independent terms. A tool that reports only one of them misattributes probl
 - automated steps: 0
 - verify with: `p95` over 200 samples; meaningful if >= 1.0 ms
 
-### `sched.background.lower_priority` — Background programs fight the game for CPU
-
-- component: `host_processing` · confidence: **medium** · risk: low · reboot: no
-- finding: background load competes with the game: python (15.0%)
-- expected effect: Fewer preemptions while the heaviest competitor idles lower.
-- mechanism: A background process burning whole cores forces the scheduler to time-slice the game thread, and each preemption evicts cache and delays interrupt handling by the length of the competing quantum.
-- automated steps: 1
-- verify with: `p95` over 200 samples; meaningful if >= 1.0 ms
-
 ## Checked and fine — no change needed
 
 - `display.refresh_rate.maximum`: display runs at its maximum rate
 - `capture.game_dvr.disable`: game recording is already off
 - `input.usb.selective_suspend_off`: USB selective suspend is already disabled
-- `timer.global_resolution_requests`: system tick is already the finest this platform allows (15.625 ms)
+- `timer.global_resolution_requests`: system tick is already the finest this platform allows (0.500 ms)
 - `sched.mmcss.games_task`: multimedia scheduling profile present
+- `sched.background.lower_priority`: no heavy background competitor seen
 - `cpu.cpu_sets.delegate`: single cache domain; roaming is cheap
 
 ## Could not be determined
@@ -69,7 +70,6 @@ Four independent terms. A tool that reports only one of them misattributes probl
 Reported explicitly instead of substituted with a default.
 
 - `nic.power_saving.disable`: adapter power management state could not be read
-- `nic.interrupt_moderation.disable`: interrupt moderation state could not be read (the driver exposes no such property)
 - `net.mtu.correctness`: path MTU was not measured; fragmentation cannot be judged yet
 - `net.bufferbloat.upload_cap`: no loaded-latency measurement attached, so upload queueing is unjudged
 - `net.bufferbloat.router_sqm`: no bufferbloat grade measured, so router queueing is unjudged

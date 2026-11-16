@@ -34,6 +34,10 @@ if IS_WINDOWS:
 
     LLMHF_INJECTED = 0x00000001
     LLMHF_LOWER_IL_INJECTED = 0x00000002
+    # Interception strokes are driver-level and arrive without LLMHF_INJECTED.
+    # Tag their extra-info word so the low-level hook can recognise exactly
+    # our own injected events instead of guessing by position and time.
+    INTERCEPTION_EXTRA_INFO = 0x534E4150
 
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
@@ -841,12 +845,47 @@ if IS_WINDOWS:
                 self._note("Capture: mss error %r" % (exc,))
                 return None
 
+        def close(self):
+            """Release capture sessions and per-thread MSS handles."""
+            with self._wgc_lock:
+                wgc = self._wgc_state
+                self._wgc_state = None
+            if wgc is not None:
+                cap = wgc[0]
+                for name in ("stop", "close"):
+                    try:
+                        fn = getattr(cap, name, None)
+                        if callable(fn):
+                            fn()
+                    except Exception:
+                        pass
+
+            with self._dx_lock:
+                cam = self._dx_cam
+                self._dx_cam = None
+            if cam is not None:
+                for name in ("stop", "release"):
+                    try:
+                        fn = getattr(cam, name, None)
+                        if callable(fn):
+                            fn()
+                    except Exception:
+                        pass
+
+            with self._mss_lock:
+                cached = list(self._mss_cache.values())
+                self._mss_cache.clear()
+            for _thread, sct in cached:
+                try:
+                    sct.close()
+                except Exception:
+                    pass
+
 
 import ctypes
 import threading
 import time
 from contextlib import contextmanager
-from weakref import WeakSet
 
 # ---- devices.py original content follows ----
 
@@ -876,33 +915,47 @@ def _call_with_timeout(fn, timeout, *args):
         raise _Timeout("did not return within %.0f s" % timeout)
 
 _ACCEL_SAVE = None
+_ACCEL_HOLDERS = 0
 _ACCEL_LOCK = threading.Lock()
 
 def _set_mouse_accel(enabled):
-    global _ACCEL_SAVE
+    """Acquire or release a process-owned mouse-ballistics override.
+
+    ``SPI_SETMOUSE`` is session-wide state. Keep a reference count so a
+    temporary move cannot restore acceleration while an Interception backend
+    still owns a session-long disable request.
+    """
+    global _ACCEL_SAVE, _ACCEL_HOLDERS
     with _ACCEL_LOCK:
         try:
             import ctypes as _c
-            prev = (_c.c_int * 3)()
-            if not _c.windll.user32.SystemParametersInfoA(0x3, 0, prev, 0):
+            current = (_c.c_int * 3)()
+            if not _c.windll.user32.SystemParametersInfoA(0x3, 0, current, 0):
                 return None
             if enabled:
-                if _ACCEL_SAVE is not None:
-                    prev[0] = _ACCEL_SAVE[0]
-                    prev[1] = _ACCEL_SAVE[1]
-                    prev[2] = _ACCEL_SAVE[2]
-                    _ACCEL_SAVE = None
-                else:
-                    # First enable: remember current state so we can restore it
-                    _ACCEL_SAVE = (prev[0], prev[1], prev[2])
-                return bool(prev[0])
-            else:
-                _ACCEL_SAVE = (prev[0], prev[1], prev[2])
-                prev[0] = 0
-                prev[1] = 0
-                prev[2] = 0
-            if not _c.windll.user32.SystemParametersInfoA(0x4, 0, prev, 0x2):
+                if _ACCEL_HOLDERS <= 0:
+                    return True
+                if _ACCEL_HOLDERS > 1:
+                    _ACCEL_HOLDERS -= 1
+                    return True
+                saved = _ACCEL_SAVE
+                if saved is None:
+                    _ACCEL_HOLDERS = 0
+                    return True
+                wanted = (_c.c_int * 3)(*saved)
+                if not _c.windll.user32.SystemParametersInfoA(
+                        0x4, 0, wanted, 0x2):
+                    return None
+                _ACCEL_HOLDERS = 0
+                _ACCEL_SAVE = None
+                return True
+
+            if _ACCEL_HOLDERS == 0:
+                _ACCEL_SAVE = tuple(int(v) for v in current)
+            wanted = (_c.c_int * 3)(0, 0, 0)
+            if not _c.windll.user32.SystemParametersInfoA(0x4, 0, wanted, 0x2):
                 return None
+            _ACCEL_HOLDERS += 1
             return True
         except Exception:
             return None
@@ -918,18 +971,22 @@ def _disable_mouse_accel():
     """
     if not hasattr(_accel_nesting, 'count'):
         _accel_nesting.count = 0
+    acquired = False
     if _accel_nesting.count == 0:
-        _set_mouse_accel(False)
+        acquired = _set_mouse_accel(False) is True
+        _accel_nesting.acquired = acquired
     _accel_nesting.count += 1
     try:
         yield
     finally:
         _accel_nesting.count -= 1
         if _accel_nesting.count == 0:
-            _set_mouse_accel(True)
+            if bool(getattr(_accel_nesting, "acquired", False)):
+                _set_mouse_accel(True)
+            _accel_nesting.acquired = False
 
 
-_ROLE_NOTED = WeakSet()
+_ROLE_NOTED = set()
 
 def note_mouse_role(backend, index):
     key = (backend, int(index))
@@ -948,7 +1005,10 @@ class Win32Backend(object):
         return IS_WINDOWS
 
     def move(self, x, y):
-        user32.SetCursorPos(int(x), int(y))
+        try:
+            return bool(user32.SetCursorPos(int(x), int(y)))
+        except (TypeError, ValueError, OSError):
+            return False
 
     def nudge(self, dx, dy):
         import ctypes
@@ -1002,7 +1062,6 @@ class InterceptionBackend(object):
         self._dev = None
         self._shift = 0
         self._reason = ""
-        self._expected = _ExpectedLedger()
         self._accel_disabled = False
         self._prev_accel = None
         if ctx is not None:
@@ -1018,6 +1077,16 @@ class InterceptionBackend(object):
             self._k32.CreateFileA.argtypes = [
                 _c.c_char_p, _c.c_uint32, _c.c_uint32,
                 _c.c_void_p, _c.c_uint32, _c.c_uint32, _c.c_void_p]
+            self._k32.CreateEventA.restype = _c.c_void_p
+            self._k32.CreateEventA.argtypes = [
+                _c.c_void_p, _c.c_int, _c.c_int, _c.c_char_p]
+            self._k32.CloseHandle.restype = _c.c_int
+            self._k32.CloseHandle.argtypes = [_c.c_void_p]
+            self._k32.DeviceIoControl.restype = _c.c_int
+            self._k32.DeviceIoControl.argtypes = [
+                _c.c_void_p, _c.c_uint32, _c.c_void_p, _c.c_uint32,
+                _c.c_void_p, _c.c_uint32, _c.POINTER(_c.c_uint32),
+                _c.c_void_p]
         except Exception as exc:
             self._reason = "kernel32 unavailable (%r)" % (exc,)
             self._degraded = True
@@ -1108,7 +1177,8 @@ class InterceptionBackend(object):
         done = (_c.c_uint32 * 1)(0)
         try:
             ok = self._k32.DeviceIoControl(
-                h, self._IOCTL_SET_EVENT, buf, 16, None, 0, done, None)
+                h, self._IOCTL_SET_EVENT, buf, _c.sizeof(buf),
+                None, 0, done, None)
         except Exception:
             return False
         return bool(ok)
@@ -1150,12 +1220,14 @@ class InterceptionBackend(object):
                     pass
         self._handles = []
         self._handle = None
+        self._dev = None
 
     def close(self):
         if not self._accel_disabled and not self._handles:
             return  # Already closed, idempotent
         self._close_all()
         if self._accel_disabled:
+            self._accel_disabled = False
             _set_mouse_accel(True)
         self._prev_accel = None
 
@@ -1193,6 +1265,8 @@ class InterceptionBackend(object):
             k32.CreateFileA.argtypes = [
                 _c.c_char_p, _c.c_uint32, _c.c_uint32,
                 _c.c_void_p, _c.c_uint32, _c.c_uint32, _c.c_void_p]
+            k32.CloseHandle.restype = _c.c_int
+            k32.CloseHandle.argtypes = [_c.c_void_p]
         except Exception:
             return False
         for num in range(10, 20):
@@ -1216,14 +1290,15 @@ class InterceptionBackend(object):
         # Match interception-python MouseStroke layout:
         # (unit_id:H, flags:H, button_flags:H, button_data:H, _raw_buttons:I, x:i, y:i, information:I)
         return _struct.pack(cls._STROKE_FMT, 0, flags, btn, data, 0,
-                            int(x), int(y), 0)
+                            int(x), int(y), INTERCEPTION_EXTRA_INFO)
 
     def _move_stroke(self, dx, dy):
         return self._pack(self._MOUSE_MOVE_RELATIVE, 0, 0, dx, dy)
 
     def _button_stroke(self, down):
-        # Button strokes must use MOUSE_MOVE_ABSOLUTE flag (0x001) per interception spec
-        return self._pack(self._MOUSE_MOVE_ABSOLUTE,
+        # A button packet has no movement.  Marking x=y=0 as ABSOLUTE makes
+        # mouclass interpret it as a move to the virtual-desktop origin.
+        return self._pack(self._MOUSE_MOVE_RELATIVE,
                           self._MOUSE_LEFT_DOWN if down
                           else self._MOUSE_LEFT_UP,
                           0, 0, 0)
@@ -1243,7 +1318,8 @@ class InterceptionBackend(object):
         return done[0] // self._STROKE_LEN
 
     def ok_for_button(self):
-        return (not self._degraded) and self._dev is not None
+        return (not self._degraded) and self._dev is not None \
+            and self._handle is not None
 
     def note_failure(self, where):
         if not self._degraded:
@@ -1316,40 +1392,16 @@ class InterceptionBackend(object):
         with _disable_mouse_accel():
             return self._send(self._move_stroke(dx, dy), "nudge")
 
-    def _expect_now(self, kind):
-        try:
-            cx, cy = get_cursor_pos()
-        except Exception:
-            cx = cy = None
-        try:
-            self._expected.expect(kind, cx, cy)
-        except Exception:
-            pass
-
-    def consume_expected(self, wparam, x, y):
-        try:
-            if wparam == 0x0201:
-                kind = "down"
-            elif wparam == 0x0202:
-                kind = "up"
-            else:
-                return False
-            return bool(self._expected.consume(kind, x, y))
-        except Exception:
-            return False
-
     def button(self, down, index=0):
         if index:
             note_mouse_role("Driver input", index)
             return False
         if not self.ok_for_button():
             return False
-        self._expect_now("down" if down else "up")
-        self._send(self._button_stroke(down), "button")
-        return self.ok_for_button()
+        sent = self._send(self._button_stroke(down), "button")
+        return bool(sent and self.ok_for_button())
 
     def send_click(self, index=0):
-        import random
         if index:
             note_mouse_role("Driver input", index)
             return False
@@ -1357,8 +1409,6 @@ class InterceptionBackend(object):
             return False
         d = self._button_stroke(True)
         u = self._button_stroke(False)
-        self._expect_now("down")
-        self._expect_now("up")
         ok = self._send_count(d + u, 2, "click")
         return ok
 
@@ -1379,39 +1429,6 @@ class InterceptionBackend(object):
                 self.note_failure(what)
                 return False
             return True
-
-class _ExpectedLedger(object):
-
-    def __init__(self, tol=12, ttl=0.3, cap=8):
-        self._tol = tol
-        self._ttl = ttl
-        self._cap = cap
-        self._items = []
-        self._lock = threading.Lock()
-
-    def expect(self, kind, x=None, y=None):
-        with self._lock:
-            now = time.perf_counter()
-            self._items = [e for e in self._items
-                           if now - e[3] <= self._ttl][-self._cap:]
-            self._items.append((kind, x, y, now))
-
-    def consume(self, kind, x, y):
-        with self._lock:
-            now = time.perf_counter()
-            live = [e for e in self._items
-                    if now - e[3] <= self._ttl]
-            self._items[:] = live[-self._cap:]
-            for i, (k, ex, ey, _t) in enumerate(self._items):
-                if k != kind:
-                    continue
-                if ex is not None and ey is not None \
-                        and (abs(x - ex) > self._tol
-                             or abs(y - ey) > self._tol):
-                    continue
-                del self._items[i]
-                return True
-            return False
 
 INPUT_BACKEND_CHOICES = ("win32", "driver")
 
@@ -1517,6 +1534,15 @@ def _load_vigem():
                 dll.vigem_target_x360_update.restype = ctypes.c_ulong
                 dll.vigem_target_x360_update.argtypes = [
                     ctypes.c_void_p, ctypes.c_void_p, _XUSB_REPORT]
+                dll.vigem_target_remove.restype = ctypes.c_ulong
+                dll.vigem_target_remove.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p]
+                dll.vigem_target_free.restype = None
+                dll.vigem_target_free.argtypes = [ctypes.c_void_p]
+                dll.vigem_disconnect.restype = None
+                dll.vigem_disconnect.argtypes = [ctypes.c_void_p]
+                dll.vigem_free.restype = None
+                dll.vigem_free.argtypes = [ctypes.c_void_p]
             except Exception:
                 continue
             _vigem_dll = dll
@@ -1698,13 +1724,10 @@ class EmulatedPadBackend(object):
         if table is not None:
             self.table = dict(table)
         else:
-            spec = PAD_EMU_DEFAULT
-            if cfg is not None:
-                try:
-                    spec = str(cfg.get("pad_emulate") or PAD_EMU_DEFAULT)
-                except Exception:
-                    spec = PAD_EMU_DEFAULT
-            self.table = parse_emulation(spec)
+            # The mapping is fixed built-in behaviour; pad_emulate was never
+            # an editable GUI setting and must not be read from persisted
+            # config behind the user's back.
+            self.table = parse_emulation(PAD_EMU_DEFAULT)
 
     @classmethod
     def available(cls):
@@ -1801,13 +1824,13 @@ class EmulatedPadBackend(object):
         self.release_all()
 
 def make_pad_backend(cfg):
-    choice = str((cfg.get("pad_output", "auto") if cfg is not None else "auto")
-                 or "auto").strip().lower()
+    choice = str((cfg.get("pad_output", "emulate") if cfg is not None else "emulate")
+                 or "emulate").strip().lower()
     _EMU = ("emulate", "emulated", "km", "keyboard")
-    if choice not in ("auto", "vigem", "vigembus") + _EMU:
-        log("Input: pad_output %r is not one of auto, vigem, emulate; using "
-            "auto." % (choice,))
-        choice = "auto"
+    if choice not in ("vigem", "vigembus") + _EMU:
+        log("Input: pad_output %r is not one of vigem, emulate; using "
+            "emulate." % (choice,))
+        choice = "emulate"
     if choice in _EMU:
         return EmulatedPadBackend(cfg)
 
@@ -1845,6 +1868,7 @@ def make_input_backend(cfg):
             "Windows method." % (raw, ", ".join(INPUT_BACKEND_CHOICES)))
         return Win32Backend()
     if choice == "driver":
+        be = None
         try:
             be = InterceptionBackend()
             if be.ok_for_button():
@@ -1853,9 +1877,15 @@ def make_input_backend(cfg):
                     "install the driver: run interception.exe install "
                     "from an admin prompt, then reboot.")
                 return be
+            be.close()
         except Exception as exc:
             log("Input: Interception unavailable (%r); using the "
                 "standard Windows method." % (exc,))
+            if be is not None:
+                try:
+                    be.close()
+                except Exception:
+                    pass
             be = None
         reason = getattr(be, "_reason", "") if be is not None else ""
         if reason:
@@ -1884,7 +1914,7 @@ def _get_vigem_steer(cfg=None):
     with _VIGEM_STEER_LOCK:
 
         if cfg is not None:
-            choice = str(cfg.get("pad_output", "auto") or "auto").strip().lower()
+            choice = str(cfg.get("pad_output", "emulate") or "emulate").strip().lower()
             _EMU = ("emulate", "emulated", "km", "keyboard")
             if choice in _EMU:
                 if _VIGEM_STEER is not False and _VIGEM_STEER is not None:
@@ -1968,15 +1998,15 @@ from typing import Any, Callable
 
 TAG = 0x41544C54
 METHOD = (
-    "synthetic click dispatched through the real input stack and timestamped "
-    "at a low-level mouse hook with the performance counter"
+    "synthetic click timestamped immediately before SendInput and again when "
+    "the low-level mouse hook receives it"
 )
 LIMITS = (
     "Excludes the physical switch debounce and the USB wire/poll time, which no "
-    "software can observe. Includes driver, HID class driver, input thread and "
-    "hook dispatch. One-way values assume symmetric dispatch and are RTT/2. "
+    "software can observe. Measures one-way software dispatch to the hook; "
+    "it is not a round trip and is therefore not divided by two. "
     "Each press is held 50 ms so receiver windows render it; a small "
-    "on-screen pad flashes with every synthetic click."
+    "topmost receiver prevents the test clicks from reaching another app."
 )
 
 @dataclass
@@ -2001,9 +2031,11 @@ def _install_hook(on_event: Callable[[int], None]) -> Any:
             ("dwExtraInfo", ctypes.c_void_p),
         ]
 
-    @ctypes.WINFUNCTYPE(
-        wintypes.LPARAM, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
-    )
+    lresult_t = ctypes.c_ssize_t
+    wparam_t = ctypes.c_size_t
+    lparam_t = ctypes.c_ssize_t
+
+    @ctypes.WINFUNCTYPE(lresult_t, ctypes.c_int, wparam_t, lparam_t)
     def _proc(nCode, wParam, lParam):
         if nCode == 0 and int(wParam) in (WM_LBUTTONDOWN, WM_LBUTTONUP):
             try:
@@ -2021,7 +2053,10 @@ def _install_hook(on_event: Callable[[int], None]) -> Any:
     user32.SetWindowsHookExW.argtypes = [
         ctypes.c_int, type(_proc), wintypes.HINSTANCE, wintypes.DWORD
     ]
-    user32.SetWindowsHookExW.restype = wintypes.HHOOK
+    user32.SetWindowsHookExW.restype = ctypes.c_void_p
+    user32.CallNextHookEx.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, wparam_t, lparam_t]
+    user32.CallNextHookEx.restype = lresult_t
     hook = user32.SetWindowsHookExW(WH_MOUSE_LL, _proc, None, 0)
     if not hook:
         raise OSError(f"SetWindowsHookEx failed: {ctypes.get_last_error()}")
@@ -2036,6 +2071,15 @@ def _remove_hook(handle: Any) -> None:
 CLICK_HOLD_S = 0.05
 
 _SENDINPUT_SET = False
+
+def _receiver_origin(px, py, vx, vy, vw, vh, width, height):
+    """Place a receiver under the cursor within the virtual desktop."""
+    max_x = vx + max(0, vw - width)
+    max_y = vy + max(0, vh - height)
+    return (
+        max(vx, min(max_x, int(px) - width // 2)),
+        max(vy, min(max_y, int(py) - height // 2)),
+    )
 
 def _ensure_sendinput_sig(user32):
     global _SENDINPUT_SET
@@ -2053,8 +2097,8 @@ def _send_click(user32: Any) -> None:
     def _one(flag: int) -> None:
         inp = INPUT()
         inp.type = INPUT_MOUSE
-        inp.mi.dwFlags = flag
-        inp.mi.dwExtraInfo = ctypes.c_void_p(TAG)
+        inp.u.mi.dwFlags = flag
+        inp.u.mi.dwExtraInfo = ctypes.c_void_p(TAG)
         if user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
             raise OSError("SendInput injected nothing")
 
@@ -2066,17 +2110,18 @@ def _click_pad() -> dict[str, Any]:
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    lresult_t = ctypes.c_ssize_t
+    wparam_t = ctypes.c_size_t
+    lparam_t = ctypes.c_ssize_t
     user32.DefWindowProcW.argtypes = [
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
-    ]
-    user32.DefWindowProcW.restype = wintypes.LPARAM
+        wintypes.HWND, wintypes.UINT, wparam_t, lparam_t]
+    user32.DefWindowProcW.restype = lresult_t
 
     W = 244
     H = 64
 
     @ctypes.WINFUNCTYPE(
-        wintypes.LPARAM, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
-        wintypes.LPARAM,
+        lresult_t, wintypes.HWND, wintypes.UINT, wparam_t, lparam_t,
     )
     def _wndproc(hwnd: int, msg: int, wp: int, lp: int) -> int:
         try:
@@ -2121,7 +2166,8 @@ def _click_pad() -> dict[str, Any]:
         wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD
     ]
     hinst = kernel32.GetModuleHandleW(None)
-    name = "SnappyAIClickPad"
+    name = "SnappyAIClickPad-%d-%d" % (
+        kernel32.GetCurrentProcessId(), threading.get_ident())
     cls = WNDCLASSEXW()
     cls.cbSize = ctypes.sizeof(WNDCLASSEXW)
     cls.lpfnWndProc = _wndproc
@@ -2131,16 +2177,21 @@ def _click_pad() -> dict[str, Any]:
         return {}
     pt = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(pt))
-    x = max(0, pt.x - W // 2)
-    y = max(0, pt.y - H - 24)
+    # Keep the receiver under the existing cursor so test clicks are consumed
+    # here rather than activating whichever application is below the pointer.
+    vx = int(user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+    vy = int(user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+    vw = int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN))
+    vh = int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN))
+    x, y = _receiver_origin(pt.x, pt.y, vx, vy, vw, vh, W, H)
     hwnd = user32.CreateWindowExW(
-        0x00080008, name, "input leg monitor (clicks flash here)",
+        0x08080088, name, "input leg monitor (clicks flash here)",
         0x80000000, x, y, W, H, None, None, hinst, None,
     )
     if not hwnd:
         user32.UnregisterClassW(name, hinst)
         return {}
-    user32.SetLayeredWindowAttributes(hwnd, 0, 0, 0x00000002)
+    user32.SetLayeredWindowAttributes(hwnd, 0, 230, 0x00000002)
     user32.ShowWindow(hwnd, 8)
     user32.UpdateWindow(hwnd)
 
@@ -2175,7 +2226,10 @@ def _pump_until(stop: threading.Event, user32: Any, timeout: float) -> None:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
         else:
-            time.sleep(0.01)
+            # This loop owns the low-level hook.  A 10 ms poll sleep becomes
+            # indistinguishable from input latency in the result; yield at a
+            # sub-millisecond cadence instead.
+            time.sleep(0.0005)
 
 def run_click_test(
     count: int = 20, interval: float = 0.15,
@@ -2183,8 +2237,14 @@ def run_click_test(
 ) -> ClickLeg:
     if not sys.platform.startswith("win"):
         return ClickLeg(ok=False, error="input hook test needs Windows")
+    try:
+        count = int(count)
+        interval = max(0.0, min(60.0, float(interval)))
+    except (TypeError, ValueError, OverflowError):
+        return ClickLeg(ok=False, error="count and interval must be numeric")
     if count <= 0:
         return ClickLeg(ok=False, error="no samples requested")
+    count = min(count, 1000)
 
     stamps: dict[int, float] = {}
     stamps_lock = threading.Lock()
@@ -2205,10 +2265,13 @@ def run_click_test(
         pad = _click_pad() or None
     except Exception:
         pad = None
+    if pad is None:
+        _remove_hook(handle)
+        return ClickLeg(ok=False, error="safe click receiver could not be created")
     errors = 0
     rtts: list[float] = []
 
-    def worker(tid_box: list) -> None:
+    def worker() -> None:
         nonlocal errors
         try:
             for i in range(count):
@@ -2240,13 +2303,9 @@ def run_click_test(
                     on_progress(f"input click {i + 1}/{count}")
                 stop.wait(interval)
         finally:
-            try:
-                user32.PostThreadMessageW(tid_box[0], WM_QUIT, 0, 0)
-            except Exception:
-                stop.set()
+            stop.set()
 
-    tid_box = [ctypes.windll.kernel32.GetCurrentThreadId()]
-    t = threading.Thread(target=worker, args=(tid_box,), daemon=True)
+    t = threading.Thread(target=worker, daemon=True)
     t.start()
     try:
         _pump_until(stop, user32, timeout=count * (interval + 1.0) + 10.0)
@@ -2311,8 +2370,15 @@ def list_hid_mice() -> list[str]:
         return []
 
 def measure_sleep_overshoot(n: int = 50, sleep_s: float = 0.001) -> dict[str, Any]:
+    try:
+        n = int(n)
+        sleep_s = max(0.0, min(60.0, float(sleep_s)))
+    except (TypeError, ValueError, OverflowError):
+        return {"requested_ms": None, "over_ms": [],
+                "error": "sample count and delay must be numeric"}
     if n <= 0:
         return {"requested_ms": sleep_s * 1000.0, "over_ms": [], "error": "no samples"}
+    n = min(n, 10000)
     over: list[float] = []
     for _ in range(n):
         t0 = time.perf_counter()
@@ -2331,7 +2397,7 @@ def measure_input(
     on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     leg = run_click_test(count=count, interval=interval, on_progress=on_progress)
-    one_way = sorted(v / 2.0 for v in leg.rtts_ms)
+    one_way = sorted(leg.rtts_ms)
     return {
         "ok": leg.ok,
         "error": leg.error,
@@ -2570,43 +2636,6 @@ def build_hotkey_table(cfg):
         else:
             local.append((key_id, vk))
 
-    for which, ids in MODE_KEY_IDS.items():
-        raw = str(cfg.get("key_mode%d" % which, str(which)))
-        parts = [p.strip() for p in raw.split(",") if p.strip()]
-        if len(parts) > MAX_KEYS_PER_MODE:
-            log("key_mode%d: more than %d keys given; extra ones ignored."
-                % (which, MAX_KEYS_PER_MODE))
-            parts = parts[:MAX_KEYS_PER_MODE]
-        for spec, key_id in zip(parts, ids):
-            parsed = _parse_hotkey(spec)
-            if parsed is None:
-                log("Mode key %r is invalid; skipped." % (spec,))
-                continue
-            mods, vk = parsed
-            _specs[key_id] = spec
-            if bool(mods & 0x000F):
-                always.append((key_id, mods, vk))
-            else:
-                local.append((key_id, vk))
-
-    raw = str(cfg.get("key_assist_off", "") or "")
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if len(parts) > MAX_KEYS_PER_MODE:
-        log("key_assist_off: more than %d keys given; extra ones ignored."
-            % MAX_KEYS_PER_MODE)
-        parts = parts[:MAX_KEYS_PER_MODE]
-    for spec, key_id in zip(parts, ASSIST_OFF_KEY_IDS):
-        parsed = _parse_hotkey(spec)
-        if parsed is None:
-            log("Assist-off key %r is invalid; skipped." % (spec,))
-            continue
-        mods, vk = parsed
-        _specs[key_id] = spec
-        if bool(mods & 0x000F):
-            always.append((key_id, mods, vk))
-        else:
-            local.append((key_id, vk))
-
     seen_always = {}
     for key_id, mods, vk in always:
         k = (mods & 0x000F, vk)
@@ -2678,6 +2707,7 @@ def build_macro_table(cfg):
 ACTION_IDS = {
     10: "launch",
     11: "pause",
+    12: "track_target",
 
     6: "reload",
     20: "mode1",
@@ -2706,8 +2736,6 @@ CONTROL_ACTION_NAMES = ("record_macro", "stop_macro", "play_macro",
                         "play_macro1", "play_macro2", "play_macro3",
                         "play_macro4", "play_macro5")
 
-MODE_KEY_IDS = {1: (20, 22, 23, 24), 2: (21, 25, 26, 27)}
-ASSIST_OFF_KEY_IDS = (40, 41, 42, 43)
 ASSIST_OFF_PAD_ID = 40
 MAX_KEYS_PER_MODE = 4
 
@@ -3309,8 +3337,11 @@ class PadTracker(object):
 
     def update(self, buttons, now=None):
         if not self.matches(buttons):
+            was_down = self.down
             self.down = False
-            return None
+            # Releases matter to hold actions such as Track target.  Existing
+            # tap actions ignore this event, so their dispatch is unchanged.
+            return "release" if was_down else None
         if self.down:
             return None
         self.down = True
@@ -3372,6 +3403,7 @@ def _mask_of(indices):
 ACTION_KEYS = (
     ("pad_launch", "launch"),
     ("pad_pause", "pause"),
+    ("pad_track_target", "track_target"),
     ("pad_mode1", "mode1"),
     ("pad_mode2", "mode2"),
     ("pad_record", "record_macro"),
